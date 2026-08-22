@@ -23,8 +23,10 @@ import {
 
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
-const PORTS_RESOLVE_TIMEOUT_MS = 5000;
-const READY_TIMEOUT_MS = 5000;
+// [local patch] 5000 → 30000: Windows 上 ipykernel 冷启动绑定端口实测 ~4.5s
+// （热机），冷机/杀毒扫描下超过 5s 上限，直接误判启动失败。
+const PORTS_RESOLVE_TIMEOUT_MS = 30000;
+const READY_TIMEOUT_MS = 30000;
 // Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
 const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;

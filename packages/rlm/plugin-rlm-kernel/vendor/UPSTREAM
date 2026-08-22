@@ -41,3 +41,9 @@
 #    - noUncheckedIndexedAccess: local refs with guards in index.ts decode() and the
 #      pythonSkillsMatch loop in bootstrap.ts.
 #    Affected files: index.ts, bootstrap.ts, state-snapshot.ts, boot-gate.ts, fork-server.ts.
+# 7. src/vendor/kernel/index.ts (2026-08-22, Phase 0 runtime verification)
+#    - PORTS_RESOLVE_TIMEOUT_MS / READY_TIMEOUT_MS 5000 → 30000: Windows 上
+#      ipykernel 端口绑定实测 ~4.5s（热机），冷机超过 5s 上限导致误判启动失败。
+# 8. vendor/prime-agent-runtime 布局修复（2026-08-22）：补齐 src/rlm/ 包目录层
+#    （初版 vendor 误将 4 个 .py 平铺在 src/ 下，pyproject 的 packages=["src/rlm"]
+#    与 bootstrap 的 hashRuntimeSource 均要求 src/rlm/ 存在）。内容与上游逐字节一致。
