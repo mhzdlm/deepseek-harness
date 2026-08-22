@@ -47,3 +47,7 @@
 # 8. vendor/prime-agent-runtime 布局修复（2026-08-22）：补齐 src/rlm/ 包目录层
 #    （初版 vendor 误将 4 个 .py 平铺在 src/ 下，pyproject 的 packages=["src/rlm"]
 #    与 bootstrap 的 hashRuntimeSource 均要求 src/rlm/ 存在）。内容与上游逐字节一致。
+# 9. vendor/prime-agent-runtime/src/rlm/harness.py (2026-08-22)
+#    - save() 改为原子写（tmp + os.replace），对齐 TS 侧 harness-file.ts 的
+#      tmp+rename。只消除半写状态（dsh host 并发读不会读到损坏 JSON）；完整
+#      的跨进程锁/读改写合并仍未实现 —— 内核与 /refine 并发写仍是单写者假设。

@@ -70,8 +70,16 @@ export function createHostHandlers(ctx: Context, subagentProvider: string): Host
       return { subagents: children }
     },
 
-    // Minimal introspection for model-aware kernels. Expand when a dsh model
-    // registry is exposed on ctx.
-    'model.info': async () => ({ models: [] }),
+    // Kernel-side model introspection, mirroring prime's model.info handler:
+    // the owning agent's provider/model (id) and an empty input list — dsh
+    // resolves the model per request rather than pinning it on the session.
+    'model.info': async () => {
+      const agent = ctx.agents.currentInitiator()
+      return {
+        id: agent?.options.model ?? null,
+        provider: agent?.options.provider ?? null,
+        input: [],
+      }
+    },
   }
 }

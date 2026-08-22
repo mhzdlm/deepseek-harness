@@ -295,8 +295,20 @@ class HarnessState:
             },
             "refinements": [asdict(event) for event in self.refinements],
         }
-        with self.file_path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # [local patch] atomic write: dump to a temp sibling then os.replace, so
+        # a concurrent reader (the dsh host's /refine or prompt section) never
+        # observes a half-written file. Mirrors the TS side's tmp+rename.
+        tmp = self.file_path.with_name(self.file_path.name + f".{os.getpid()}.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, self.file_path)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
         self._loaded_mtime = self._disk_mtime()
         return self
 
