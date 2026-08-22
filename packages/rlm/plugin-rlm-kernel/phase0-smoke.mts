@@ -6,7 +6,7 @@
  *  4. Jupyter Comm roundtrip: host_request('model.info') from a running cell
  *     (this is also the control-channel anti-deadlock test)
  *
- * Run: node <repo>/node_modules/.pnpm/tsx@*/node_modules/tsx/dist/cli.mjs phase0-smoke.mts
+ * Run: node <repo>/node_modules/.pnpm/tsx@4.x/node_modules/tsx/dist/cli.mjs phase0-smoke.mts
  */
 import { mkdtempSync, mkdirSync } from 'node:fs'
 import os from 'node:os'
