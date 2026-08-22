@@ -18,57 +18,60 @@ import type { SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagen
 import type { HostRequestHandlers } from './vendor/kernel/index.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
  * Build the handler map for one plugin instance. The map is owned by the
  * plugin's apply fiber and shared by every per-session kernel it spawns.
  */
-export function createHostHandlers(ctx: Context): HostRequestHandlers {
-	return {
-		// `await rlm("...")` → spawn a real dsh subagent; returns the handle
-		// immediately, the child's result arrives later as a settlement notice.
-		'rlm.run': async (payload) => {
-			const prompt = payload.prompt
-			if (typeof prompt !== 'string') throw new Error('rlm.run prompt must be a string')
-			const kwargs = isRecord(payload.kwargs) ? payload.kwargs : {}
-			const name = typeof kwargs.name === 'string' && kwargs.name.length > 0 ? kwargs.name : 'rlm-child'
+export function createHostHandlers(ctx: Context, subagentProvider: string): HostRequestHandlers {
+  return {
+    // `await rlm("...")` → spawn a real dsh subagent; returns the handle
+    // immediately, the child's result arrives later as a settlement notice.
+    'rlm.run': async (payload) => {
+      const prompt = payload.prompt
+      if (typeof prompt !== 'string') throw new Error('rlm.run prompt must be a string')
+      const kwargs = isRecord(payload.kwargs) ? payload.kwargs : {}
+      const name = typeof kwargs.name === 'string' && kwargs.name.length > 0 ? kwargs.name : 'rlm-child'
 
-			const parent = ctx.agents.currentInitiator()
-			if (!parent) {
-				throw new Error('rlm.run requires an owning agent session')
-			}
+      const parent = ctx.agents.currentInitiator()
+      if (!parent) {
+        throw new Error('rlm.run requires an owning agent session')
+      }
 
-			const controller = new AbortController()
-			const request: SubagentStartRequest = {
-				prompt: [{ type: 'text', text: prompt }],
-				parent,
-				signal: controller.signal,
-				...(typeof kwargs.persona === 'string' ? { persona: kwargs.persona } : {}),
-				...(typeof kwargs.maxDepth === 'number' ? { maxDepth: kwargs.maxDepth } : {}),
-			}
-			const run: SubagentRun = await ctx.subagents.start(name, request)
+      const controller = new AbortController()
+      const request: SubagentStartRequest = {
+        prompt: [{ type: 'text', text: prompt }],
+        parent,
+        label: name,
+        signal: controller.signal,
+        ...(typeof kwargs.persona === 'string' ? { persona: kwargs.persona } : {}),
+        ...(typeof kwargs.maxDepth === 'number' ? { maxDepth: kwargs.maxDepth } : {}),
+      }
+      // `subagents.start` takes the provider NAME as its first argument;
+      // the child's display name rides on `request.label`.
+      const run: SubagentRun = await ctx.subagents.start(subagentProvider, request)
 
-			return {
-				rlm_child_id: run.id,
-				name,
-				// dsh sessions are id-addressed rather than directory-addressed;
-				// mirror the session id so kernel-side code can correlate.
-				session_dir: String(run.id),
-				model: 'unknown',
-			}
-		},
+      return {
+        rlm_child_id: run.id,
+        name,
+        // dsh sessions are id-addressed rather than directory-addressed;
+        // mirror the session id so kernel-side code can correlate.
+        session_dir: String(run.id),
+        model: 'unknown',
+      }
+    },
 
-		'rlm.list_subagents': async () => {
-			const parent = ctx.agents.currentInitiator()
-			if (!parent) return { subagents: [] }
-			const children = await ctx.subagents.listChildren(parent.session.id)
-			return { subagents: children }
-		},
+    'rlm.list_subagents': async () => {
+      const parent = ctx.agents.currentInitiator()
+      if (!parent) return { subagents: [] }
+      const children = await ctx.subagents.listChildren(parent.session.id)
+      return { subagents: children }
+    },
 
-		// Minimal introspection for model-aware kernels. Expand when a dsh model
-		// registry is exposed on ctx.
-		'model.info': async () => ({ models: [] }),
-	}
+    // Minimal introspection for model-aware kernels. Expand when a dsh model
+    // registry is exposed on ctx.
+    'model.info': async () => ({ models: [] }),
+  }
 }
