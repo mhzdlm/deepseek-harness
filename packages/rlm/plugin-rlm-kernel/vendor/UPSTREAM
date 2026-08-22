@@ -1,0 +1,43 @@
+# vendored from Prime Intellect prime-agent
+# UPSTREAM: https://github.com/PrimeIntellect-ai/prime-agent
+# UPSTREAM_COMMIT: af0b8e0 chore(release): prepare v0.7.4 (#1569)
+# vendor date: 2026-08-22
+# vendored components:
+#  - kernel TS: packages/coding-agent/src/core/kernel/*.ts
+#    (KernelManager + bootstrap + state-snapshot + fork-server), moved to src/vendor/kernel/
+#  - prime-agent-runtime: src/rlm/*.py + pyproject.toml, kept at vendor/prime-agent-runtime/
+# license: MIT (Prime Intellect / Mario Zechner 2025)
+#
+# RULE: do not edit vendored files directly. Every local change is recorded
+# below with its reason; regenerate the diff with
+#   git diff -- packages/rlm/plugin-rlm-kernel/src/vendor/ > patches/kernel-local.patch
+#
+# LOCAL PATCHES APPLIED (against UPSTREAM_COMMIT af0b8e0):
+# 1. src/vendor/kernel/index.ts
+#    - Relative imports rewritten .js -> .ts (dsh uses allowImportingTsExtensions).
+#    - Removed `import { registerSessionResourceCleanup } from "@earendil-works/pi-ai"`
+#      (not a dsh dependency); replaced the module-level cleanup registration with
+#      an exported `disposeKernelsForSession(sessionId?)` helper the plugin calls
+#      on `session/disposed`.
+# 2. src/vendor/kernel/bootstrap.ts
+#    - Removed imports of prime-internal modules (../../config.js, ../skills.js);
+#      `PythonSkillRuntimeInfo`/`SkillPythonMetadata` re-declared locally.
+#    - `runtimeCandidateDirs()` now resolves this package's vendored
+#      `vendor/prime-agent-runtime` so the venv installs the vendored runtime.
+#    - Added `venvPythonPath(venv)` with a win32 branch (Scripts/python.exe);
+#      both call sites use it.
+# 3. src/vendor/kernel/boot-gate.ts
+#    - Inline minimal `Semaphore` replaces prime-internal ../../utils/semaphore.js.
+# 4. src/vendor/kernel/fork-server.ts
+#    - Removed pi-ai `registerSessionResourceCleanup`; process-teardown hooks only.
+#    - Relative import rewritten .js -> .ts.
+# 5. Windows: forkserver stays disabled (isForkServerEnabled() returns false off-linux),
+#    so index.ts degrades to direct spawn automatically. No fork-server patch needed.
+# 6. dsh strict-mode compatibility (prime's tsconfig does NOT enable these):
+#    - exactOptionalPropertyTypes: replaced every `field: x ?? undefined` / `= undefined`
+#      on optional properties with conditional object spread or `| undefined` unions
+#      (bootstrap.ts version parse; index.ts ExecuteResult/options/start/forkKernel/
+#      cleanupResources; state-snapshot.ts SnapshotResult; boot-gate.ts Semaphore waiter).
+#    - noUncheckedIndexedAccess: local refs with guards in index.ts decode() and the
+#      pythonSkillsMatch loop in bootstrap.ts.
+#    Affected files: index.ts, bootstrap.ts, state-snapshot.ts, boot-gate.ts, fork-server.ts.

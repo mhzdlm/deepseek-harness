@@ -1,0 +1,43 @@
+{
+  "name": "@deepseek-ai/dsh-plugin-continual-harness",
+  "description": "Continual harness: injects harness state (prompt/memory/skill/subagent) into the system prompt and provides /refine with evidence-backed, reversible updates. Pairs with @deepseek-ai/dsh-plugin-rlm-kernel.",
+  "version": "0.1.1-rc.2",
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "packages/rlm/plugin-continual-harness"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    "./invariant": { "types": "./lib/types/invariant.d.ts", "default": "./lib/invariant.js" },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "lib/invariant.js", "lib/types/**/*.d.ts"],
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "workspace:^"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-agent": "workspace:^",
+    "@deepseek-ai/dsh-commands": "workspace:^",
+    "@deepseek-ai/dsh-invariants": "workspace:^",
+    "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-subagent": "workspace:^",
+    "@deepseek-ai/dsh-system-prompt": "workspace:^"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-agent": "workspace:^",
+    "@deepseek-ai/dsh-commands": "workspace:^",
+    "@deepseek-ai/dsh-invariants": "workspace:^",
+    "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-subagent": "workspace:^",
+    "@deepseek-ai/dsh-system-prompt": "workspace:^"
+  }
+}
