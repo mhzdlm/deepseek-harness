@@ -1,0 +1,3 @@
+name: RLM 融合模式
+description: 持久 IPython 内核 + LLM-as-a-Verifier（verify 选优）+ 递归子代理（rlm）+ Continual Harness（/refine 自我精炼）的融合 Agent 模式。
+order: 4
