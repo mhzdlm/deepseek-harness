@@ -9,7 +9,7 @@
     "directory": "packages/rlm/plugin-rlm-kernel"
   },
   "type": "module",
-  "main": "lib/index.js",
+  "main": "lib/types/index.js",
   "types": "lib/types/index.d.ts",
   "scripts": {
     "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-kernel/tests/host-smoke.spec.ts",
@@ -17,12 +17,17 @@
     "vendor:check": "node --import tsx scripts/audit-vendor.mts"
   },
   "exports": {
-    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
-    "./invariant": { "types": "./lib/types/invariant.d.ts", "default": "./lib/invariant.js" },
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/types/index.js" },
+    "./invariant": { "types": "./lib/types/invariant.d.ts", "default": "./lib/types/invariant.js" },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
-  "files": ["lib/index.js", "lib/invariant.js", "lib/types/**/*.d.ts"],
+  "files": [
+    "lib/index.js",
+    "lib/invariant.js",
+    "lib/types/**/*.js",
+    "lib/types/**/*.d.ts"
+  ],
   "license": "MIT",
   "dependencies": {
     "@deepseek-ai/schemastery": "workspace:^",
