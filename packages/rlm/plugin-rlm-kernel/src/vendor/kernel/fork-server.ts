@@ -8,6 +8,7 @@
 // back to the existing path, so correctness never depends on fork.
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
+import { ENV_FORKSERVER, rlmEnv } from "../../env.ts";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,10 +40,10 @@ export class ForkServerUnavailable extends Error {
 }
 
 // On by default on Linux (fork-without-exec is unsafe on macOS);
-// PRIME_AGENT_KERNEL_FORKSERVER=0 opts out.
+// DSH_RLM_KERNEL_FORKSERVER=0 (legacy PRIME_AGENT_KERNEL_FORKSERVER) opts out.
 export function isForkServerEnabled(): boolean {
 	if (process.platform !== "linux") return false;
-	return process.env.PRIME_AGENT_KERNEL_FORKSERVER !== "0";
+	return rlmEnv(...ENV_FORKSERVER) !== "0";
 }
 
 // A forkserver template is defined solely by the interpreter — the imported

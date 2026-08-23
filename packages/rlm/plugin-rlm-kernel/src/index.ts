@@ -14,7 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createHostHandlers } from './host-handlers.ts'
 import { createIpythonTool } from './ipython-tool.ts'
-import { SessionKernelRegistry } from './kernels.ts'
+import { IDLE_SWEEP_INTERVAL_MS, SessionKernelRegistry, warmUpSession } from './kernels.ts'
 
 export const name = 'plugin-rlm-kernel'
 export const inject = ['tools', 'subagents', 'sessions', 'agents']
@@ -26,27 +26,92 @@ export interface Config {
   dataDir?: string
   /** Subagent provider name used by `rlm.run`. Defaults to `spawn` (in-process). */
   subagentProvider?: string
+  /**
+   * item-4: idle timeout (ms) before a session's kernel is reclaimed. State is
+   * preserved by the dill snapshot, so a later ipython call re-provisions from
+   * it. `0` disables reclamation. Defaults to 10 minutes.
+   */
+  idleTimeoutMs?: number
+  /** item-13: cap on cell output text returned to the model. Defaults to 65536. */
+  maxOutputChars?: number
+  /** item-13: auto-snapshot debounce after a successful cell (ms). Defaults to 1500. */
+  snapshotDebounceMs?: number
+  /**
+   * item-7: provision a session's kernel at session/created instead of at the
+   * first ipython call, moving the ~5s cold start off the critical path.
+   * Defaults to off (each session pays a kernel process until idle reclamation).
+   */
+  warmupOnSessionCreate?: boolean
 }
 
 export const Config: z<Config> = z.object({
   python: z.string(),
   dataDir: z.string(),
   subagentProvider: z.string(),
+  idleTimeoutMs: z.natural(),
+  maxOutputChars: z.natural(),
+  snapshotDebounceMs: z.natural(),
+  warmupOnSessionCreate: z.boolean(),
 })
 
 export function apply(ctx: Context, config: Config): void {
   const dataDir = config.dataDir ?? path.join(homedir(), '.dsh', 'rlm')
+  const hostHandlers = createHostHandlers(ctx, config.subagentProvider ?? 'spawn', dataDir)
   const kernels = new SessionKernelRegistry({
     // exactOptionalPropertyTypes: spread undefined fields away.
     ...(config.python !== undefined ? { python: config.python } : {}),
     dataDir,
-    hostHandlers: createHostHandlers(ctx, config.subagentProvider ?? 'spawn'),
+    hostHandlers: hostHandlers.handlers,
+    ...(config.idleTimeoutMs !== undefined ? { idleTimeoutMs: config.idleTimeoutMs } : {}),
+    ...(config.snapshotDebounceMs !== undefined ? { snapshotDebounceMs: config.snapshotDebounceMs } : {}),
   })
 
   ctx.on('session/disposed', (session) => {
-    kernels.disposeSession(String(session.id))
+    const sid = String(session.id)
+    // FIX-6: abort outstanding rlm.run children owned by this session before
+    // tearing down its kernel.
+    hostHandlers.abortSession(sid)
+    kernels.disposeSession(sid)
   })
 
-  ctx.effect(() => ctx.tools.register(createIpythonTool(kernels)), 'register ipython tool')
-  ctx.effect(() => () => kernels.disposeAll(), 'rlm-kernel teardown')
+  // item-7: warm the kernel at session creation so the first ipython call is
+  // fast. Errors are swallowed here; a real ipython call retries provision.
+  if (config.warmupOnSessionCreate) {
+    ctx.on('session/created', (session) => {
+      warmUpSession(kernels, String(session.id))
+    })
+  }
+
+  ctx.effect(
+    () => ctx.tools.register(createIpythonTool(kernels, config.maxOutputChars ?? 65_536)),
+    'register ipython tool',
+  )
+
+  // item-4: periodic idle sweep. Unref'd so a long-lived desktop host with no
+  // other work is not kept alive by the timer alone.
+  const sweepTimer = setInterval(() => {
+    void kernels.disposeIdle()
+  }, IDLE_SWEEP_INTERVAL_MS)
+  if (typeof sweepTimer.unref === 'function') sweepTimer.unref()
+
+  ctx.effect(
+    () => () => {
+      clearInterval(sweepTimer)
+      kernels.disposeAll()
+    },
+    'rlm-kernel teardown',
+  )
+
+  // Expose the per-session kernel registry so sibling plugins (e.g.
+  // plugin-rlm-verifier) can run their own cells through the same persistent
+  // kernel. Optional at read time — the plugin remains fully functional when
+  // nothing injects it.
+  ctx.provide('rlm.kernels', kernels)
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Per-session kernel registry provided by plugin-rlm-kernel. */
+    'rlm.kernels'?: SessionKernelRegistry
+  }
 }

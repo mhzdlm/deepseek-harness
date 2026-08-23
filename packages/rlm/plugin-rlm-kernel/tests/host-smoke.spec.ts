@@ -10,6 +10,7 @@ import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import * as PluginRlmKernel from '@deepseek-ai/dsh-plugin-rlm-kernel'
 import * as PluginContinualHarness from '@deepseek-ai/dsh-plugin-continual-harness'
 
@@ -39,6 +40,14 @@ describe('rlm plugin host mount', () => {
     expect(ctx.tools.get('ipython')).toBeDefined()
   })
 
+  it('registers the /harness management command (item-5)', async () => {
+    const { ctx } = await setup()
+    const agent = ctx.agentLoop.create(SessionId('cmd-probe'), { provider: 'probe', model: 'probe' })
+    expect(ctx.commands.find(agent, 'harness')?.name).toBe('harness')
+    expect(ctx.commands.find(agent, 'refine')?.name).toBe('refine')
+    expect(ctx.commands.find(agent, 'refine-rollback')?.name).toBe('refine-rollback')
+  })
+
   it('injects the harness overview into the assembled system prompt', async () => {
     const { ctx, root } = await setup()
     const sessionId = 'test-session'
@@ -65,5 +74,96 @@ describe('rlm plugin host mount', () => {
     const text = renderPrompt(assembly)
     expect(text).toContain('Memories')
     expect(text).toContain('Remember X: X is important')
+  })
+
+  it('renders global-scope entries from the cross-session store (P0 regression)', async () => {
+    const { ctx, root } = await setup()
+    // A prior session's kernel wrote a global_=True memory into the global
+    // store via RLM_GLOBAL_HARNESS_STATE_DIR; a brand-new session (no local
+    // file) must still see it in its prompt.
+    const globalDir = join(root, 'global', 'harness')
+    mkdirSync(globalDir, { recursive: true })
+    writeFileSync(
+      join(globalDir, 'harness_state.json'),
+      JSON.stringify({
+        schema: 1,
+        entries: {
+          memory: {
+            gm1: {
+              id: 'gm1', kind: 'memory', title: 'Global fact', content: 'The sky is teal',
+              path: 'general', scope: 'global', reference: {}, arguments: {}, metadata: {},
+              source: 'agent', created_at: '2026-08-22T00:00:00Z', updated_at: '2026-08-22T00:00:00Z', version: 1,
+            },
+          },
+        },
+        refinements: [],
+      }),
+    )
+
+    const sessionId = 'fresh-session-no-local-state'
+    const assembly = await ctx.systemPrompt.assemble({ scope: { session: { id: sessionId } } })
+    const text = renderPrompt(assembly)
+    expect(text).toContain('Memories')
+    expect(text).toContain('[global]')
+    expect(text).toContain('Global fact [global]: The sky is teal')
+  })
+
+  it('merges global and local entries into one overview (P0 regression)', async () => {
+    const { ctx, root } = await setup()
+    const sessionId = 'merge-session'
+    const globalDir = join(root, 'global', 'harness')
+    const localDir = join(root, 'session-artifacts', sessionId, 'harness')
+    mkdirSync(globalDir, { recursive: true })
+    mkdirSync(localDir, { recursive: true })
+    writeFileSync(
+      join(globalDir, 'harness_state.json'),
+      JSON.stringify({
+        schema: 1,
+        entries: {
+          memory: {
+            gm1: {
+              id: 'gm1', kind: 'memory', title: 'Global fact', content: 'The sky is teal',
+              path: 'general', scope: 'global', reference: {}, arguments: {}, metadata: {},
+              source: 'agent', created_at: '2026-08-22T00:00:00Z', updated_at: '2026-08-22T00:00:00Z', version: 1,
+            },
+          },
+        },
+        refinements: [],
+      }),
+    )
+    writeFileSync(
+      join(localDir, 'harness_state.json'),
+      JSON.stringify({
+        schema: 1,
+        entries: {
+          memory: {
+            lm1: {
+              id: 'lm1', kind: 'memory', title: 'Local fact', content: 'Tea is hot',
+              path: 'general', scope: 'local', reference: {}, arguments: {}, metadata: {},
+              source: 'agent', created_at: '2026-08-22T00:00:00Z', updated_at: '2026-08-22T00:00:00Z', version: 1,
+            },
+          },
+        },
+        refinements: [],
+      }),
+    )
+
+    const assembly = await ctx.systemPrompt.assemble({ scope: { session: { id: sessionId } } })
+    const text = renderPrompt(assembly)
+    expect(text).toContain('Global fact [global]: The sky is teal')
+    expect(text).toContain('Local fact: Tea is hot')
+  })
+
+  it('emits session/created when an agent is created (item-7 warmup hook)', async () => {
+    const { ctx } = await setup()
+    // The warmup listener (config.gated) subscribes to this event; verify the
+    // hook point actually fires on agent creation. Combined with warmup.spec
+    // (which proves warmUpSession provisions the kernel), this covers the
+    // plugin-level wiring end to end.
+    const created: string[] = []
+    const dispose = ctx.on('session/created', session => created.push(String(session.id)))
+    const agent = ctx.agentLoop.create(SessionId('warmup-probe'), { provider: 'probe', model: 'probe' })
+    dispose()
+    expect(created).toContain(String(agent.session.id))
   })
 })

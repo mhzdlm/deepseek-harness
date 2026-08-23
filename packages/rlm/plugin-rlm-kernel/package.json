@@ -11,6 +11,10 @@
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
+  "scripts": {
+    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-kernel/tests/host-smoke.spec.ts",
+    "test:e2e": "vitest run --root ../../../ packages/rlm/plugin-rlm-kernel/tests/rlm-e2e.spec.ts packages/rlm/plugin-rlm-kernel/tests/refine-e2e.spec.ts"
+  },
   "exports": {
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
     "./invariant": { "types": "./lib/types/invariant.d.ts", "default": "./lib/invariant.js" },

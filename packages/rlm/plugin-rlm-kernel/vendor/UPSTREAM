@@ -51,3 +51,21 @@
 #    - save() 改为原子写（tmp + os.replace），对齐 TS 侧 harness-file.ts 的
 #      tmp+rename。只消除半写状态（dsh host 并发读不会读到损坏 JSON）；完整
 #      的跨进程锁/读改写合并仍未实现 —— 内核与 /refine 并发写仍是单写者假设。
+# 10. src/vendor/kernel/bootstrap.ts (2026-08-23)
+#     - acquireBootstrapLock 增加等待 deadline（BOOTSTRAP_LOCK_WAIT_TIMEOUT_MS=60s）：
+#       陈旧锁的 pid 若被系统回收给另一个活进程，原逻辑无限循环导致
+#       ensureKernelPython 永久挂起（2026-08-23 实测踩到）。超时后抛出带锁
+#       目录路径的明确错误，提示手动删除。
+# 11. 环境变量改名 DSH_RLM_*（2026-08-23，item-8）：以下 vendored 文件的 prime
+#     命名环境变量读取改为经 src/env.ts 的 rlmEnv()（新名优先、旧名回退）：
+#     - bootstrap.ts：PRIME_AGENT_KERNEL_PYTHON→DSH_RLM_KERNEL_PYTHON、
+#       PRIME_AGENT_KERNEL_VENV→DSH_RLM_KERNEL_VENV、
+#       PRIME_AGENT_INSTALL_UV→DSH_RLM_INSTALL_UV；错误/提示文案同步。
+#     - boot-gate.ts：PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS→DSH_RLM_MAX_CONCURRENT_BOOTS。
+#     - fork-server.ts：PRIME_AGENT_KERNEL_FORKSERVER→DSH_RLM_KERNEL_FORKSERVER。
+#     - prime-agent-runtime/src/rlm/harness.py：_agent_dir() 增
+#       DSH_RLM_CODING_AGENT_DIR（优先于 PRIME_AGENT_CODING_AGENT_DIR / PI_CODING_AGENT_DIR）。
+# 12. src/vendor/kernel/bootstrap.ts (2026-08-23)
+#     - DEFAULT_RLM_EXTRA_PACKAGES 追加 llm-verifier（importName: llm_verifier），
+#       使内核 venv 自动带上 LLM-as-a-Verifier 包，供 plugin-rlm-verifier 的
+#       verify 工具走内核路径 / venv 子进程路径时使用。

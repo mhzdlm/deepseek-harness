@@ -1,5 +1,6 @@
 import { cpus } from "node:os";
 import { isForkServerEnabled } from "./fork-server.ts";
+import { ENV_MAX_CONCURRENT_BOOTS, rlmEnv } from "../../env.ts";
 
 // [local patch] Replaced `import { Semaphore } from "../../utils/semaphore.js"`
 // (prime repo-internal util, not vendored) with this minimal inline
@@ -70,7 +71,7 @@ const FORKSERVER_KERNEL_BOOT_CONCURRENCY = Math.min(
 );
 
 export function resolveKernelBootConcurrency(): number {
-	const raw = process.env.PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS;
+	const raw = rlmEnv(...ENV_MAX_CONCURRENT_BOOTS);
 	const fallback = isForkServerEnabled() ? FORKSERVER_KERNEL_BOOT_CONCURRENCY : DEFAULT_KERNEL_BOOT_CONCURRENCY;
 	if (raw === undefined || !/^\d+$/.test(raw)) {
 		return fallback;

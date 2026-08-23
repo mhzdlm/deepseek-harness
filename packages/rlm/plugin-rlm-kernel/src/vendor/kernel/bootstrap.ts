@@ -8,11 +8,12 @@ import { stderr, stdin } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { ENV_INSTALL_UV, ENV_KERNEL_PYTHON, ENV_KERNEL_VENV, rlmEnv } from "../../env.ts";
 
 // [local patch] `import { getPackageDir } from "../../config.js"` and
 // `import type { PythonSkillRuntimeInfo } from "../skills.js"` are prime
 // repo-internal modules that were not vendored. The skill type is re-declared
-// here (same shape as prime's `skills.ts`); the runtime source dir now resolves
+// here (same shape as prime's `skills.js`); the runtime source dir now resolves
 // against this package's own `vendor/prime-agent-runtime` (see
 // `runtimeCandidateDirs`), which is what installs our vendored Python runtime
 // into the kernel venv instead of pulling from PyPI.
@@ -47,6 +48,7 @@ const DEFAULT_RLM_EXTRA_PACKAGES = [
 	{ uvArg: "lxml", importName: "lxml", promptLabel: "lxml" },
 	{ uvArg: "pydantic", importName: "pydantic", promptLabel: "pydantic" },
 	{ uvArg: "tyro", importName: "tyro", promptLabel: "tyro" },
+	{ uvArg: "llm-verifier", importName: "llm_verifier", promptLabel: "llm-verifier (LLM-as-a-Verifier)" },
 ];
 export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.uvArg);
 export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
@@ -72,6 +74,10 @@ const BOOTSTRAP_VERSION_FILE = ".bootstrap-version";
 const BOOTSTRAP_LOCK_NAME = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS = 100;
 const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS = 30_000;
+// [local patch] Cap how long acquireBootstrapLock waits for a lock held by a
+// live-looking pid (a stale lock whose pid was recycled onto an unrelated
+// process would otherwise hang the wait forever).
+const BOOTSTRAP_LOCK_WAIT_TIMEOUT_MS = 60_000;
 
 let inFlightEnsureKernelPython: { key: string; promise: Promise<string> } | null = null;
 
@@ -344,8 +350,8 @@ function formatPythonSkillInstallArgs(skill: BootstrapPythonSkill): string[] {
 
 function ensureKernelPythonKey(pythonSkills: readonly BootstrapPythonSkill[]): string {
 	return [
-		process.env.PRIME_AGENT_KERNEL_PYTHON ?? "",
-		process.env.PRIME_AGENT_KERNEL_VENV ?? "",
+		rlmEnv(...ENV_KERNEL_PYTHON) ?? "",
+		rlmEnv(...ENV_KERNEL_VENV) ?? "",
 		process.env.HOME ?? "",
 		process.env.XDG_DATA_HOME ?? "",
 		JSON.stringify(pythonSkills),
@@ -353,7 +359,7 @@ function ensureKernelPythonKey(pythonSkills: readonly BootstrapPythonSkill[]): s
 }
 
 export function getKernelVenvDir(): string {
-	const override = process.env.PRIME_AGENT_KERNEL_VENV;
+	const override = rlmEnv(...ENV_KERNEL_VENV);
 	if (override) return path.resolve(expandHome(override));
 	return path.join(os.homedir(), ".prime", "agent", "kernel-venv");
 }
@@ -379,7 +385,7 @@ async function resolveWritableKernelVenvDir(): Promise<string> {
 		await mkdir(path.dirname(primary), { recursive: true });
 		return primary;
 	} catch (primaryError) {
-		if (process.env.PRIME_AGENT_KERNEL_VENV) {
+		if (rlmEnv(...ENV_KERNEL_VENV)) {
 			throw new Error(`couldn't create kernel venv parent directory for ${primary}: ${errorMessage(primaryError)}`);
 		}
 
@@ -389,7 +395,7 @@ async function resolveWritableKernelVenvDir(): Promise<string> {
 			return fallback;
 		} catch (fallbackError) {
 			throw new Error(
-				`couldn't create kernel venv directory at ${primary} or ${fallback}; set PRIME_AGENT_KERNEL_PYTHON to a python with ipykernel installed. ${errorMessage(fallbackError)}`,
+				`couldn't create kernel venv directory at ${primary} or ${fallback}; set DSH_RLM_KERNEL_PYTHON (or legacy PRIME_AGENT_KERNEL_PYTHON) to a python with ipykernel installed. ${errorMessage(fallbackError)}`,
 			);
 		}
 	}
@@ -502,6 +508,12 @@ async function acquireBootstrapLock(venv: string): Promise<() => Promise<void>> 
 	const lockDir = bootstrapLockDir(venv);
 	await mkdir(path.dirname(lockDir), { recursive: true });
 
+	// [local patch] A stale lock whose pid was recycled onto an unrelated live
+	// process would otherwise hold this loop forever (observed 2026-08-23: a
+	// leftover lock from a killed bootstrap left `ensureKernelPython` hung for
+	// minutes). Bound the wait and fail loudly with the lock path instead.
+	const deadline = Date.now() + BOOTSTRAP_LOCK_WAIT_TIMEOUT_MS;
+
 	for (;;) {
 		try {
 			await mkdir(lockDir);
@@ -514,6 +526,14 @@ async function acquireBootstrapLock(venv: string): Promise<() => Promise<void>> 
 			if (pid === null ? await lockMissingPidIsStale(lockDir) : !processIsRunning(pid)) {
 				await rm(lockDir, { recursive: true, force: true });
 				continue;
+			}
+
+			if (Date.now() > deadline) {
+				throw new Error(
+					`Timed out after ${BOOTSTRAP_LOCK_WAIT_TIMEOUT_MS}ms waiting for the kernel bootstrap lock at ${lockDir} ` +
+						`(held by pid ${pid ?? "unknown"}). If no bootstrap is actually running, remove the lock ` +
+						`directory and retry.`,
+				);
 			}
 
 			await sleep(BOOTSTRAP_LOCK_RETRY_MS);
@@ -543,11 +563,11 @@ async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
 	if (await isExecutable(localUv)) return localUv;
 
 	const shouldInstallUv =
-		process.env.PRIME_AGENT_INSTALL_UV === "1" || (!options.onProgress && (await confirmUvInstall()));
+		rlmEnv(...ENV_INSTALL_UV) === "1" || (!options.onProgress && (await confirmUvInstall()));
 	if (!shouldInstallUv) {
 		throw new Error(
 			`uv is required to set up the Python kernel. Install uv yourself: ${UV_INSTALL_COMMAND}, ` +
-				"or set PRIME_AGENT_INSTALL_UV=1 to let prime-agent run that installer.",
+				"or set DSH_RLM_INSTALL_UV=1 (legacy PRIME_AGENT_INSTALL_UV=1) to let the runtime run that installer.",
 		);
 	}
 
@@ -567,7 +587,7 @@ async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
 }
 
 async function confirmUvInstall(): Promise<boolean> {
-	if (process.env.PRIME_AGENT_INSTALL_UV === "0") return false;
+	if (rlmEnv(...ENV_INSTALL_UV) === "0") return false;
 	if (!stdin.isTTY || !stderr.isTTY) return false;
 
 	const rl = createInterface({ input: stdin, output: stderr });
@@ -872,7 +892,7 @@ function formatBootstrapFailure(error: unknown): Error {
 	return new Error(
 		`Failed to set up the Python kernel runtime. ${errorMessage(error)}\n` +
 			"First-time setup needs internet to install uv, Python, ipykernel, prime-agent-runtime, and default Python packages; once set up, prime-agent runs offline. " +
-			"Set PRIME_AGENT_KERNEL_PYTHON to a Python with ipykernel, a current prime-agent-runtime, and default Python packages installed to skip auto-bootstrap.",
+			"Set DSH_RLM_KERNEL_PYTHON (legacy PRIME_AGENT_KERNEL_PYTHON) to a Python with ipykernel, a current prime-agent-runtime, and default Python packages installed to skip auto-bootstrap.",
 	);
 }
 
@@ -880,7 +900,7 @@ async function ensureKernelPythonUncached(
 	options: EnsureKernelPythonOptions,
 	pythonSkills: readonly BootstrapPythonSkill[],
 ): Promise<string> {
-	const override = process.env.PRIME_AGENT_KERNEL_PYTHON;
+	const override = rlmEnv(...ENV_KERNEL_PYTHON);
 	if (override) {
 		const python = path.resolve(expandHome(override));
 		const missing: string[] = [];
@@ -901,12 +921,12 @@ async function ensureKernelPythonUncached(
 			if (missingPythonSkills.length > 0) {
 				reportProgress(
 					options,
-					`Warning: Python skills unavailable in PRIME_AGENT_KERNEL_PYTHON and will be disabled: ${missingPythonSkills.join(", ")}`,
+					`Warning: Python skills unavailable in DSH_RLM_KERNEL_PYTHON and will be disabled: ${missingPythonSkills.join(", ")}`,
 				);
 			}
 		}
 		if (missing.length === 0) return python;
-		throw new Error(`PRIME_AGENT_KERNEL_PYTHON points to a Python missing ${missing.join(" and ")}: ${python}`);
+		throw new Error(`DSH_RLM_KERNEL_PYTHON points to a Python missing ${missing.join(" and ")}: ${python}`);
 	}
 
 	const venv = await resolveWritableKernelVenvDir();

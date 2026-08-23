@@ -96,4 +96,54 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('rlm with-key e2e', () => {
     const children = await ctx.subagents.listChildren(agent.session.id)
     expect(children.length).toBeGreaterThan(0)
   }, 180_000)
+
+  it('recurses rlm.run two levels deep (grandchild spawned from a child)', async () => {
+    const { ctx } = await setup()
+    const agent = ctx.agentLoop.create(SessionId('rlm-e2e-recursive'), {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+    })
+
+    // The parent spawns a child whose task is to itself recurse via rlm.run.
+    // This is the "R" in RLM: recursive subagent depth, currently untested.
+    // The child's instruction is embedded with JSON.stringify so it arrives as
+    // a correctly-quoted literal in BOTH the Python the parent runs and the
+    // prompt the child receives (hand-escaped quotes were reliably mangled by
+    // the model, making this test flaky without exercising the recursion).
+    const grandchildCode =
+      'import rlm as _r\n' +
+      "h = await _r.rlm.run('reply with exactly OK')\n" +
+      "print('GRANDCHILD_ID:', h.rlm_child_id)"
+    const childPrompt =
+      'Use the ipython tool to run exactly this Python code, then print the GRANDCHILD_ID:\n\n' +
+      '```python\n' + grandchildCode + '\n```'
+
+    agent.followup(createUserMessage({
+      content: [{
+        type: 'text',
+        text:
+          'Use the ipython tool to run exactly this Python code, then report the CHILD_ID it printed:\n\n'
+          + '```python\n'
+          + `h1 = await rlm.run(${JSON.stringify(childPrompt)})\n`
+          + "print('CHILD_ID:', h1.rlm_child_id)\n"
+          + '```',
+      }],
+      source: { kind: 'user' },
+    }))
+    await waitForIdle(ctx, agent)
+
+    // The parent idles as soon as its rlm.run handle returns; the intermediate
+    // agent then runs asynchronously (its kernel provision + nested rlm.run
+    // take real time). Poll the descendant tree until the grandchild appears,
+    // so a slow-but-correct recursion is not mistaken for a missing one.
+    let grandchildren = 0
+    const deadline = Date.now() + 90_000
+    while (Date.now() < deadline) {
+      const descendants = await ctx.subagents.listDescendants(agent.session.id)
+      grandchildren = descendants.filter(d => d.kind === 'child' && d.depth >= 2).length
+      if (grandchildren > 0) break
+      await new Promise(resolve => setTimeout(resolve, 2_000))
+    }
+    expect(grandchildren).toBeGreaterThan(0)
+  }, 300_000)
 })

@@ -30,8 +30,8 @@ except Exception as _prime_agent_rlm_error:
         def _raise_missing(self):
             raise RuntimeError(
                 "prime-agent-runtime is not installed in this IPython kernel. "
-                "Remove ~/.prime/agent/kernel-venv so prime-agent can rebuild it, or set "
-                "PRIME_AGENT_KERNEL_PYTHON to a kernel environment with prime-agent-runtime installed. "
+                "Remove ~/.prime/agent/kernel-venv so the runtime can rebuild it, or set "
+                "DSH_RLM_KERNEL_PYTHON (legacy PRIME_AGENT_KERNEL_PYTHON) to a kernel environment with prime-agent-runtime installed. "
                 f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
             )
 
@@ -58,12 +58,12 @@ except Exception as _prime_agent_rlm_error:
  * then optional callable-skill wrappers keyed by import name.
  */
 export function buildRlmBootstrapCode(pythonSkills: readonly PythonSkillRuntimeInfo[] = []): string {
-	const importNames = [...new Set(pythonSkills.map((skill) => skill.importName))]
-	if (importNames.length === 0) {
-		return RLM_BOOTSTRAP_BASE_CODE
-	}
+  const importNames = [...new Set(pythonSkills.map(skill => skill.importName))]
+  if (importNames.length === 0) {
+    return RLM_BOOTSTRAP_BASE_CODE
+  }
 
-	return `
+  return `
 ${RLM_BOOTSTRAP_BASE_CODE}
 
 import importlib as _prime_agent_importlib

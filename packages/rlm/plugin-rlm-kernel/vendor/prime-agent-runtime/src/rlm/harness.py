@@ -36,8 +36,10 @@ def _slug(raw: str, fallback: str) -> str:
 
 
 def _agent_dir() -> Path:
+    # item-8: dsh-native env wins; legacy prime names still honored for compat.
     raw = (
-        os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
+        os.environ.get("DSH_RLM_CODING_AGENT_DIR")
+        or os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
         or os.environ.get("PI_CODING_AGENT_DIR")
         or str(Path.home() / ".prime" / "agent")
     )
