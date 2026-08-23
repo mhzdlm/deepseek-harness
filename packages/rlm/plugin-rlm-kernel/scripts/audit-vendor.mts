@@ -78,6 +78,10 @@ const AUDITS: FileAudit[] = [
 				label: "#13a variable-signal kill routed through killSignalSafe",
 				mustNotContain: [/process\.kill\([^)]*,\s*killSignal\)/],
 			},
+			{
+				label: "#14 kernel env built by the shared kernel-env module",
+				mustContain: [/import\s*\{[^}]*buildKernelEnv[^}]*\}\s*from\s*["']\.\.\/\.\.\/kernel-env\.ts["']/],
+			},
 		],
 	},
 	{
@@ -107,6 +111,10 @@ const AUDITS: FileAudit[] = [
 				label: "#13e PATHEXT-aware executable lookup",
 				mustContain: [/\[local patch #13e\]/, /PATHEXT/],
 			},
+			{
+				label: "#14 boot helper children get a credential-scrubbed env",
+				mustContain: [/\[local patch #14\]/, /env: buildScrubbedEnv\(\)/],
+			},
 		],
 	},
 	{
@@ -123,6 +131,10 @@ const AUDITS: FileAudit[] = [
 			{
 				label: "#13a no direct POSIX signal kill",
 				mustNotContain: [/process\.kill\([^)]*,\s*"(?:SIGTERM|SIGKILL|SIGINT)"\)/],
+			},
+			{
+				label: "#14 forkserver template launched with a scrubbed env",
+				mustContain: [/\[local patch #14\]/, /launchEnv = buildKernelEnv\(\)/],
 			},
 		],
 	},

@@ -75,6 +75,12 @@ export function createIpythonTool(kernels: SessionKernelRegistry, maxOutputChars
             if (parts.length > 0) text = parts.join(' ') + (text ? '\n\n' + text : '')
           }
 
+          // P1-fix: surface interrupt-recovery retry so the model knows this cell
+          // may have executed twice (non-idempotent side effects possible).
+          if (result.retried) {
+            text = '[⚠️ cell retried after interrupt — side effects may have executed twice]' + (text ? '\n\n' + text : '')
+          }
+
           return { text, status: result.status, durationMs: result.durationMs }
         } finally {
           kernels.markIdle(sid)

@@ -44,6 +44,18 @@ export function apply(ctx: Context, config: Config): void {
     ? path.resolve(config.cacheFile)
     : undefined
 
+  // P1-fix: per-session auto_spawn verify controllers (same pattern as
+  // host-handlers.ts abortSession for rlm.run). Aborted on session disposal
+  // so verify children cannot outlive their parent session.
+  const sessionControllers = new Map<string, Set<AbortController>>()
+  const abortVerifySession = (sessionId: string): void => {
+    const controllers = sessionControllers.get(sessionId)
+    if (controllers) {
+      for (const controller of [...controllers]) controller.abort()
+      sessionControllers.delete(sessionId)
+    }
+  }
+
   const subagents = ctx.get('subagents')
   const tool = createVerifyTool({
     // Lazily resolve the kernel registry from plugin-rlm-kernel. Optional:
@@ -55,6 +67,24 @@ export function apply(ctx: Context, config: Config): void {
     ...(subagents !== undefined ? { subagents } : {}),
     ...(config.subagentProvider !== undefined ? { subagentProvider: config.subagentProvider } : {}),
     ...(config.maxChildChars !== undefined ? { maxChildChars: config.maxChildChars } : {}),
+    // P1-fix: register auto_spawn controllers for session-tracked abort.
+    trackController: (sessionId, controller) => {
+      let controllers = sessionControllers.get(sessionId)
+      if (!controllers) {
+        controllers = new Set<AbortController>()
+        sessionControllers.set(sessionId, controllers)
+      }
+      controllers.add(controller)
+      return () => {
+        controllers?.delete(controller)
+        if (controllers?.size === 0) sessionControllers.delete(sessionId)
+      }
+    },
+  })
+
+  // P1-fix: abort outstanding verify auto_spawn children on session disposal.
+  ctx.on('session/disposed', (session) => {
+    abortVerifySession(String(session.id))
   })
 
   ctx.effect(

@@ -11,6 +11,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { ENV_FORKSERVER, rlmEnv } from "../../env.ts";
 // [local patch #13a] killSignalSafe: POSIX signals are no-ops on Windows.
 import { killSignalSafe } from "../../util/platform";
+// [local patch #14] shared kernel-env builder: the forkserver template must not
+// carry host credentials any more than a directly spawned kernel does.
+import { buildKernelEnv } from "../../kernel-env.ts";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -97,7 +100,10 @@ class ForkServer {
 		this.params = params;
 		// Snapshot now and launch the template with this same object, so the guard's
 		// comparison uses exactly the env the interpreter imported with.
-		this.launchEnv = { ...process.env };
+		// [local patch #14] scrubbed via the kernel allowlist: forked children
+		// inherit the template's full environment and their os.environ.update only
+		// adds, so a credential leaked into the template reaches every kernel.
+		this.launchEnv = buildKernelEnv();
 	}
 
 	get isDead(): boolean {
@@ -287,10 +293,11 @@ class ForkServer {
 		} catch {
 			// Already closed.
 		}
-		try {
-			this.proc?.kill("SIGTERM");
-		} catch {
-			// Already exited.
+		// [local patch #13a] killSignalSafe: on Windows this would be a no-op;
+		// forkserver only runs on Linux so this is equivalent to process.kill() there,
+		// but using the shared helper keeps kill-policy in one place.
+		if (this.proc?.pid !== undefined) {
+			killSignalSafe(this.proc.pid, "SIGTERM");
 		}
 		if (this.socketDir) {
 			try {
@@ -322,8 +329,14 @@ function registerForkServerCleanupOnce(): void {
 	// process teardown hooks; per-session kernel disposal is the plugin's job via
 	// the exported `disposeKernelsForSession` helper in index.ts.
 	process.once("exit", disposeAllForkServers);
-	for (const signal of ["SIGINT", "SIGTERM", "beforeExit"] as const) {
-		process.once(signal, () => disposeAllForkServers());
+	// Forkserver only runs on Linux (isForkServerEnabled() returns false on
+	// Windows/macOS), so POSIX signal handlers only matter there.  Guarding
+	// with the platform check avoids registering dead handlers that make the
+	// code misleadingly imply forkserver is cross-platform.
+	if (process.platform === "linux") {
+		for (const signal of ["SIGINT", "SIGTERM", "beforeExit"] as const) {
+			process.once(signal, () => disposeAllForkServers());
+		}
 	}
 }
 

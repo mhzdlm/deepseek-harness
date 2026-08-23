@@ -38,6 +38,12 @@ export interface VerifyToolOptions {
   subagentProvider?: string
   /** Max characters captured from each spawned child's result. Default 20000. */
   maxChildChars?: number
+  /**
+   * P1-fix: callback to register an auto_spawn controller for session-tracked
+   * abort. Returns an unregister function. When provided, auto_spawn children
+   * are aborted on session disposal (mirrors host-handlers.ts abortSession).
+   */
+  trackController?: (sessionId: string, controller: AbortController) => () => void
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -121,28 +127,41 @@ export function createVerifyTool(options: VerifyToolOptions) {
       // auto_spawn: if candidates were not provided and the caller asked for
       // N subagents, dispatch N children against the same task and use their
       // results as the candidate pool.
-      const autoSpawn = typeof args.auto_spawn === 'number' && args.auto_spawn > 0 ? Math.floor(args.auto_spawn) : 0
+      // P1-fix: controllers are registered for session-tracked abort (mirrors
+      // host-handlers.ts abortSession), so children cannot outlive their parent.
+      const autoSpawn = typeof args.auto_spawn === 'number' && args.auto_spawn > 0 ? Math.floor(args.autoSpawn) : 0
       if (candidates.length === 0 && autoSpawn > 0) {
         const subagents = options.subagents
         if (!subagents) throw new Error('verify: auto_spawn requires the subagent service')
         const owner = exec.agent
         if (!owner) throw new Error('verify: auto_spawn requires an owning agent')
         const maxChars = options.maxChildChars ?? 20_000
+        const sid = exec.agent?.session.id ? String(exec.agent.session.id) : undefined
         const runs = await Promise.all(
           Array.from({ length: autoSpawn }, async (_, i) => {
+            const controller = new AbortController()
+            // P1-fix: register controller BEFORE start so disposal during startup
+            // still aborts the pending spawn (same pattern as host-handlers.ts).
+            const unregister = sid && options.trackController
+              ? options.trackController(sid, controller)
+              : undefined
             const request: SubagentStartRequest = {
               prompt: [{ type: 'text', text: problem }],
               parent: owner,
               label: `verify-child-${i + 1}`,
-              signal: new AbortController().signal,
+              signal: controller.signal,
             }
-            const run = await subagents.start(options.subagentProvider ?? 'spawn', request)
-            const result = await run.result
-            const text = (result.output ?? [])
-              .map(block => (block.type === 'text' ? block.text ?? '' : ''))
-              .join('\n')
-              .trim()
-            return { text: text.slice(0, maxChars) }
+            try {
+              const run = await subagents.start(options.subagentProvider ?? 'spawn', request)
+              const result = await run.result
+              const text = (result.output ?? [])
+                .map(block => (block.type === 'text' ? block.text ?? '' : ''))
+                .join('\n')
+                .trim()
+              return { text: text.slice(0, maxChars) }
+            } finally {
+              unregister?.()
+            }
           }),
         )
         candidates = runs
@@ -208,14 +227,15 @@ export function createVerifyTool(options: VerifyToolOptions) {
           // If the kernel's venv lacks llm-verifier, fall back to subprocess
           // which uses the canonical venv path.
           if (/ModuleNotFoundError|ImportError/.test(detail)) {
-            stdout = await runVerifySubprocess(defaultVenvPython(), program, payload)
+            stdout = await runVerifySubprocess(defaultVenvPython(), program, payload, { signal: exec.signal })
           } else {
             throw new Error(`verify: kernel cell failed: ${detail}`)
           }
         }
       } else {
         // Subprocess path: spawn the venv python (payload via env var).
-        stdout = await runVerifySubprocess(defaultVenvPython(), buildPythonProgram(), payload)
+        // P1-fix: pass signal so cancelling verify also terminates the subprocess.
+        stdout = await runVerifySubprocess(defaultVenvPython(), buildPythonProgram(), payload, { signal: exec.signal })
       }
 
       const parsed: VerifyResult = parseResultJson(stdout)

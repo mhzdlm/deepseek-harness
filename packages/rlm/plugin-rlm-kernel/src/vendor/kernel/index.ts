@@ -22,6 +22,9 @@ import {
 } from "./state-snapshot.ts";
 // [local patch #13] Windows platform-adaptation helpers (signals / rmSync / file mode).
 import { killSignalSafe, safeRmDirSync, writeFileSecureSync } from "../../util/platform";
+// [local patch #14] shared kernel-env builders (default-deny allowlist for the
+// kernel process; case-insensitive name matching on Windows).
+import { buildKernelEnv } from "../../kernel-env.ts";
 
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
@@ -249,6 +252,13 @@ export interface ExecuteResult {
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };
 	durationMs: number;
+	/**
+	 * P1-fix: true when this result came from an interrupt-recovery retry
+	 * (kernel refused to be interrupted → disposed → re-provisioned → re-run).
+	 * Signals to the caller that the cell may have run twice if the original
+	 * execution had already produced side effects before being interrupted.
+	 */
+	retried?: boolean;
 }
 
 /** Parse a {@link DIFF_DISPLAY_MIME} payload, tolerating malformed input. */
@@ -725,10 +735,8 @@ export class KernelManager {
 					connectionPath: connection.path,
 					// [local patch] exactOptionalPropertyTypes: spread instead of `: undefined`.
 					...(this.options.cwd !== undefined ? { cwd: this.options.cwd } : {}),
-					// Match the direct-spawn env exactly: merge the current host env with
-					// the per-kernel overrides, applied fresh in the child (the template's
-					// inherited env snapshot may be stale by fork time).
-					env: this.options.env ? { ...process.env, ...this.options.env } : { ...process.env },
+					// [local patch] P0-fix: env 白名单化，排除凭据类变量（DEEPSEEK_API_KEY 等）。
+					env: buildKernelEnv(this.options.env),
 				});
 				forked = true;
 			} catch (err) {
@@ -751,9 +759,10 @@ export class KernelManager {
 		}
 
 		if (!forked) {
+			// [local patch] P0-fix: env 白名单化，排除凭据类变量。
 			const kernel = spawn(python, ["-m", "ipykernel_launcher", "-f", connection.path], {
 				cwd: this.options.cwd,
-				env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
+				env: buildKernelEnv(this.options.env),
 				stdio: ["ignore", "pipe", "pipe"],
 			});
 			this.kernel = kernel;
@@ -1196,20 +1205,20 @@ export class KernelManager {
 				result = `${result.slice(0, execution.maxChars)}\n[... output truncated at ${execution.maxChars} chars ...]`;
 			}
 
-			if (execution.opts.signal?.aborted) status = "aborted";
+		if (execution.opts.signal?.aborted) status = "aborted";
 
-			execution.resolve({
-				stdout,
-				stderr,
-				// [local patch] exactOptionalPropertyTypes: spread undefined fields away.
-				...(result !== undefined ? { result } : {}),
-				...(execution.diffs.length > 0 ? { diffs: execution.diffs } : {}),
-				...(execution.attachments.length > 0 ? { attachments: execution.attachments } : {}),
-				...(execution.sentAgentMessages.length > 0 ? { sentAgentMessages: execution.sentAgentMessages } : {}),
-				...(execution.error !== undefined ? { error: execution.error } : {}),
-				status,
-				durationMs: Date.now() - execution.started,
-			});
+		execution.resolve({
+			stdout,
+			stderr,
+			// [local patch] exactOptionalPropertyTypes: spread undefined fields away.
+			...(result !== undefined ? { result } : {}),
+			...(execution.diffs.length > 0 ? { diffs: execution.diffs } : {}),
+			...(execution.attachments.length > 0 ? { attachments: execution.attachments } : {}),
+			...(execution.sentAgentMessages.length > 0 ? { sentAgentMessages: execution.sentAgentMessages } : {}),
+			...(execution.error !== undefined ? { error: execution.error } : {}),
+			status,
+			durationMs: Date.now() - execution.started,
+		});
 		}
 		if (didClearActive) {
 			this.notifyActiveExecutionIdle();

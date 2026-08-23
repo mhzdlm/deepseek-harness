@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-24-kernel-env-default-deny-boundary.md
+2026-08-24-kernel-env-default-deny-boundary.md: dc97c675c8ae6b992ed3814d71ddad4d4a9e0135
+2026-08-24-kernel-env-default-deny-boundary.zh.md: 41a2aebef4f2e642974afdbe6432ffd2d901a37b

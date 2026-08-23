@@ -153,6 +153,15 @@ export class SessionKernelRegistry {	private readonly kernels = new Map<string, 
 	 * from its dill snapshot (variables survive) and run the cell once more.
 	 * A retry with an already-aborted signal settles `aborted` immediately, so
 	 * a cancelled cell is never accidentally re-run.
+	 *
+	 * P1-fix: the retry result carries `retried: true` so the model knows the
+	 * cell may have executed twice (non-idempotent side effects may repeat).
+	 *
+	 * Defensive handling: if the session was disposed concurrently while we
+	 * were re-provisioning, the in-flight promise chain disposes the freshly
+	 * created kernel (see forSession's claim check). In that narrow window
+	 * we surface a clear error rather than a confusing "kernel has been shut
+	 * down" from deep inside Jupyter protocol.
 	 */
   async execute(
     sessionId: string,
@@ -164,9 +173,28 @@ export class SessionKernelRegistry {	private readonly kernels = new Map<string, 
       return await kernel.execute(code, opts)
     } catch (error) {
       if (!(error instanceof KernelBusyAfterInterruptError)) throw error
+      // The kernel couldn't be interrupted (blocking C call on Windows, or
+      // slow startup past the interrupt grace window). Recreate from the
+      // dill snapshot — the snapshot flush happened inside disposeSession.
       this.disposeSession(sessionId)
-      kernel = await this.forSession(sessionId)
-      return await kernel.execute(code, opts)
+      try {
+        kernel = await this.forSession(sessionId)
+        // P1-fix: tag the retry result so callers detect double-execution.
+        const result = await kernel.execute(code, opts)
+        return { ...result, retried: true }
+      } catch (retryError) {
+        // A second KernelBusyAfterInterruptError here is pathological —
+        // it means the fresh kernel is itself stuck on a prior execution,
+        // which should be impossible after a clean provision. Surface a
+        // specific error rather than looping forever.
+        if (retryError instanceof KernelBusyAfterInterruptError) {
+          throw new Error(
+            `Kernel for session ${sessionId} is perpetually busy after two interrupt-recovery attempts; ` +
+						'the cell may be stuck in an uninterruptible C call. Consider cancelling the task.',
+          )
+        }
+        throw retryError
+      }
     }
   }
 

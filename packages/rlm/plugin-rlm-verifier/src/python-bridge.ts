@@ -12,6 +12,9 @@
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import path from 'node:path'
+// P1-fix: 统一走 rlmEnv()（新名优先、旧名回退、Windows 大小写不敏感），
+// 替代此前直接用 process.env.DSH_RLM_KERNEL_* 的双轨读取。
+import { rlmEnv, ENV_KERNEL_PYTHON, ENV_KERNEL_VENV } from '@deepseek-ai/dsh-plugin-rlm-kernel/env.ts'
 
 /** A minimal view of the kernel registry the verify tool can execute cells through. */
 export interface KernelExecutor {
@@ -87,6 +90,15 @@ export function parseResultJson(stdout: string): VerifyResult {
 }
 
 /**
+ * Hard ceiling on the base64-encoded payload size (in bytes) when embedded in
+ * the Python program source.  Beyond this, the generated source line risks
+ * hitting Jupyter shell message limits, Python parser constraints on string
+ * literal length, or excessive memory use in the kernel.  Callers hitting this
+ * limit should reduce candidate count or truncate candidate text.
+ */
+export const MAX_PAYLOAD_B64_BYTES = 1_000_000 // ~750 KB of JSON pre-encoding.
+
+/**
  * The Python program that runs llm_verifier.select().
  *
  * Reads its request from (in order): a base64 payload embedded in the program
@@ -95,14 +107,25 @@ export function parseResultJson(stdout: string): VerifyResult {
  * the `PY_VERIFY_PAYLOAD` env var (subprocess path), or argv[1] (JSON file).
  * Prints one JSON line with the result, or `VERIFY_ERROR {...}` on failure.
  * A standalone `llm_verifier` install is required in the target python env.
+ *
+ * @throws {Error} If the base64-encoded payload exceeds {@link MAX_PAYLOAD_B64_BYTES}.
  */
 export function buildPythonProgram(payload?: VerifyRequest | null): string {
   // The payload is embedded base64-encoded so kernel-cell transport carries it
   // in-band; JSON with arbitrary candidate text would need escaping inside a
   // Python string literal, base64 needs none.
-  const payloadB64 = payload
-    ? Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
-    : ''
+  const payloadJson = payload ? JSON.stringify(payload) : ''
+  const payloadB64 = payloadJson ? Buffer.from(payloadJson, 'utf8').toString('base64') : ''
+  if (Buffer.byteLength(payloadB64, 'utf8') > MAX_PAYLOAD_B64_BYTES) {
+    const candidateCount = payload?.candidates.length ?? 0
+    const totalChars = payload?.candidates.reduce((sum, c) => sum + c.text.length, 0) ?? 0
+    throw new Error(
+      `verify payload too large for in-band transport: base64 size ${Buffer.byteLength(payloadB64, 'utf8')} bytes ` +
+        `exceeds limit ${MAX_PAYLOAD_B64_BYTES} bytes. ` +
+        `You have ${candidateCount} candidates totaling ${totalChars} chars. ` +
+        'Reduce candidate count or truncate candidate text.',
+    )
+  }
   return [
     'import base64, json, os, sys, traceback',
     `_PAYLOAD_B64 = ${JSON.stringify(payloadB64)}`,
@@ -142,9 +165,10 @@ export function buildPythonProgram(payload?: VerifyRequest | null): string {
 
 /** Default venv python path for the RLM kernel (Windows vs POSIX layout). */
 export function defaultVenvPython(): string {
-  const override = process.env.DSH_RLM_KERNEL_PYTHON
+  // P1-fix: 统一走 rlmEnv()，支持新名/旧名回退 + Windows 大小写不敏感。
+  const override = rlmEnv(...ENV_KERNEL_PYTHON)
   if (override) return override
-  const venv = process.env.DSH_RLM_KERNEL_VENV ?? path.join(homedir(), '.prime', 'agent', 'kernel-venv')
+  const venv = rlmEnv(...ENV_KERNEL_VENV) ?? path.join(homedir(), '.prime', 'agent', 'kernel-venv')
   return process.platform === 'win32'
     ? path.join(venv, 'Scripts', 'python.exe')
     : path.join(venv, 'bin', 'python')
@@ -155,18 +179,26 @@ export function runVerifySubprocess(
   python: string,
   program: string,
   payload: VerifyRequest & { criteria?: Record<string, string> },
+  options?: { signal?: AbortSignal },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    // P1-fix: env 白名单化，排除凭据类变量（与 vendor/kernel/index.ts 同步）。
+    const { PY_VERIFY_PAYLOAD: _, ...safeEnv } = buildSafeSubprocessEnv()
     const child = spawn(python, ['-c', program], {
-      env: { ...process.env, PY_VERIFY_PAYLOAD: JSON.stringify(payload) },
+      env: { ...safeEnv, PY_VERIFY_PAYLOAD: JSON.stringify(payload) },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
     let err = ''
+    const onAbort = () => {
+      child.kill('SIGTERM')
+    }
+    options?.signal?.addEventListener('abort', onAbort, { once: true })
     child.stdout.on('data', (d: Buffer) => { out += d.toString() })
     child.stderr.on('data', (d: Buffer) => { err += d.toString() })
     child.on('error', reject)
     child.on('close', (code) => {
+      options?.signal?.removeEventListener('abort', onAbort)
       // The program prints `VERIFY_ERROR {...}` to stdout before exiting 1;
       // surface that message instead of a bare exit code.
       if (code === 0) {
@@ -178,4 +210,16 @@ export function runVerifySubprocess(
       }
     })
   })
+}
+
+/** Build a credential-scrubbed env for spawned python subprocesses (P1-fix: 凭据隔离). */
+function buildSafeSubprocessEnv(): Record<string, string> {
+  const BLOCKLIST_PREFIXES = ['DSH_', 'DEEPSEEK_', 'OPENAI_', 'ANTHROPIC_', 'GOOGLE_', 'AZURE_', 'AWS_', 'PRIME_', 'PI_', 'CODEBUDDY_', 'CLAUDE_']
+  const safe: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue
+    if (BLOCKLIST_PREFIXES.some(prefix => key.startsWith(prefix))) continue
+    safe[key] = value
+  }
+  return safe
 }

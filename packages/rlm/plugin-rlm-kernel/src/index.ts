@@ -14,7 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createHostHandlers } from './host-handlers.ts'
 import { createIpythonTool } from './ipython-tool.ts'
-import { IDLE_SWEEP_INTERVAL_MS, SessionKernelRegistry, warmUpSession } from './kernels.ts'
+import { DEFAULT_IDLE_TIMEOUT_MS, IDLE_SWEEP_INTERVAL_MS, SessionKernelRegistry, warmUpSession } from './kernels.ts'
 
 export const name = 'plugin-rlm-kernel'
 export const inject = ['tools', 'subagents', 'sessions', 'agents']
@@ -89,14 +89,18 @@ export function apply(ctx: Context, config: Config): void {
 
   // item-4: periodic idle sweep. Unref'd so a long-lived desktop host with no
   // other work is not kept alive by the timer alone.
-  const sweepTimer = setInterval(() => {
-    void kernels.disposeIdle()
-  }, IDLE_SWEEP_INTERVAL_MS)
-  if (typeof sweepTimer.unref === 'function') sweepTimer.unref()
+  // P2-fix: only create the timer when idleTimeoutMs > 0 (0 disables reclamation).
+  const idleTimeoutMs = config.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+  const sweepTimer = idleTimeoutMs > 0
+    ? setInterval(() => {
+      void kernels.disposeIdle()
+    }, IDLE_SWEEP_INTERVAL_MS)
+    : undefined
+  if (sweepTimer && typeof sweepTimer.unref === 'function') sweepTimer.unref()
 
   ctx.effect(
     () => () => {
-      clearInterval(sweepTimer)
+      if (sweepTimer) clearInterval(sweepTimer)
       kernels.disposeAll()
     },
     'rlm-kernel teardown',

@@ -20,22 +20,32 @@ import {
 import { join } from 'node:path'
 
 /**
- * Send a signal to a process, degrading gracefully on Windows where POSIX
- * signals (SIGTERM, SIGKILL, SIGINT) have no effect.  On Windows we fall back
- * to `taskkill /F` which performs a forced termination of the process tree.
+ * Terminate a process in a cross-platform manner.
  *
- * @returns `true` if the signal was sent without error, `false` otherwise.
+ * Platform behaviour:
+ * - **POSIX** (Linux/macOS): sends the requested `signal` via `process.kill`.
+ *   Use `'SIGTERM'` for graceful shutdown, `'SIGKILL'` for force-kill.
+ * - **Windows**: POSIX signals are no-ops, so this always performs a forced
+ *   tree-kill via `taskkill /F /PID <pid> /T` regardless of `signal`.  The
+ *   `signal` parameter is **ignored** on Windows — callers should not rely on
+ *   graceful/force semantics there.
+ *
+ * @param pid - Target process id.
+ * @param signal - POSIX signal to send (ignored on Windows). Default `'SIGTERM'`.
+ * @returns `true` if the termination command was issued without error, `false`
+ *          if the process could not be signaled (already dead, permission error).
  */
-export function killSignalSafe(pid: number, _signal: NodeJS.Signals = 'SIGTERM'): boolean {
+export function killSignalSafe(pid: number, signal: NodeJS.Signals = 'SIGTERM'): boolean {
   try {
     if (process.platform === 'win32') {
+      // `signal` parameter is meaningless on Windows — force-kill the tree.
       spawnSync('taskkill', ['/F', '/PID', String(pid), '/T'], {
         stdio: 'ignore',
         windowsHide: true,
       })
       return true
     }
-    process.kill(pid, _signal)
+    process.kill(pid, signal)
     return true
   } catch {
     return false

@@ -196,7 +196,13 @@ export async function readHarnessStatesDetailed(
   return { global, local }
 }
 
-/** CAS-write both files; a stale mtime on either throws {@link HarnessConflictError}. */
+/**
+ * CAS-write both files; a stale mtime on either throws {@link HarnessConflictError}.
+ *
+ * P1-fix: global-write failure rolls back the local write (restores the previous
+ * local state) so the two files stay consistent — otherwise the next system-prompt
+ * render sees a local-new + global-old torn view.
+ */
 export async function writeHarnessStates(
   baseDir: string,
   sessionId: string,
@@ -204,10 +210,27 @@ export async function writeHarnessStates(
   local: HarnessStateFile,
   expected: { global: number | null; local: number | null },
 ): Promise<void> {
+  const localPath = harnessStatePath(baseDir, sessionId)
   // Local first: the session's refine event log lives there, so a global-file
   // conflict is safer to fail after the session's own record is durable.
-  await writeHarnessState(harnessStatePath(baseDir, sessionId), local, expected.local)
-  await writeHarnessState(globalHarnessStatePath(baseDir), global, expected.global)
+  await writeHarnessState(localPath, local, expected.local)
+  // P1-fix: snapshot pre-write local state for rollback on global failure.
+  const localPrev = await readHarnessStateDetailed(localPath)
+  try {
+    await writeHarnessState(globalHarnessStatePath(baseDir), global, expected.global)
+  } catch (globalError) {
+    // P1-fix: global write failed — roll back local to its pre-write value
+    // (best-effort; if rollback also fails the two files are still torn).
+    if (localPrev.mtimeMs !== null) {
+      try {
+        await writeHarnessState(localPath, localPrev.state, expected.local)
+      } catch {
+        // Rollback failed — surface the original global error; torn state
+        // is logged by the caller's catch.
+      }
+    }
+    throw globalError
+  }
 }
 
 const HARNESS_KINDS = ['prompt', 'memory', 'skill', 'subagent'] as const

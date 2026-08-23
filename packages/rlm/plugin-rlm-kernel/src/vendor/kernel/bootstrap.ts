@@ -10,6 +10,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ENV_INSTALL_UV, ENV_KERNEL_PYTHON, ENV_KERNEL_VENV, rlmEnv } from "../../env.ts";
 import { isPidAlive } from "../../util/platform";
+// [local patch #14] credential-scrubbed env for boot helper children (uv install,
+// venv provisioning): deny-list strip instead of the kernel's default-deny
+// allowlist, because the installer shell needs a broad environment.
+import { buildScrubbedEnv } from "../../kernel-env.ts";
 
 // [local patch] `import { getPackageDir } from "../../config.js"` and
 // `import type { PythonSkillRuntimeInfo } from "../skills.js"` are prime
@@ -405,7 +409,8 @@ async function resolveWritableKernelVenvDir(): Promise<string> {
 function run(command: string, args: string[], options: { stdio?: "ignore" | "inherit" } = {}): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, {
-			env: process.env,
+			// [local patch #14] do not hand host credentials to the installer child.
+			env: buildScrubbedEnv(),
 			stdio: options.stdio ?? "ignore",
 		});
 		child.on("error", reject);

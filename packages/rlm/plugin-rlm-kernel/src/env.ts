@@ -9,20 +9,46 @@
  * @module @deepseek-ai/dsh-plugin-rlm-kernel
  */
 
+/**
+ * Lazily-built case-insensitive lookup for Windows environment variables.
+ *
+ * On Windows, environment variable names are case-insensitive at the OS level
+ * but `process.env` preserves the original casing — so `process.env.PATH` and
+ * `process.env.path` are distinct properties even though they refer to the
+ * same OS variable.  Rather than scanning all `process.env` keys on every
+ * failed lookup (O(n) per call), we build a lowercase→original-case map once
+ * and reuse it.  The map is populated lazily on the first Windows cache miss
+ * and never invalidated (process.env changes post-boot are out of scope).
+ */
+let winEnvCache: Map<string, string> | null = null
+
+function getWinEnvCache(): Map<string, string> {
+  if (winEnvCache === null) {
+    winEnvCache = new Map()
+    for (const key of Object.keys(process.env)) {
+      // First-seen wins — if both `PATH` and `Path` exist in process.env,
+      // the iteration order of Object.keys() decides the canonical casing.
+      const lower = key.toLowerCase()
+      if (!winEnvCache.has(lower)) winEnvCache.set(lower, key)
+    }
+  }
+  return winEnvCache
+}
+
 /** Read the first set environment variable among `names` (new name first). */
 export function rlmEnv(...names: readonly string[]): string | undefined {
   for (const name of names) {
     const value = process.env[name]
     if (value !== undefined) return value
   }
-  // Windows: environment variable names are case-insensitive at the OS level,
-  // but `process.env` preserves the original casing.  If no exact match was found,
-  // try a case-insensitive scan as a fallback.
+  // Windows: fall back to a case-insensitive lookup.  Exact-match is preferred
+  // for both performance and to let the user rely on canonical DSH_RLM_* casing.
   if (process.platform === 'win32') {
-    const lowerNames = names.map(n => n.toLowerCase())
-    for (const key of Object.keys(process.env)) {
-      if (lowerNames.includes(key.toLowerCase())) {
-        const value = process.env[key]
+    const cache = getWinEnvCache()
+    for (const name of names) {
+      const canonical = cache.get(name.toLowerCase())
+      if (canonical !== undefined) {
+        const value = process.env[canonical]
         if (value !== undefined) return value
       }
     }

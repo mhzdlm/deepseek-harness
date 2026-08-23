@@ -89,14 +89,17 @@ export function createHostHandlers(
   const sessionRuns = new Map<string, Map<string, ChildRecord>>()
 
   const abortSession = (sessionId: string): void => {
-    const controllers = sessionControllers.get(sessionId)
-    if (controllers) {
-      for (const controller of [...controllers]) controller.abort()
+    // Use distinct local names (sessionCtrl/sessionRunMap) to avoid shadowing
+    // the outer sessionControllers/sessionRuns Maps — shadowing works at runtime
+    // but is a maintenance trap when reading the code under time pressure.
+    const sessionCtrl = sessionControllers.get(sessionId)
+    if (sessionCtrl) {
+      for (const controller of [...sessionCtrl]) controller.abort()
       sessionControllers.delete(sessionId)
     }
-    const runs = sessionRuns.get(sessionId)
-    if (runs) {
-      for (const record of [...runs.values()]) {
+    const sessionRunMap = sessionRuns.get(sessionId)
+    if (sessionRunMap) {
+      for (const record of [...sessionRunMap.values()]) {
         record.controller.abort()
         void record.run.dispose().catch(() => undefined)
       }
