@@ -13,6 +13,7 @@
     "**/.node-next-types-*/**",
     "website/.generated/**",
     "vendor/**",
+    "**/src/vendor/**",
     "native/**",
     "**/*.js",
     "**/*.mjs",

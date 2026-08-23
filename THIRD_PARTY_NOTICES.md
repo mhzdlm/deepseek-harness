@@ -88,10 +88,15 @@ External packages that a workspace package resolves at runtime. The tier covers 
 | [`turndown`](https://github.com/mixmark-io/turndown) | MIT |
 | [`typescript`](https://github.com/microsoft/TypeScript) | Apache-2.0 |
 | [`use-sync-external-store`](https://github.com/facebook/react) | MIT |
+| [`uuid`](https://github.com/uuidjs/uuid) | MIT |
 | [`ws`](https://github.com/websockets/ws) | MIT |
 | [`yaml`](https://github.com/eemeli/yaml) | ISC |
+| [`zeromq`](https://github.com/zeromq/zeromq.js) | MIT AND MPL-2.0 |
 | [`zod`](https://github.com/colinhacks/zod) | MIT |
 | [`zustand`](https://github.com/pmndrs/zustand) | MIT |
+
+The following runtime packages carry a non-permissive license that the project owner has reviewed and authorized for distribution:
+- `zeromq` (`MIT AND MPL-2.0`): file-level weak copyleft; linked unmodified; license notice retained
 
 pnpm applies local patches to the following packages at install time, so shipped artifacts carry modified copies; each patch file is the complete record of the modification:
 
