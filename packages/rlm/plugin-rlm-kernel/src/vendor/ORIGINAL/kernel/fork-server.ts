@@ -8,13 +8,11 @@
 // back to the existing path, so correctness never depends on fork.
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { ENV_FORKSERVER, rlmEnv } from "../../env.ts";
-// [local patch #13a] killSignalSafe: POSIX signals are no-ops on Windows.
-import { killSignalSafe } from "../../util/platform";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FORK_SERVER_SCRIPT } from "./fork-server-script.ts";
+import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
+import { FORK_SERVER_SCRIPT } from "./fork-server-script.js";
 
 const READY_TIMEOUT_MS = 30_000;
 const SPAWN_TIMEOUT_MS = 10_000;
@@ -42,10 +40,10 @@ export class ForkServerUnavailable extends Error {
 }
 
 // On by default on Linux (fork-without-exec is unsafe on macOS);
-// DSH_RLM_KERNEL_FORKSERVER=0 (legacy PRIME_AGENT_KERNEL_FORKSERVER) opts out.
+// PRIME_AGENT_KERNEL_FORKSERVER=0 opts out.
 export function isForkServerEnabled(): boolean {
 	if (process.platform !== "linux") return false;
-	return rlmEnv(...ENV_FORKSERVER) !== "0";
+	return process.env.PRIME_AGENT_KERNEL_FORKSERVER !== "0";
 }
 
 // A forkserver template is defined solely by the interpreter — the imported
@@ -79,8 +77,7 @@ class ForkServer {
 	private proc?: ChildProcess;
 	private server?: Server;
 	private conn?: Socket;
-	// [local patch] exactOptionalPropertyTypes: `| undefined` so `= undefined` is legal.
-	private socketDir: string | undefined;
+	private socketDir?: string;
 	private readyPromise?: Promise<void>;
 	private failReady?: (err: Error) => void;
 	private buffer = "";
@@ -214,7 +211,7 @@ class ForkServer {
 				// fork succeeded but nobody owns it, so kill the orphan here.
 				if (this.abandoned.delete(msg.id) && typeof msg.pid === "number") {
 					try {
-						killSignalSafe(msg.pid, "SIGTERM");
+						process.kill(msg.pid, "SIGTERM");
 					} catch {
 						// Orphan already exited.
 					}
@@ -317,10 +314,12 @@ function registerForkServerCleanupOnce(): void {
 	cleanupRegistered = true;
 	// A forkserver is process-lived and shared across sessions, so per-session
 	// cleanup must not yank the warm template from other live sessions — only a full
-	// process shutdown disposes it here.
-	// [local patch] `registerSessionResourceCleanup` (pi-ai) replaced with plain
-	// process teardown hooks; per-session kernel disposal is the plugin's job via
-	// the exported `disposeKernelsForSession` helper in index.ts.
+	// process shutdown (no sessionId) disposes it here.
+	registerSessionResourceCleanup((sessionId) => {
+		if (!sessionId) disposeAllForkServers();
+	});
+	// cleanupSessionResources(undefined) is never called on exit, so also tear the
+	// forkserver down directly on process teardown or it leaks as an orphan.
 	process.once("exit", disposeAllForkServers);
 	for (const signal of ["SIGINT", "SIGTERM", "beforeExit"] as const) {
 		process.once(signal, () => disposeAllForkServers());

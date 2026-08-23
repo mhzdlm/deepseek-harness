@@ -1,13 +1,14 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { v4 as uuid } from "uuid";
 import { Dealer, Subscriber } from "zeromq";
-import { ensureKernelPython, type KernelBootstrapProgressHandler, type KernelPythonSkill } from "./bootstrap.ts";
-import { ForkServerUnavailable, forkKernel, isForkServerEnabled } from "./fork-server.ts";
+import { ensureKernelPython, type KernelBootstrapProgressHandler, type KernelPythonSkill } from "./bootstrap.js";
+import { ForkServerUnavailable, forkKernel, isForkServerEnabled } from "./fork-server.js";
 import {
 	buildListNamesCode,
 	buildRestoreCode,
@@ -19,16 +20,12 @@ import {
 	parseSnapshotResult,
 	type RestoreResult,
 	type SnapshotResult,
-} from "./state-snapshot.ts";
-// [local patch #13] Windows platform-adaptation helpers (signals / rmSync / file mode).
-import { killSignalSafe, safeRmDirSync, writeFileSecureSync } from "../../util/platform";
+} from "./state-snapshot.js";
 
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
-// [local patch] 5000 → 30000: Windows 上 ipykernel 冷启动绑定端口实测 ~4.5s
-// （热机），冷机/杀毒扫描下超过 5s 上限，直接误判启动失败。
-const PORTS_RESOLVE_TIMEOUT_MS = 30000;
-const READY_TIMEOUT_MS = 30000;
+const PORTS_RESOLVE_TIMEOUT_MS = 5000;
+const READY_TIMEOUT_MS = 5000;
 // Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
 const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;
@@ -260,8 +257,7 @@ function parseDiffDisplay(payload: unknown): KernelDiffDisplay | undefined {
 	if (typeof path !== "string" || typeof oldStr !== "string" || typeof newStr !== "string") {
 		return undefined;
 	}
-	// [local patch] exactOptionalPropertyTypes: spread instead of `: undefined`.
-	return { path, oldStr, newStr, ...(typeof startLine === "number" ? { startLine } : {}) };
+	return { path, oldStr, newStr, startLine: typeof startLine === "number" ? startLine : undefined };
 }
 
 /**
@@ -281,8 +277,7 @@ function parseAttachmentDisplay(payload: unknown): KernelAttachment | "oversized
 	if (data.length > MAX_ATTACHMENT_DATA_CHARS) {
 		return "oversized";
 	}
-	// [local patch] exactOptionalPropertyTypes: spread instead of `: undefined`.
-	return { mimeType, data, ...(typeof path === "string" ? { path } : {}) };
+	return { mimeType, data, path: typeof path === "string" ? path : undefined };
 }
 
 function parseSentAgentMessage(payload: unknown): KernelSentAgentMessage | undefined {
@@ -469,25 +464,14 @@ function encode(msg: JupyterMessage, key: string): Buffer[] {
 
 function decode(frames: Buffer[]): JupyterMessage | null {
 	let i = 0;
-	// [local patch] noUncheckedIndexedAccess: guard the frame access in the loop.
-	while (i < frames.length) {
-		const frame = frames[i];
-		if (!frame || frame.equals(DELIM)) break;
-		i++;
-	}
+	while (i < frames.length && !frames[i].equals(DELIM)) i++;
 	if (i + 5 >= frames.length) return null;
 	try {
-		// [local patch] noUncheckedIndexedAccess: local refs instead of repeated indexing.
-		const header = frames[i + 2];
-		const parentHeader = frames[i + 3];
-		const metadata = frames[i + 4];
-		const content = frames[i + 5];
-		if (!header || !parentHeader || !metadata || !content) return null;
 		return {
-			header: JSON.parse(header.toString()),
-			parent_header: JSON.parse(parentHeader.toString()),
-			metadata: JSON.parse(metadata.toString()),
-			content: JSON.parse(content.toString()),
+			header: JSON.parse(frames[i + 2].toString()),
+			parent_header: JSON.parse(frames[i + 3].toString()),
+			metadata: JSON.parse(frames[i + 4].toString()),
+			content: JSON.parse(frames[i + 5].toString()),
 		};
 	} catch {
 		return null;
@@ -554,23 +538,20 @@ function makeConnection(): { info: ConnectionInfo; path: string; tempDir: string
 	};
 	const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-kernel-"));
 	const path = join(tempDir, "connection.json");
-	writeFileSecureSync(path, JSON.stringify(info, null, 2));
+	writeFileSync(path, JSON.stringify(info, null, 2), { mode: 0o600 });
 	return { info, path, tempDir };
 }
 
 const liveKernels = new Set<KernelManager>();
 let signalHandlersInstalled = false;
 
-// [local patch] `registerSessionResourceCleanup` (pi-ai) replaced with an
-// exported helper so the dsh plugin can dispose kernels on `session/disposed`.
-// `sessionId` undefined disposes every live kernel (process teardown path).
-export function disposeKernelsForSession(sessionId?: string): void {
+registerSessionResourceCleanup((sessionId) => {
 	for (const k of liveKernels) {
 		if (!sessionId || k.ownerSessionId === sessionId) {
 			void k.dispose();
 		}
 	}
-}
+});
 
 function installSignalHandlersOnce(): void {
 	if (signalHandlersInstalled) return;
@@ -607,49 +588,44 @@ export class KernelManager {
 	private readonly session = uuid();
 	private readonly commTargets = new Map<string, string>();
 	private readonly handledHostRequestCommIds = new Set<string>();
-	private kernel: ChildProcess | undefined;
+	private kernel?: ChildProcess;
 	// Set instead of `kernel` when the kernel was forked from the forkserver: it is
 	// not a direct child, so it has no ChildProcess handle and is killed by pid.
-	// [local patch] exactOptionalPropertyTypes: `| undefined` so `= undefined` is legal.
-	private kernelPid: number | undefined;
+	private kernelPid?: number;
 	/** Polls a forked kernel's pid for death (no "exit" event on a non-child). */
-	private forkedLivenessTimer: ReturnType<typeof globalThis.setInterval> | undefined;
-	private shell: Dealer | undefined;
-	private iopub: Subscriber | undefined;
-	private control: Dealer | undefined;
-	// [local patch] exactOptionalPropertyTypes: `| undefined` so `= undefined` is legal.
-	private iopubPumpPromise: Promise<void> | undefined;
-	private connection: ConnectionInfo | undefined;
-	private tempDir: string | undefined;
+	private forkedLivenessTimer?: ReturnType<typeof globalThis.setInterval>;
+	private shell?: Dealer;
+	private iopub?: Subscriber;
+	private control?: Dealer;
+	private iopubPumpPromise?: Promise<void>;
+	private connection?: ConnectionInfo;
+	private tempDir?: string;
 	private kernelStderr = "";
 	/** Serializes execute() calls — Jupyter shell channel is request/reply. */
 	private executionQueue: Promise<unknown> = Promise.resolve();
-	// [local patch] exactOptionalPropertyTypes: `| undefined` so `= undefined` is legal.
-	private activeExecution: ActiveExecution | undefined;
+	private activeExecution?: ActiveExecution;
 	private readonly activeExecutionIdleWaiters = new Set<() => void>();
 	private readonly lateSentAgentMessageHandlers = new Map<string, (message: KernelSentAgentMessage) => void>();
 	// Source of the most recently started cell, retained after it finishes so
 	// rlm.run spawns from detached asyncio tasks (cell already idle) can still
 	// attribute their spawning program.
-	private lastCellCode: string | undefined;
+	private lastCellCode?: string;
 	private readonly inFlightHostRequests = new Set<Promise<void>>();
 	private state: "idle" | "starting" | "running" | "shutdown" = "idle";
 	/** Memoized so concurrent callers all await the same in-flight startup. */
-	private startPromise: Promise<void> | undefined;
+	private startPromise?: Promise<void>;
 	/** Pending debounced auto-snapshot, if one has been scheduled. */
-	// [local patch] exactOptionalPropertyTypes: `| undefined` so `= undefined` is legal.
-	private snapshotTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+	private snapshotTimer?: ReturnType<typeof globalThis.setTimeout>;
 
 	constructor(options: KernelManagerOptions) {
-		// [local patch] exactOptionalPropertyTypes: spread undefined fields away.
 		this.options = {
-			...(options.python !== undefined ? { python: options.python } : {}),
-			...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-			...(options.env !== undefined ? { env: options.env } : {}),
-			...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
-			...(options.hostHandlers !== undefined ? { hostHandlers: options.hostHandlers } : {}),
-			...(options.pythonSkills !== undefined ? { pythonSkills: options.pythonSkills } : {}),
-			...(options.snapshot !== undefined ? { snapshot: options.snapshot } : {}),
+			python: options.python,
+			cwd: options.cwd,
+			env: options.env,
+			sessionId: options.sessionId,
+			hostHandlers: options.hostHandlers,
+			pythonSkills: options.pythonSkills,
+			snapshot: options.snapshot,
 			username: options.username ?? "prime-agent",
 		};
 	}
@@ -667,12 +643,7 @@ export class KernelManager {
 			throw createKernelStartupAbortError();
 		}
 		if (!this.startPromise) {
-			// [local patch] exactOptionalPropertyTypes: object spread instead of `: undefined`.
-			this.startPromise = this.doStart({
-				...(options.onBootstrapProgress !== undefined
-					? { onBootstrapProgress: options.onBootstrapProgress }
-					: {}),
-			}).catch((error) => {
+			this.startPromise = this.doStart({ onBootstrapProgress: options.onBootstrapProgress }).catch((error) => {
 				this.startPromise = undefined;
 				throw error;
 			});
@@ -693,13 +664,8 @@ export class KernelManager {
 			python =
 				this.options.python ??
 				(await ensureKernelPython({
-					// [local patch] exactOptionalPropertyTypes: spread undefined fields away.
-					...(this.options.pythonSkills !== undefined
-						? { pythonSkills: this.options.pythonSkills }
-						: {}),
-					...(startOptions.onBootstrapProgress !== undefined
-						? { onProgress: startOptions.onBootstrapProgress }
-						: {}),
+					pythonSkills: this.options.pythonSkills,
+					onProgress: startOptions.onBootstrapProgress,
 				}));
 			this.options.python = python;
 		} catch (error) {
@@ -723,8 +689,7 @@ export class KernelManager {
 			try {
 				this.kernelPid = await forkKernel(python, {
 					connectionPath: connection.path,
-					// [local patch] exactOptionalPropertyTypes: spread instead of `: undefined`.
-					...(this.options.cwd !== undefined ? { cwd: this.options.cwd } : {}),
+					cwd: this.options.cwd,
 					// Match the direct-spawn env exactly: merge the current host env with
 					// the per-kernel overrides, applied fresh in the child (the template's
 					// inherited env snapshot may be stale by fork time).
@@ -740,7 +705,7 @@ export class KernelManager {
 				// fresh connection for the direct spawn so a possible orphan can never
 				// collide with it (write the same file / re-bind the same ports).
 				try {
-					safeRmDirSync(connection.tempDir);
+					rmSync(connection.tempDir, { recursive: true, force: true });
 				} catch {
 					// Leave temporary kernel files for OS cleanup.
 				}
@@ -926,12 +891,7 @@ export class KernelManager {
 		if (opts.signal?.aborted) {
 			return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
 		}
-		await this.start(
-			// [local patch] exactOptionalPropertyTypes: object spread instead of `signal`.
-			{
-				...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-			},
-		);
+		await this.start({ signal: opts.signal });
 		if ((this.state as string) === "shutdown") {
 			throw new Error("Kernel has been shut down");
 		}
@@ -1201,12 +1161,11 @@ export class KernelManager {
 			execution.resolve({
 				stdout,
 				stderr,
-				// [local patch] exactOptionalPropertyTypes: spread undefined fields away.
-				...(result !== undefined ? { result } : {}),
-				...(execution.diffs.length > 0 ? { diffs: execution.diffs } : {}),
-				...(execution.attachments.length > 0 ? { attachments: execution.attachments } : {}),
-				...(execution.sentAgentMessages.length > 0 ? { sentAgentMessages: execution.sentAgentMessages } : {}),
-				...(execution.error !== undefined ? { error: execution.error } : {}),
+				result,
+				diffs: execution.diffs.length > 0 ? execution.diffs : undefined,
+				attachments: execution.attachments.length > 0 ? execution.attachments : undefined,
+				sentAgentMessages: execution.sentAgentMessages.length > 0 ? execution.sentAgentMessages : undefined,
+				error: execution.error,
 				status,
 				durationMs: Date.now() - execution.started,
 			});
@@ -1433,7 +1392,7 @@ export class KernelManager {
 			} else if (this.kernelPid !== undefined && !this.forkedKernelDied()) {
 				// Only signal a forked kernel confirmed still alive: a dead pid may have
 				// been recycled by the OS, and a kill would then hit an unrelated process.
-				killSignalSafe(this.kernelPid, killSignal);
+				process.kill(this.kernelPid, killSignal);
 			}
 		} catch {
 			// The kernel has already exited.
@@ -1443,7 +1402,7 @@ export class KernelManager {
 		this.connection = undefined;
 		if (this.tempDir) {
 			try {
-				safeRmDirSync(this.tempDir);
+				rmSync(this.tempDir, { recursive: true, force: true });
 			} catch {
 				// Leave temporary kernel files for OS cleanup.
 			}
@@ -1598,8 +1557,7 @@ export class KernelManager {
 			const r = await this.enqueueExecute(buildListNamesCode(), {
 				maxOutputChars: SNAPSHOT_MAX_OUTPUT_CHARS,
 				internal: true,
-				// [local patch] exactOptionalPropertyTypes: spread instead of `signal`.
-				...(signal !== undefined ? { signal } : {}),
+				signal,
 			});
 			if (r.status !== "ok") {
 				this.appendKernelDiagnostic(`namespace listing failed: ${r.error?.evalue ?? r.stderr}`);

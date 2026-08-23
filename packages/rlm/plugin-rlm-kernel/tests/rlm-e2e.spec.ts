@@ -8,7 +8,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SubagentRuntime from '@deepseek-ai/dsh-subagent'
+import SubagentRuntime, { type SubagentRunEndInfo } from '@deepseek-ai/dsh-subagent'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
@@ -130,20 +130,56 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('rlm with-key e2e', () => {
       }],
       source: { kind: 'user' },
     }))
+
+    // Collect terminal events from the start (a subagent may end before we get
+    // around to waiting on it, so a late-registered listener would miss it).
+    // The event is 'subagent/end'; its payload is a flat SubagentRunEndInfo
+    // whose child-session id field is `.id` (not `.sessionId`).
+    const ended = new Map<string, SubagentRunEndInfo>()
+    ctx.on('subagent/end', (info) => {
+      ended.set(String(info.id), info)
+    })
+
+    const waitForEnd = async (id: string, ms: number, what: string) => {
+      const deadline = Date.now() + ms
+      while (Date.now() < deadline) {
+        if (ended.has(id)) return ended.get(id)
+        await new Promise(resolve => setTimeout(resolve, 2_000))
+      }
+      throw new Error(`${what} did not end in time`)
+    }
+
     await waitForIdle(ctx, agent)
 
     // The parent idles as soon as its rlm.run handle returns; the intermediate
     // agent then runs asynchronously (its kernel provision + nested rlm.run
     // take real time). Poll the descendant tree until the grandchild appears,
     // so a slow-but-correct recursion is not mistaken for a missing one.
-    let grandchildren = 0
+    // SubagentDescendantListEntry's session-id field is `.id` (not `.sessionId`).
+    let grandchildren: { id: string }[] = []
     const deadline = Date.now() + 90_000
     while (Date.now() < deadline) {
       const descendants = await ctx.subagents.listDescendants(agent.session.id)
-      grandchildren = descendants.filter(d => d.kind === 'child' && d.depth >= 2).length
-      if (grandchildren > 0) break
+      grandchildren = descendants.filter(d => d.kind === 'child' && d.depth >= 2) as { id: string }[]
+      if (grandchildren.length > 0) break
       await new Promise(resolve => setTimeout(resolve, 2_000))
     }
-    expect(grandchildren).toBeGreaterThan(0)
+    expect(grandchildren.length).toBeGreaterThan(0)
+
+    // Verify result back-flow: the grandchild must end with a result, and the
+    // child must receive the subagent-end notice (i.e., the recursion's
+    // "async send-back" actually worked, not just that the handle was created).
+    const grandchildId = grandchildren[0]!.id
+    const grandchildSession = ctx.sessions.get(grandchildId)
+    expect(grandchildSession).toBeDefined()
+    const grandchildEnd = await waitForEnd(grandchildId, 120_000, 'grandchild')
+    expect(grandchildEnd).toBeDefined()
+
+    // The child should also end (after receiving the grandchild's result).
+    const children = await ctx.subagents.listChildren(agent.session.id)
+    expect(children.length).toBeGreaterThan(0)
+    const childId = children[0]!.id
+    const childEnd = await waitForEnd(childId, 60_000, 'child')
+    expect(childEnd).toBeDefined()
   }, 300_000)
 })

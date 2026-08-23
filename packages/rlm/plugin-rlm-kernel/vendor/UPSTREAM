@@ -8,64 +8,94 @@
 #  - prime-agent-runtime: src/rlm/*.py + pyproject.toml, kept at vendor/prime-agent-runtime/
 # license: MIT (Prime Intellect / Mario Zechner 2025)
 #
-# RULE: do not edit vendored files directly. Every local change is recorded
-# below with its reason; regenerate the diff with
-#   git diff -- packages/rlm/plugin-rlm-kernel/src/vendor/ > patches/kernel-local.patch
+# ============================================================================
+# VENDOR WORKFLOW — audit-driven, not transform-driven
+# ============================================================================
 #
-# LOCAL PATCHES APPLIED (against UPSTREAM_COMMIT af0b8e0):
-# 1. src/vendor/kernel/index.ts
-#    - Relative imports rewritten .js -> .ts (dsh uses allowImportingTsExtensions).
-#    - Removed `import { registerSessionResourceCleanup } from "@earendil-works/pi-ai"`
-#      (not a dsh dependency); replaced the module-level cleanup registration with
-#      an exported `disposeKernelsForSession(sessionId?)` helper the plugin calls
-#      on `session/disposed`.
-# 2. src/vendor/kernel/bootstrap.ts
-#    - Removed imports of prime-internal modules (../../config.js, ../skills.js);
-#      `PythonSkillRuntimeInfo`/`SkillPythonMetadata` re-declared locally.
-#    - `runtimeCandidateDirs()` now resolves this package's vendored
-#      `vendor/prime-agent-runtime` so the venv installs the vendored runtime.
-#    - Added `venvPythonPath(venv)` with a win32 branch (Scripts/python.exe);
-#      both call sites use it.
-# 3. src/vendor/kernel/boot-gate.ts
-#    - Inline minimal `Semaphore` replaces prime-internal ../../utils/semaphore.js.
-# 4. src/vendor/kernel/fork-server.ts
-#    - Removed pi-ai `registerSessionResourceCleanup`; process-teardown hooks only.
-#    - Relative import rewritten .js -> .ts.
-# 5. Windows: forkserver stays disabled (isForkServerEnabled() returns false off-linux),
-#    so index.ts degrades to direct spawn automatically. No fork-server patch needed.
-# 6. dsh strict-mode compatibility (prime's tsconfig does NOT enable these):
-#    - exactOptionalPropertyTypes: replaced every `field: x ?? undefined` / `= undefined`
-#      on optional properties with conditional object spread or `| undefined` unions
-#      (bootstrap.ts version parse; index.ts ExecuteResult/options/start/forkKernel/
-#      cleanupResources; state-snapshot.ts SnapshotResult; boot-gate.ts Semaphore waiter).
-#    - noUncheckedIndexedAccess: local refs with guards in index.ts decode() and the
-#      pythonSkillsMatch loop in bootstrap.ts.
-#    Affected files: index.ts, bootstrap.ts, state-snapshot.ts, boot-gate.ts, fork-server.ts.
-# 7. src/vendor/kernel/index.ts (2026-08-22, Phase 0 runtime verification)
-#    - PORTS_RESOLVE_TIMEOUT_MS / READY_TIMEOUT_MS 5000 → 30000: Windows 上
-#      ipykernel 端口绑定实测 ~4.5s（热机），冷机超过 5s 上限导致误判启动失败。
-# 8. vendor/prime-agent-runtime 布局修复（2026-08-22）：补齐 src/rlm/ 包目录层
-#    （初版 vendor 误将 4 个 .py 平铺在 src/ 下，pyproject 的 packages=["src/rlm"]
-#    与 bootstrap 的 hashRuntimeSource 均要求 src/rlm/ 存在）。内容与上游逐字节一致。
-# 9. vendor/prime-agent-runtime/src/rlm/harness.py (2026-08-22)
-#    - save() 改为原子写（tmp + os.replace），对齐 TS 侧 harness-file.ts 的
-#      tmp+rename。只消除半写状态（dsh host 并发读不会读到损坏 JSON）；完整
-#      的跨进程锁/读改写合并仍未实现 —— 内核与 /refine 并发写仍是单写者假设。
-# 10. src/vendor/kernel/bootstrap.ts (2026-08-23)
-#     - acquireBootstrapLock 增加等待 deadline（BOOTSTRAP_LOCK_WAIT_TIMEOUT_MS=60s）：
-#       陈旧锁的 pid 若被系统回收给另一个活进程，原逻辑无限循环导致
-#       ensureKernelPython 永久挂起（2026-08-23 实测踩到）。超时后抛出带锁
-#       目录路径的明确错误，提示手动删除。
-# 11. 环境变量改名 DSH_RLM_*（2026-08-23，item-8）：以下 vendored 文件的 prime
-#     命名环境变量读取改为经 src/env.ts 的 rlmEnv()（新名优先、旧名回退）：
-#     - bootstrap.ts：PRIME_AGENT_KERNEL_PYTHON→DSH_RLM_KERNEL_PYTHON、
-#       PRIME_AGENT_KERNEL_VENV→DSH_RLM_KERNEL_VENV、
-#       PRIME_AGENT_INSTALL_UV→DSH_RLM_INSTALL_UV；错误/提示文案同步。
-#     - boot-gate.ts：PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS→DSH_RLM_MAX_CONCURRENT_BOOTS。
-#     - fork-server.ts：PRIME_AGENT_KERNEL_FORKSERVER→DSH_RLM_KERNEL_FORKSERVER。
-#     - prime-agent-runtime/src/rlm/harness.py：_agent_dir() 增
-#       DSH_RLM_CODING_AGENT_DIR（优先于 PRIME_AGENT_CODING_AGENT_DIR / PI_CODING_AGENT_DIR）。
-# 12. src/vendor/kernel/bootstrap.ts (2026-08-23)
-#     - DEFAULT_RLM_EXTRA_PACKAGES 追加 llm-verifier（importName: llm_verifier），
-#       使内核 venv 自动带上 LLM-as-a-Verifier 包，供 plugin-rlm-verifier 的
-#       verify 工具走内核路径 / venv 子进程路径时使用。
+# The dsh project hand-edits vendored kernel files, each patch marked with a
+# `[local patch ...]` comment:
+#
+#   ORIGINAL/kernel/*.ts   ← pristine prime-agent files (git-tracked, read-only)
+#   kernel/*.ts           ← dsh files (git-tracked, hand-maintained)
+#
+# scripts/audit-vendor.mts verifies kernel/*.ts carries every patch and none
+# of the forbidden POSIX-only patterns. It has NO write mode — the old
+# transform pipeline could silently destroy the manual strict-mode patches
+# (incident 2026-08: a write-mode re-run erased them; restored from git).
+#
+# To re-vendor after an upstream update:
+#
+#   1. Update ORIGINAL/kernel/*.ts with new pristine prime-agent files.
+#   2. Re-apply the patches below BY HAND onto a fresh copy, keeping every
+#      `[local patch ...]` marker (use git diff of the old kernel/ as guide).
+#   3. Run: pnpm vendor:check  — must report all checks passed.
+#   4. Run tsc; fix any strict-mode fallout (#6) by hand.
+#   5. Commit.
+#
+# ============================================================================
+# PATCH CATEGORIES (audited by scripts/audit-vendor.mts)
+# ============================================================================
+#
+# #1 / #3 / #4  Import rewriting + pi-ai / prime-internal removal
+#   - .js → .ts extensions (dsh uses allowImportingTsExtensions)
+#   - Removed: registerSessionResourceCleanup from @earendil-works/pi-ai
+#   - Removed: ../../config.js, ../skills.js, ../../utils/semaphore.js
+#   - Added: inline Semaphore class (replaces prime-internal util)
+#   - Added: disposeKernelsForSession() export (replaces pi-ai cleanup hook)
+#   Affected: index.ts, bootstrap.ts, boot-gate.ts, fork-server.ts
+#
+# #5 Windows fork-server disable
+#   - isForkServerEnabled() returns false on non-linux (no patch needed)
+#
+# #6 dsh strict-mode compatibility (MANUAL REVIEW REQUIRED)
+#   - exactOptionalPropertyTypes: `field: x ?? undefined` → conditional spread
+#   - noUncheckedIndexedAccess: array index guards in decode()
+#   These are hand-applied and audited only for marker presence, because they
+#   require AST-level understanding. When re-vendoring, re-apply by hand and
+#   verify with tsc. See scripts/audit-vendor.mts for the checks.
+#   Affected: index.ts, bootstrap.ts, state-snapshot.ts, boot-gate.ts
+#
+# #7 Timeout adjustments (2026-08-22)
+#   - PORTS_RESOLVE_TIMEOUT_MS / READY_TIMEOUT_MS: 5000 → 30000
+#   - Windows cold-start measured ~4.5s; 5s was too tight
+#   Affected: index.ts
+#
+# #8 vendor/prime-agent-runtime layout fix (2026-08-22)
+#   - Added src/rlm/ package directory layer (pyproject requires it)
+#
+# #9 harness.py atomic writes (2026-08-22)
+#   - save() uses tmp + os.replace to prevent half-written JSON
+#   - Cross-process lock/merge still TODO (single-writer assumption)
+#   Affected: vendor/prime-agent-runtime/src/rlm/harness.py
+#
+# #10 Bootstrap lock wait deadline (2026-08-23)
+#   - acquireBootstrapLock: 60s cap prevents infinite hang on stale PID
+#   - BOOTSTRAP_LOCK_WAIT_TIMEOUT_MS = 60_000
+#   Affected: bootstrap.ts
+#
+# #11 Environment variable renaming (2026-08-23)
+#   - PRIME_AGENT_* → DSH_RLM_* (new name first, legacy name fallback via rlmEnv())
+#   - Affected: bootstrap.ts, boot-gate.ts, fork-server.ts, harness.py
+#
+# #12 llm-verifier injection (2026-08-23)
+#     - DEFAULT_RLM_EXTRA_PACKAGES gains llm-verifier entry
+#     - Auto-installs LLM-as-a-Verifier into kernel venv
+#     Affected: bootstrap.ts
+#
+# #13 Windows platform adaptation (2026-08-23)
+#   New file: src/util/platform.ts — 4 platform-adaptation helpers
+#   Hand-applied patches in kernel/*.ts (each marked [local patch #13x]):
+#     - killSignalSafe: process.kill(pid, "SIGTERM"/"SIGKILL"/variable) → killSignalSafe(pid, signal)
+#       Windows degrades to `taskkill /F /PID <pid> /T` (POSIX signals are no-ops)
+#       Affected: index.ts (cleanupResources), fork-server.ts (orphan kernel)
+#     - isPidAlive (bootstrap.ts): processIsRunning() body → return isPidAlive(pid)
+#       Unified EPERM semantics across Windows/POSIX
+#     - replaceSafeRmDir (index.ts): rmSync(dir, {recursive}) → safeRmDirSync(dir)
+#       lstat before rm prevents Windows junction traversal
+#     - replaceWriteFileSecure (index.ts): writeFileSync(p, d, {mode: 0o600}) → writeFileSecureSync(p, d)
+#       mode: 0o600 silently ignored on Windows; POSIX unchanged
+#     - replaceFindExecutablePATHEXT (bootstrap.ts): [name, name.exe] → PATHEXT-aware list
+#       Searches .COM/.EXE/.BAT/.CMD from process.env.PATHEXT
+#     - rlmEnv (src/env.ts): Windows case-insensitive fallback
+#       Exact match → fail → case-insensitive scan of process.env keys
+#   Strict-mode manual items and AF_UNIX/socket items NOT auto-transformed (see docs/windows-compatibility.md)

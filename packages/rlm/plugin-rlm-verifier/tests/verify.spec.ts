@@ -77,6 +77,19 @@ describe('verify python bridge', () => {
     expect(program).toContain('VERIFY_RESULT')
     expect(program).toContain('VERIFY_ERROR')
   })
+
+  it('embeds the payload base64 in the program source (kernel path)', () => {
+    const payload = {
+      problem: 'test "problem" with \\ escapes',
+      candidates: [{ text: 'a\nb' }, { text: 'c' }],
+    }
+    const program = buildPythonProgram(payload as never)
+    expect(program).toContain('_PAYLOAD_B64 = ')
+    // base64 round-trips arbitrary JSON text without escaping issues.
+    const b64 = program.match(/_PAYLOAD_B64 = "([^"]*)"/)?.[1] ?? ''
+    expect(JSON.parse(Buffer.from(b64, 'base64').toString('utf8'))).toEqual(payload)
+    expect(program).toContain('base64.b64decode(_PAYLOAD_B64)')
+  })
 })
 
 // Direct tool-execution e2e: runs the verify tool end to end (venv python

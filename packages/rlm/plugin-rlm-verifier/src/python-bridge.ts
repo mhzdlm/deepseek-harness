@@ -89,15 +89,30 @@ export function parseResultJson(stdout: string): VerifyResult {
 /**
  * The Python program that runs llm_verifier.select().
  *
- * Reads its request from a JSON object passed via `PY_VERIFY_PAYLOAD` (kernel
- * path) or argv[1] (subprocess path), prints one JSON line with the result.
+ * Reads its request from (in order): a base64 payload embedded in the program
+ * source (kernel path — the kernel process was spawned with its own env
+ * snapshot, so a `PY_VERIFY_PAYLOAD` env var set now would never reach it),
+ * the `PY_VERIFY_PAYLOAD` env var (subprocess path), or argv[1] (JSON file).
+ * Prints one JSON line with the result, or `VERIFY_ERROR {...}` on failure.
  * A standalone `llm_verifier` install is required in the target python env.
  */
-export function buildPythonProgram(): string {
+export function buildPythonProgram(payload?: VerifyRequest | null): string {
+  // The payload is embedded base64-encoded so kernel-cell transport carries it
+  // in-band; JSON with arbitrary candidate text would need escaping inside a
+  // Python string literal, base64 needs none.
+  const payloadB64 = payload
+    ? Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
+    : ''
   return [
-    'import json, os, sys, traceback',
+    'import base64, json, os, sys, traceback',
+    `_PAYLOAD_B64 = ${JSON.stringify(payloadB64)}`,
     'def _main():',
-    '    payload = json.loads(os.environ.get("PY_VERIFY_PAYLOAD", "")) if os.environ.get("PY_VERIFY_PAYLOAD") else json.load(open(sys.argv[1]))',
+    '    if _PAYLOAD_B64:',
+    '        payload = json.loads(base64.b64decode(_PAYLOAD_B64))',
+    '    elif os.environ.get("PY_VERIFY_PAYLOAD"):',
+    '        payload = json.loads(os.environ["PY_VERIFY_PAYLOAD"])',
+    '    else:',
+    '        payload = json.load(open(sys.argv[1]))',
     '    import llm_verifier',
     '    criteria = payload.get("criteria") or {}',
     '    result = llm_verifier.select(',
@@ -152,8 +167,12 @@ export function runVerifySubprocess(
     child.stderr.on('data', (d: Buffer) => { err += d.toString() })
     child.on('error', reject)
     child.on('close', (code) => {
+      // The program prints `VERIFY_ERROR {...}` to stdout before exiting 1;
+      // surface that message instead of a bare exit code.
       if (code === 0) {
         resolve(out)
+      } else if (out.includes('VERIFY_ERROR')) {
+        reject(new Error(`verify python failed: ${out.slice(0, 1000)}`))
       } else {
         reject(new Error(`verify python subprocess exited ${code}: ${err.slice(0, 1000)}`))
       }

@@ -7,6 +7,9 @@
   "include": [
     "src"
   ],
+  "exclude": [
+    "src/vendor/ORIGINAL"
+  ],
   "references": [
     {
       "path": "../../../vendor/cosmokit"

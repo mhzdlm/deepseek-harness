@@ -175,7 +175,6 @@ export function createVerifyTool(options: VerifyToolOptions) {
 
       const sessionId = exec.agent?.session.id
       const sid = sessionId ? String(sessionId) : undefined
-      const program = buildPythonProgram()
       const payload: VerifyRequest = {
         problem,
         candidates,
@@ -192,16 +191,31 @@ export function createVerifyTool(options: VerifyToolOptions) {
 
       if (sid && kernels?.hasSession(sid)) {
         // Kernel path: run the program inside the session's live kernel. The
-        // payload rides in an env var the kernel process already carries.
+        // payload is embedded base64 in the program source: the kernel process
+        // was spawned with its own env snapshot, so a `PY_VERIFY_PAYLOAD` env
+        // var set here would never reach `os.environ` inside it — and a shared
+        // mutable env var would also race between concurrent verify calls.
+        const program = buildPythonProgram(payload)
         const result = await kernels.execute(sid, program, { signal: exec.signal })
         stdout = result.stdout || ''
+        // The program prints `VERIFY_ERROR {...}` and exits nonzero on failure;
+        // without this check the error JSON would be mis-parsed as a result.
+        if (stdout.includes('VERIFY_ERROR')) {
+          throw new Error(`verify: kernel cell failed: ${stdout.slice(0, 1000)}`)
+        }
         if (result.status === 'error' && !stdout) {
           const detail = result.error?.evalue ?? result.stderr ?? ''
-          throw new Error(`verify: kernel cell failed: ${detail}`)
+          // If the kernel's venv lacks llm-verifier, fall back to subprocess
+          // which uses the canonical venv path.
+          if (/ModuleNotFoundError|ImportError/.test(detail)) {
+            stdout = await runVerifySubprocess(defaultVenvPython(), program, payload)
+          } else {
+            throw new Error(`verify: kernel cell failed: ${detail}`)
+          }
         }
       } else {
-        // Subprocess path: spawn the venv python.
-        stdout = await runVerifySubprocess(defaultVenvPython(), program, payload)
+        // Subprocess path: spawn the venv python (payload via env var).
+        stdout = await runVerifySubprocess(defaultVenvPython(), buildPythonProgram(), payload)
       }
 
       const parsed: VerifyResult = parseResultJson(stdout)

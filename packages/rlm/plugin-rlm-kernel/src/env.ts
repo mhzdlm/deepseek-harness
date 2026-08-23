@@ -15,6 +15,18 @@ export function rlmEnv(...names: readonly string[]): string | undefined {
     const value = process.env[name]
     if (value !== undefined) return value
   }
+  // Windows: environment variable names are case-insensitive at the OS level,
+  // but `process.env` preserves the original casing.  If no exact match was found,
+  // try a case-insensitive scan as a fallback.
+  if (process.platform === 'win32') {
+    const lowerNames = names.map(n => n.toLowerCase())
+    for (const key of Object.keys(process.env)) {
+      if (lowerNames.includes(key.toLowerCase())) {
+        const value = process.env[key]
+        if (value !== undefined) return value
+      }
+    }
+  }
   return undefined
 }
 

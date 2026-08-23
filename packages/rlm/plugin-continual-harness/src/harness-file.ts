@@ -22,7 +22,7 @@
  */
 
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { copyFileSync, readFileSync, statSync } from 'node:fs'
+import { copyFileSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 
 /** How many `.corrupt-*` backups to keep before pruning (FIX-11). */
@@ -111,8 +111,12 @@ async function backupCorrupt(filePath: string): Promise<void> {
     for (const old of backups.slice(0, Math.max(0, backups.length - CORRUPT_BACKUP_KEEP))) {
       await rm(path.join(dir, old), { force: true }).catch(() => undefined)
     }
-  } catch {
-    // non-fatal: proceed without a backup
+  } catch (error) {
+    // A missing file is not corrupt — no backup needed, silently proceed.
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined
+    if (code === 'ENOENT') return
+    // A real backup failure (permissions, disk full, etc.) should surface.
+    console.warn(`[continual-harness] failed to backup corrupt state file ${filePath}: ${error}`)
   }
 }
 
@@ -266,7 +270,26 @@ export function readHarnessStateSync(filePath: string): HarnessStateFile {
   } catch {
     // FIX-11: salvage the corrupt file before treating it as empty.
     backupCorruptSync(filePath)
+    pruneCorruptBackupsSync(filePath)
     return emptyHarnessState()
+  }
+}
+
+/** FIX-11: prune `.corrupt-*` backups to {@link CORRUPT_BACKUP_KEEP} (sync path). */
+function pruneCorruptBackupsSync(filePath: string): void {
+  try {
+    const dir = path.dirname(filePath)
+    const base = path.basename(filePath)
+    const backups = readdirSync(dir).filter(f => f.startsWith(`${base}.corrupt-`)).sort()
+    for (const old of backups.slice(0, Math.max(0, backups.length - CORRUPT_BACKUP_KEEP))) {
+      try {
+        unlinkSync(path.join(dir, old))
+      } catch {
+        // best-effort prune
+      }
+    }
+  } catch {
+    // directory unreadable or missing; nothing to prune
   }
 }
 
@@ -274,8 +297,12 @@ function backupCorruptSync(filePath: string): void {
   try {
     statSync(filePath) // ensure it exists (a missing file is not corrupt)
     copyFileSync(filePath, `${filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`)
-  } catch {
-    // non-fatal
+  } catch (error) {
+    // A missing file is not corrupt — no backup needed, silently proceed.
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined
+    if (code === 'ENOENT') return
+    // A real backup failure (permissions, disk full, etc.) should surface.
+    console.warn(`[continual-harness] failed to backup corrupt state file ${filePath}: ${error}`)
   }
 }
 
