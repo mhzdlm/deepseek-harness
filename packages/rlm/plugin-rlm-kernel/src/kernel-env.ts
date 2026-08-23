@@ -36,12 +36,18 @@ const ALLOWLIST_EXACT = new Set([
   'PROCESSOR_IDENTIFIER', 'COMMONPROGRAMFILES', 'PROGRAMFILES', 'PUBLIC',
   'WINDIR', 'DRIVERDATA', 'TMPDIR',
 ])
-// Credential-adjacent families blocked before any allowlist check. Includes
-// harness/agent runtime namespaces whose values may carry keys or endpoints.
-const BLOCKLIST_PREFIXES = [
+/**
+ * Credential-adjacent variable-name prefixes blocked before any allowlist
+ * check. Includes harness/agent runtime namespaces whose values may carry keys
+ * or endpoints. This is the canonical list for the RLM packages:
+ * `plugin-rlm-verifier`'s subprocess scrub mirrors it and a consistency test
+ * pins the two together.
+ */
+export const CREDENTIAL_BLOCKLIST_PREFIXES = [
   'DSH_', 'DEEPSEEK_', 'OPENAI_', 'ANTHROPIC_', 'GOOGLE_', 'AZURE_', 'AWS_',
   'PRIME_', 'PI_', 'CODEBUDDY_', 'CLAUDE_',
 ] as const
+const BLOCKLIST_PREFIXES = CREDENTIAL_BLOCKLIST_PREFIXES
 
 function nameFolder(platform: NodeJS.Platform): (key: string) => string {
   return platform === 'win32' ? key => key.toLowerCase() : key => key

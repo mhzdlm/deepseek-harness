@@ -48,7 +48,14 @@ const noDotJsImports: RegExp = /^[ \t]*import[^;\n]*from\s+["'][^"']+\.js["'];?[
 /** Shared: direct PRIME_AGENT_* env reads bypass the rlmEnv() legacy fallback. */
 const noDirectPrimeEnv: RegExp = /process\.env\.PRIME_AGENT_/;
 
-const COMMON_FORBIDDEN: RegExp[] = [noDotJsImports, noDirectPrimeEnv];
+/**
+ * Shared: passing the full host environment to a child reintroduces the
+ * credential leak that [local patch #14] closed — every child env must go
+ * through kernel-env.ts's builders.
+ */
+const noFullEnvPassthrough: RegExp = /\.\.\.process\.env|env:\s*process\.env\s*[,}]/;
+
+const COMMON_FORBIDDEN: RegExp[] = [noDotJsImports, noDirectPrimeEnv, noFullEnvPassthrough];
 
 const AUDITS: FileAudit[] = [
 	{

@@ -14,7 +14,10 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 // P1-fix: 统一走 rlmEnv()（新名优先、旧名回退、Windows 大小写不敏感），
 // 替代此前直接用 process.env.DSH_RLM_KERNEL_* 的双轨读取。
-import { rlmEnv, ENV_KERNEL_PYTHON, ENV_KERNEL_VENV } from '@deepseek-ai/dsh-plugin-rlm-kernel/env.ts'
+import { rlmEnv, ENV_KERNEL_PYTHON, ENV_KERNEL_VENV } from '@deepseek-ai/dsh-plugin-rlm-kernel/src/env.ts'
+// Canonical credential blocklist shared with the kernel's env boundary — one
+// source of truth, no drift between the two subprocess scrubs.
+import { CREDENTIAL_BLOCKLIST_PREFIXES } from '@deepseek-ai/dsh-plugin-rlm-kernel/src/kernel-env.ts'
 
 /** A minimal view of the kernel registry the verify tool can execute cells through. */
 export interface KernelExecutor {
@@ -182,10 +185,15 @@ export function runVerifySubprocess(
   options?: { signal?: AbortSignal },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    // P1-fix: env 白名单化，排除凭据类变量（与 vendor/kernel/index.ts 同步）。
-    const { PY_VERIFY_PAYLOAD: _, ...safeEnv } = buildSafeSubprocessEnv()
+    // P1-fix: env 白名单化，排除凭据类变量（与 plugin-rlm-kernel/src/kernel-env.ts
+    // 的 CREDENTIAL_BLOCKLIST_PREFIXES 同步，一致性由 python-bridge.spec.ts 钉住）。
+    const { PY_VERIFY_PAYLOAD: _, ...safeEnv } = buildScrubbedSubprocessEnv()
     const child = spawn(python, ['-c', program], {
-      env: { ...safeEnv, PY_VERIFY_PAYLOAD: JSON.stringify(payload) },
+      env: {
+        ...safeEnv,
+        ...forwardProviderCredentials(),
+        PY_VERIFY_PAYLOAD: JSON.stringify(payload),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
@@ -212,13 +220,49 @@ export function runVerifySubprocess(
   })
 }
 
-/** Build a credential-scrubbed env for spawned python subprocesses (P1-fix: 凭据隔离). */
-function buildSafeSubprocessEnv(): Record<string, string> {
-  const BLOCKLIST_PREFIXES = ['DSH_', 'DEEPSEEK_', 'OPENAI_', 'ANTHROPIC_', 'GOOGLE_', 'AZURE_', 'AWS_', 'PRIME_', 'PI_', 'CODEBUDDY_', 'CLAUDE_']
+/**
+ * Provider variables `llm_verifier` authenticates with. The subprocess runs a
+ * fixed generated program (never model-authored code), so these are required
+ * inputs rather than leaks — forwarded explicitly on top of the scrubbed env,
+ * everything else credential-shaped stays stripped.
+ */
+const PROVIDER_CREDENTIAL_VARS = ['DEEPSEEK_API_KEY', 'OPENAI_BASE_URL'] as const
+
+/**
+ * Pick {@link PROVIDER_CREDENTIAL_VARS} out of an environment.
+ *
+ * @param source - Environment to read; defaults to `process.env`.
+ * @returns Only the provider variables that are present, ready to merge over a
+ *   scrubbed child env.
+ */
+export function forwardProviderCredentials(source: Record<string, string | undefined> = process.env): Record<string, string> {
+  const forwarded: Record<string, string> = {}
+  for (const name of PROVIDER_CREDENTIAL_VARS) {
+    const value = source[name]
+    if (value !== undefined) forwarded[name] = value
+  }
+  return forwarded
+}
+
+/**
+ * Build a credential-scrubbed environment for spawned python subprocesses.
+ *
+ * Mirrors the deny-list half of `plugin-rlm-kernel/src/kernel-env.ts` — same
+ * prefix families, matched case-insensitively on every platform (a Windows
+ * `deepseek_api_key` lookalike must not slip through exact-case matching).
+ * The verifier needs the broad environment (proxy/locale), so unlike the
+ * kernel's default-deny allowlist everything non-credential passes through;
+ * callers re-add the provider credentials via {@link forwardProviderCredentials}.
+ *
+ * @param source - Environment to scrub; defaults to `process.env`. Injectable
+ *   so tests exercise scrubbing deterministically without mutating the host.
+ */
+export function buildScrubbedSubprocessEnv(source: Record<string, string | undefined> = process.env): Record<string, string> {
+  const blockPrefixes = CREDENTIAL_BLOCKLIST_PREFIXES.map(prefix => prefix.toUpperCase())
   const safe: Record<string, string> = {}
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue
-    if (BLOCKLIST_PREFIXES.some(prefix => key.startsWith(prefix))) continue
+    if (blockPrefixes.some(prefix => key.toUpperCase().startsWith(prefix))) continue
     safe[key] = value
   }
   return safe

@@ -5986,6 +5986,9 @@ importers:
 
   packages/rlm/plugin-rlm-verifier:
     dependencies:
+      '@deepseek-ai/dsh-plugin-rlm-kernel':
+        specifier: workspace:^
+        version: link:../plugin-rlm-kernel
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery

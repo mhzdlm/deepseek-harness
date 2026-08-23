@@ -129,7 +129,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
       // results as the candidate pool.
       // P1-fix: controllers are registered for session-tracked abort (mirrors
       // host-handlers.ts abortSession), so children cannot outlive their parent.
-      const autoSpawn = typeof args.auto_spawn === 'number' && args.auto_spawn > 0 ? Math.floor(args.autoSpawn) : 0
+      const autoSpawn = typeof args.auto_spawn === 'number' && args.auto_spawn > 0 ? Math.floor(args.auto_spawn) : 0
       if (candidates.length === 0 && autoSpawn > 0) {
         const subagents = options.subagents
         if (!subagents) throw new Error('verify: auto_spawn requires the subagent service')
