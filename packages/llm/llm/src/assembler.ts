@@ -10,7 +10,7 @@ import { CallId } from './brand.ts'
 import { assertNever } from './never.ts'
 import { createMessage } from './message.ts'
 import type { Message, MessageSource } from './message.ts'
-import type { ContentBlock, FinishReason, ReplayEnvelope, StreamChunk, TokenUsage } from './types.ts'
+import type { ContentBlock, FinishReason, ReplayEnvelope, StreamChunk, TokenLogprob, TokenUsage } from './types.ts'
 
 interface PartialBlock {
   blockType: string
@@ -37,6 +37,7 @@ interface PartialBlock {
 export class BlockAssembler {
   private partials = new Map<number, PartialBlock>()
   private order: number[] = []
+  private _logprobs: TokenLogprob[] = []
   private _usage: TokenUsage | undefined
   private _finish: FinishReason | undefined
   private _replayState: ReplayEnvelope | undefined
@@ -71,6 +72,12 @@ export class BlockAssembler {
         partial.toolCallId = chunk.id
         if (chunk.name) partial.toolCallName = chunk.name
         partial.toolCallArguments += chunk.argumentsDelta
+        return
+      }
+      case 'logprobs': {
+        // Scoring stream is position-ordered across the whole response; the
+        // per-block index stays on the chunk for streaming consumers.
+        this._logprobs.push(...chunk.tokens)
         return
       }
       case 'block-end': {
@@ -180,6 +187,15 @@ export class BlockAssembler {
   /** Usage from the `usage` chunk; undefined until one arrives. */
   get usage(): TokenUsage | undefined {
     return this._usage
+  }
+
+  /**
+   * Chosen-token logprobs accumulated from every `logprobs` chunk, in stream
+   * order. Empty unless the request opted in via the `GenerateOptions`
+   * `logprobs` switch and the adapter serves them.
+   */
+  get logprobs(): readonly TokenLogprob[] {
+    return this._logprobs
   }
 
   /** Finish reason from the `finish` chunk; `{kind: 'stop'}` when the stream ended without one. */

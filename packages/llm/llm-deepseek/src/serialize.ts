@@ -363,6 +363,7 @@ function requestWithMessages(
     ...options.temperature !== undefined ? { temperature: options.temperature } : {},
     ...options.maxTokens === undefined ? {} : { max_tokens: options.maxTokens },
     ...options.stop !== undefined ? { stop: options.stop } : {},
+    ...options.logprobs !== undefined ? { logprobs: true, top_logprobs: options.logprobs.topLogprobs } : {},
   }
 }
 

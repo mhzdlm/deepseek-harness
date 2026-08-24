@@ -56,6 +56,16 @@ export interface TextBlock {
   text: string
 }
 
+/**
+ * One chosen token's scoring entry from a request that opted into
+ * {@link GenerateOptions.logprobs}. Top-variant distributions are not
+ * surfaced in v1.
+ */
+export interface TokenLogprob {
+  readonly token: string
+  readonly logprob: number
+}
+
 /** Reasoning / thinking content, distinct from visible text. */
 export interface ReasoningBlock {
   type: 'reasoning'
@@ -314,6 +324,13 @@ export type StreamChunk =
   | { type: 'text-delta'; index: number; text: string }
   | { type: 'reasoning-delta'; index: number; text: string }
   | { type: 'tool-call-delta'; index: number; id: CallId; name?: string; argumentsDelta: string }
+  /**
+   * Chosen-token logprobs for the text segment at `index`, emitted only when
+   * {@link GenerateOptions.logprobs} opted in and the provider serves them.
+   * Consumers reading token distributions (e.g. scoring engines) accumulate
+   * these instead of parsing provider-specific wire formats.
+   */
+  | { type: 'logprobs'; index: number; tokens: readonly TokenLogprob[] }
   | { type: 'block-end'; index: number; block: ContentBlock }
   | { type: 'usage'; usage: TokenUsage }
   | {
@@ -362,6 +379,13 @@ export interface GenerateOptions {
    * `stop`). The stop string itself is not included in the output.
    */
   stop?: string[]
+  /**
+   * Opt into chosen-token logprobs on the text stream. Adapters that cannot
+   * serve them leave the stream unchanged; supporting adapters emit
+   * {@link StreamChunk}'s `logprobs` variant. `topLogprobs` bounds the
+   * provider's per-position variant list (adapters may clamp).
+   */
+  logprobs?: { topLogprobs: number }
   signal?: AbortSignal
   /**
    * Session identity stamped by the loop for request routing. Replay uses it

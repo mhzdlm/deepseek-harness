@@ -704,3 +704,26 @@ describe('review fixes: assistant content shapes', () => {
     expect(wire[0]).toMatchObject({ content: '' })
   })
 })
+
+describe('serializeRequest logprobs', () => {
+  it('requests logprobs with the configured top list when opted in', () => {
+    const request = serializeRequest({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      messages: [],
+      logprobs: { topLogprobs: 20 },
+    })
+    expect(request.logprobs).toBe(true)
+    expect(request.top_logprobs).toBe(20)
+  })
+
+  it('omits the logprobs fields entirely when not requested', () => {
+    const request = serializeRequest({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      messages: [],
+    })
+    expect('logprobs' in request).toBe(false)
+    expect('top_logprobs' in request).toBe(false)
+  })
+})

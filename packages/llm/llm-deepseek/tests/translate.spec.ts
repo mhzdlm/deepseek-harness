@@ -348,3 +348,24 @@ describe('translate: defensive tool-call branches', () => {
     expect(chunks[1]).toEqual({ type: 'tool-call-delta', index: 0, id: 'c', argumentsDelta: '' })
   })
 })
+
+describe('translate: logprobs', () => {
+  it('emits chosen-token entries alongside their text deltas', async () => {
+    const chunks = await collect(translate(feed(
+      firstChunk,
+      { choices: [{ delta: { content: '<score>4</score>', logprobs: { content: [{ token: '<score>4</score>', logprob: -0.12 }] } } }] },
+      DONE,
+    )))
+    const lp = chunks.find(c => c.type === 'logprobs')
+    expect(lp).toEqual({ type: 'logprobs', index: 0, tokens: [{ token: '<score>4</score>', logprob: -0.12 }] })
+  })
+
+  it('does not emit logprobs when no text block is open', async () => {
+    const chunks = await collect(translate(feed(
+      firstChunk,
+      { choices: [{ delta: { logprobs: { content: [{ token: 'x', logprob: -1 }] } } }] },
+      DONE,
+    )))
+    expect(chunks.some(c => c.type === 'logprobs')).toBe(false)
+  })
+})

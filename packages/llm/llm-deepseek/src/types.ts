@@ -128,6 +128,12 @@ export interface WireChoice {
   finish_reason?: string | null
 }
 
+/** One chosen token's logprob as served inside a streamed delta. */
+export interface WireTokenLogprob {
+  token: string
+  logprob: number
+}
+
 /** The incremental content of one streamed choice; any subset of fields may be present per chunk. */
 export interface WireDelta {
   role?: string
@@ -138,6 +144,8 @@ export interface WireDelta {
    * open a reasoning block); absent entirely in non-thinking mode.
    */
   reasoning_content?: string | null
+  /** Chosen-token logprobs, present only when the request set `logprobs: true`. */
+  logprobs?: { content: WireTokenLogprob[] } | null
   tool_calls?: WireToolCallDelta[]
 }
 

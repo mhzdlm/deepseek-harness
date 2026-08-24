@@ -149,6 +149,17 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
         yield { type: 'text-delta', index: textBlock.index, text: content }
       }
 
+      // Chosen-token logprobs ride the same deltas as their text; they only
+      // exist when the request opted in and the route serves them.
+      const logprobEntries = delta?.logprobs?.content
+      if (logprobEntries !== undefined && logprobEntries.length > 0 && textBlock) {
+        yield {
+          type: 'logprobs',
+          index: textBlock.index,
+          tokens: logprobEntries.map(entry => ({ token: entry.token, logprob: entry.logprob })),
+        }
+      }
+
       for (const call of delta?.tool_calls ?? []) {
         let block = toolBlocks.get(call.index)
         if (!block) {

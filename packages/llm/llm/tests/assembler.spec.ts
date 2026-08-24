@@ -262,3 +262,33 @@ describe('BlockAssembler.interruptedBlocks', () => {
     expect(assembler.interruptedBlocks()).toEqual([])
   })
 })
+
+describe('BlockAssembler logprobs', () => {
+  it('accumulates chosen-token entries without altering assembled text blocks', () => {
+    const assembler = new BlockAssembler()
+    for (const chunk of [
+      { type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'text-delta', index: 0, text: '<score>4</score>' },
+      { type: 'logprobs', index: 0, tokens: [{ token: '<score>4</score>', logprob: -0.12 }] },
+      { type: 'text-delta', index: 0, text: '<judge>B</judge>' },
+      { type: 'logprobs', index: 0, tokens: [{ token: '<judge>B</judge>', logprob: -0.34 }, { token: '<judge>A</judge>', logprob: -1.9 }] },
+      { type: 'block-end', index: 0, block: { type: 'text', text: '<score>4</score><judge>B</judge>' } },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ] as StreamChunk[]) assembler.push(chunk)
+
+    expect(assembler.logprobs).toEqual([
+      { token: '<score>4</score>', logprob: -0.12 },
+      { token: '<judge>B</judge>', logprob: -0.34 },
+      { token: '<judge>A</judge>', logprob: -1.9 },
+    ])
+    // Durable text blocks stay free of scoring metadata by design.
+    expect(assembler.blocks()).toEqual([
+      { type: 'text', text: '<score>4</score><judge>B</judge>' },
+    ])
+  })
+
+  it('reports an empty logprob stream when the request did not opt in', () => {
+    const assembler = new BlockAssembler()
+    expect(assembler.logprobs).toEqual([])
+  })
+})
