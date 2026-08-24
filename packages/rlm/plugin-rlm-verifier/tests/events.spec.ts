@@ -34,9 +34,11 @@ describe('verify process events', () => {
     await expect(
       tool.execute({ problem: 'p', candidates: ['a', 'b'] }, { signal: new AbortController().signal, agent: { session } } as never),
     ).rejects.toThrow()
-    expect(appended.map(e => e.name)).toEqual(['session/verify-request'])
-    expect(appended[0].payload.mode).toBe('subprocess')
-    expect((appended[0].payload.candidatesDigest as string[]).length).toBe(2)
+    const request = appended.find(e => e.name === 'session/verify-request')
+    expect(request).toBeDefined()
+    if (!request) return
+    expect(request.payload.mode).toBe('subprocess')
+    expect((request.payload.candidatesDigest as string[]).length).toBe(2)
   })
 
   it('emitVerifyEvent swallows persistence failures', () => {

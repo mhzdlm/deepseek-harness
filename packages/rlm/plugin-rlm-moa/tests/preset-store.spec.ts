@@ -38,7 +38,8 @@ describe('preset view layering', () => {
     const view = createPresetView(CONFIG_PRESETS, 'configOnly', storePath)
     expect(view.available()).toEqual(['configOnly', 'shared'])
     expect(view.defaultName()).toBe('shared')
-    expect(view.resolve('shared').references[0].model).toBe('file-ref')
+    const shared = view.resolve('shared')
+    expect(shared.references[0]?.model).toBe('file-ref')
     expect(view.resolve().name).toBe('shared')
   })
 
