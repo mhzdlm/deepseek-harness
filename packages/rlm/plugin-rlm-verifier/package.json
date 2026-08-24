@@ -13,7 +13,7 @@
   "types": "lib/types/index.d.ts",
   "scripts": {
     "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-verifier/tests/verify.spec.ts packages/rlm/plugin-rlm-verifier/tests/rlm-preset.spec.ts packages/rlm/plugin-rlm-verifier/tests/python-bridge.spec.ts packages/rlm/plugin-rlm-verifier/tests/fusion.spec.ts packages/rlm/plugin-rlm-verifier/tests/events.spec.ts",
-    "test:e2e": "vitest run --root ../../../ --config ../../../vitest.e2e.config.ts packages/rlm/plugin-rlm-verifier/tests/judges.e2e.ts"
+    "test:e2e": "vitest run --root ../../../ --config vitest.e2e.config.ts packages/rlm/plugin-rlm-verifier/tests/judges.e2e.ts"
   },
   "exports": {
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/types/index.js" },
