@@ -340,8 +340,11 @@ describe('moa orchestration', () => {
     await tool.execute({ problem: 'p' }, exec as never)
     const names = appended.map(a => a.name)
     expect(names).toEqual(['session/moa-reference', 'session/moa-reference', 'session/moa-synthesis'])
-    expect(appended[0].payload.status).toBe('ok')
-    expect(appended[2].payload.preset).toBe('panel')
+    const synthesis = appended.find(a => a.name === 'session/moa-synthesis')
+    expect(synthesis).toBeDefined()
+    if (synthesis) expect(synthesis.payload.preset).toBe('panel')
+    const firstRef = appended[0]
+    expect(firstRef?.payload.status).toBe('ok')
   })
 
   it('render annotates provenance under the display privacy filter', async () => {
