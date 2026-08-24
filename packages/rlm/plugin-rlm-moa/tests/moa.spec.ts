@@ -170,7 +170,7 @@ describe('moa orchestration', () => {
         },
         { problem: 'p' },
       )
-      if (policy === 'loud') expect(seen[0] ?? '')('Reference failed: model-a@p-a.')
+      if (policy === 'loud') expect(seen[0] ?? '').toContain('Reference failed: model-a@p-a.')
       else expect(seen[0] ?? '').not.toContain('Reference failed')
     }
   })
