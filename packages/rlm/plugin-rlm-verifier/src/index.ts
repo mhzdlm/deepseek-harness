@@ -1,45 +1,44 @@
 /**
- * LLM-as-a-Verifier plugin: `verify` tool for best-of-N selection.
- *
- * Scores N candidate trajectories with a fine-grained continuous reward
- * (expectation over scoring-token logprobs, Eq 3.1) and ranks them with a
- * Probabilistic Pivot Tournament (O(Nk) comparisons). The heavy lifting runs
- * in Python (`llm_verifier`); this plugin drives it through the session's
- * persistent IPython kernel when one is live, else a venv python subprocess.
- *
- * Pairs with `@deepseek-ai/dsh-plugin-rlm-kernel` (which provides the
- * `rlm.kernels` registry this plugin reuses).
+ * LLM-as-a-Verifier plugin: registers the `verify` tool — a Probabilistic
+ * Pivot Tournament over candidate trajectories, scored through this context's
+ * LLM seam with chosen-token logprobs (Eq 3.1 fine-grained reward). Pairs
+ * with the other RLM plugins.
  * @module @deepseek-ai/dsh-plugin-rlm-verifier
  */
 
-import path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-subagent'
 import z from '@deepseek-ai/schemastery'
-import type { KernelExecutor } from './python-bridge.ts'
-import { createVerifyTool } from './verify-tool.ts'
+import { createVerifyTool, type VerifyCallModel } from './verify-tool.ts'
 
 export const name = 'plugin-rlm-verifier'
-export const inject = ['tools', 'subagents', 'sessions', 'agents']
+export const inject = ['tools', 'llm', 'subagents']
 
+/** A named judge entry for multi-judge panels. */
 export interface JudgeProfileConfig {
+  /** Verifier model id. */
   model?: string
-  baseUrl?: string
-  keyEnv?: string
-  extraEnv?: string[]
+  /** Provider route; defaults to the plugin-level provider. */
+  provider?: string
 }
 
 export interface Config {
-  /** Optional JSON score-cache file for incremental re-runs. */
-  cacheFile?: string
-  /** Verifier model name. Defaults to deepseek-v4-flash (DeepSeek). */
+  /**
+   * Default provider route for scoring calls. Defaults to
+   * `deepseek-official` (the harness's own DeepSeek adapter).
+   */
+  provider?: string
+  /** Verifier model name. Defaults to deepseek-v4-flash. */
   model?: string
   /** Subagent provider name used by auto_spawn. Defaults to 'spawn'. */
   subagentProvider?: string
   /** Max characters captured from each spawned child's result. Default 20000. */
   maxChildChars?: number
   /**
-   * `''` (off), `'display'` (render judge provenance), or `'full'` (also mask
-   * credential/PII material in candidate text before scoring prompts).
+   * `''` (off), `'display'` (render judge provenance), or `'full'` (mask
+   * credential/PII material in candidate digests and text before scoring).
    */
   privacyFilter?: string
   /** Named multi-judge profiles addressable via the tool's `judges` argument. */
@@ -47,72 +46,99 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  cacheFile: z.string(),
+  provider: z.string(),
   model: z.string(),
   subagentProvider: z.string(),
   maxChildChars: z.natural(),
   privacyFilter: z.string(),
   judgeProfiles: z.dict(z.object({
-    model: z.string(),
-    baseUrl: z.string(),
-    keyEnv: z.string(),
-    extraEnv: z.array(z.string()),
+    model: z.string().required(),
+    provider: z.string(),
   })),
 })
 
-export function apply(ctx: Context, config: Config): void {
-  const cacheFile = config.cacheFile
-    ? path.resolve(config.cacheFile)
-    : undefined
+/**
+ * Run one scoring call through the context's LLM seam with chosen-token
+ * logprobs opted in, reducing the stream to text plus the logprob stream.
+ */
+async function callSeamModel(
+  ctx: Context,
+  request: Parameters<VerifyCallModel>[0],
+): Promise<{ text: string; logprobs: Array<{ token: string; logprob: number }> }> {
+  const assembler = new BlockAssembler()
+  const options: GenerateOptions = {
+    provider: request.route.provider,
+    model: request.route.model,
+    messages: [
+      createUserMessage({
+        content: [{ type: 'text', text: request.userText }],
+        source: { kind: 'plugin', plugin: 'dsh-plugin-rlm-verifier' },
+      }),
+    ],
+    maxTokens: request.maxTokens,
+    logprobs: { topLogprobs: 20 },
+    signal: request.signal,
+  }
+  for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
+  const finish = assembler.finish
+  if (finish.kind === 'error') throw new Error(`verify scoring failed: ${finish.failure.message}`)
+  if (finish.kind === 'aborted') throw new Error('verify scoring aborted')
+  const text = assembler
+    .blocks()
+    .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
+    .map(block => block.text)
+    .join('')
+  return { text, logprobs: [...assembler.logprobs] }
+}
 
-  // P1-fix: per-session auto_spawn verify controllers (same pattern as
-  // host-handlers.ts abortSession for rlm.run). Aborted on session disposal
-  // so verify children cannot outlive their parent session.
+export function apply(ctx: Context, config: Config): void {
+  const privacyFilter = config.privacyFilter === 'display' || config.privacyFilter === 'full' ? config.privacyFilter : ''
+  const provider = config.provider ?? 'deepseek-official'
+
+  // auto_spawn controllers register before start (host-handlers pattern) and
+  // abort on session disposal so spawned children cannot outlive the session.
   const sessionControllers = new Map<string, Set<AbortController>>()
-  const abortVerifySession = (sessionId: string): void => {
-    const controllers = sessionControllers.get(sessionId)
-    if (controllers) {
-      for (const controller of [...controllers]) controller.abort()
-      sessionControllers.delete(sessionId)
+  const trackController = (sessionId: string, controller: AbortController): (() => void) => {
+    let controllers = sessionControllers.get(sessionId)
+    if (!controllers) {
+      controllers = new Set<AbortController>()
+      sessionControllers.set(sessionId, controllers)
+    }
+    controllers.add(controller)
+    return () => {
+      controllers?.delete(controller)
+      if (controllers?.size === 0) sessionControllers.delete(sessionId)
     }
   }
+  ctx.on('session/disposed', (session) => {
+    const controllers = sessionControllers.get(String(session.id))
+    if (controllers) {
+      for (const controller of [...controllers]) controller.abort()
+      sessionControllers.delete(String(session.id))
+    }
+  })
 
   const subagents = ctx.get('subagents')
-  const privacyFilter = config.privacyFilter === 'display' || config.privacyFilter === 'full' ? config.privacyFilter : ''
-  const judgeProfiles: Record<string, { model: string; baseUrl?: string; keyEnv?: string; extraEnv?: string[] }> = {}
+
+  const judgeProfiles: Record<string, { model: string; provider?: string }> = {}
   for (const [name, profile] of Object.entries(config.judgeProfiles ?? {})) {
-    if (profile.model !== undefined) judgeProfiles[name] = { ...profile, model: profile.model }
+    if (profile.model === undefined) continue
+    judgeProfiles[name] = profile.provider !== undefined
+      ? { model: profile.model, provider: profile.provider }
+      : { model: profile.model }
   }
+
   const tool = createVerifyTool({
-    // Lazily resolve the kernel registry from plugin-rlm-kernel. Optional:
-    // when the sibling plugin is absent or un-provisioned, falls back to the
-    // venv python subprocess path.
-    getKernels: () => ctx.get('rlm.kernels') as KernelExecutor | undefined,
-    ...(cacheFile !== undefined ? { cacheFile } : {}),
+    callModel: request => callSeamModel(ctx, request),
+    provider,
     ...(config.model !== undefined ? { model: config.model } : {}),
     ...(subagents !== undefined ? { subagents } : {}),
     ...(config.subagentProvider !== undefined ? { subagentProvider: config.subagentProvider } : {}),
     ...(config.maxChildChars !== undefined ? { maxChildChars: config.maxChildChars } : {}),
     privacyFilter,
+    trackController,
     ...(Object.keys(judgeProfiles).length > 0 ? { judgeProfiles } : {}),
-    // P1-fix: register auto_spawn controllers for session-tracked abort.
-    trackController: (sessionId, controller) => {
-      let controllers = sessionControllers.get(sessionId)
-      if (!controllers) {
-        controllers = new Set<AbortController>()
-        sessionControllers.set(sessionId, controllers)
-      }
-      controllers.add(controller)
-      return () => {
-        controllers?.delete(controller)
-        if (controllers?.size === 0) sessionControllers.delete(sessionId)
-      }
-    },
-  })
-
-  // P1-fix: abort outstanding verify auto_spawn children on session disposal.
-  ctx.on('session/disposed', (session) => {
-    abortVerifySession(String(session.id))
+    maxTokens: 4_096,
   })
 
   ctx.effect(

@@ -12,8 +12,8 @@ import type { Session } from '@deepseek-ai/dsh-session'
 
 /** Pre-dispatch record of one verification run. */
 export interface VerifyRequestEventData {
-  /** Execution surface actually chosen for this run. */
-  mode: 'kernel' | 'subprocess'
+  /** Execution engine; the seam hosts all scoring since phase 2b. */
+  engine: 'seam'
   /** Effective verifier model(s); multiple only in multi-judge runs. */
   models: string[]
   criteria: Record<string, string>
@@ -25,13 +25,13 @@ export interface VerifyRequestEventData {
 
 /** Post-settlement record: the parseable outcome plus timing. */
 export interface VerifyResultEventData {
+  engine: 'seam'
   models: string[]
   index: number
   scores: number[]
   ranking: number[]
   nComparisons: number
   failedJudges?: string[]
-  fusedRanking?: number[]
   durationMs: number
 }
 

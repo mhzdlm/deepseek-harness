@@ -1,90 +1,112 @@
 /**
- * `verify` tool: LLM-as-a-Verifier best-of-N selection.
+ * `verify` tool — LLM-as-a-Verifier best-of-N selection, hosted entirely on
+ * the harness LLM seam.
  *
- * Given a task problem and N candidate trajectories, scores every needed
- * directed pair with the fine-grained reward (Eq 3.1 expectation over
- * scoring-token logprobs), ranks candidates with a Probabilistic Pivot
- * Tournament (O(Nk) comparisons), and returns the best trajectory.
+ * Scoring contract is the TypeScript port in `scoring.ts` (20-letter scale,
+ * pairwise judge prompt, Eq 3.1 expectation over the chosen-token
+ * distribution) and the selection loop is the Probabilistic Pivot Tournament
+ * in `tournament.ts` — O(Nk) directed comparisons instead of O(N²).
  *
- * Execution paths, in order:
- *   1. Kernel path — if the session already has a live IPython kernel, the
- *      `llm_verifier` call runs inside it (reuses the provisioned venv).
- *   2. Subprocess path — otherwise a venv python subprocess runs the same code.
- * @module @deepseek-ai/dsh-plugin-rlm-verifier
+ * Failure semantics follow the reference `on_error: "tie"`: a failed scoring
+ * call contributes a 0.5/0.5 tie for that comparison instead of failing the
+ * run; the panel only fails when every call in a phase fails hard enough
+ * that no comparison could be scored at all.
+ *
+ * @module @deepseek-ai/dsh-plugin-rlm-verifier/verify-tool
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { buildPythonProgram, defaultVenvPython, parseResultJson, runVerifySubprocess } from './python-bridge.ts'
-import type { KernelExecutor, VerifyRequest, VerifyResult } from './python-bridge.ts'
 import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
-import type { JudgeOutcome } from './fusion.ts'
-import { fuseJudgeOutcomes } from './fusion.ts'
+import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
+import { buildJudgePrompt, extractScore, type JudgeCriterion } from './scoring.ts'
+import { runTournament } from './tournament.ts'
 import { emitVerifyEvent } from './events.ts'
-import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel/src/redact.ts'
 
-/** A named judge profile: which model to score with and how to authenticate. */
+/** A named judge entry for multi-judge panels. */
 export interface JudgeProfile {
-  /** Verifier model id passed to `llm_verifier.select`. */
+  /** Verifier model id. */
   model: string
-  /** Optional OpenAI-compatible endpoint override (non-secret). */
-  baseUrl?: string
-  /** Environment variable holding this vendor's API key. */
-  keyEnv?: string
-  /** Additional environment variables forwarded alongside `keyEnv`. */
-  extraEnv?: string[]
 }
 
-/** Default criteria when the caller names none (Sec 4.3 tri-criteria). */
-export const DEFAULT_CRITERIA: Record<string, string> = {
-  Specification: 'Does the trajectory satisfy all task requirements (exact paths, formats, constraints)?',
-  Output: 'Does the final output match the expected result?',
-  Errors: 'Is the trajectory free of unresolved failure signals (errors, tracebacks, nonzero exits)?',
-}
+/** Transport-agnostic scoring invocation injected from the plugin wiring. */
+export type VerifyCallModel = (request: {
+  route: { provider: string; model: string }
+  system?: string
+  userText: string
+  maxTokens: number
+  signal: AbortSignal
+}) => Promise<{ text: string; logprobs: TokenLogprob[] }>
 
 export interface VerifyToolOptions {
-  /** Kernel registry from plugin-rlm-kernel; undefined means subprocess-only. */
-  getKernels: () => KernelExecutor | undefined
-  /** Optional score-cache file (JSON) for incremental re-runs. */
-  cacheFile?: string
-  /** Verifier model; default deepseek-v4-flash. */
+  /** Resolves the LLM transport; injected so orchestration is unit-testable. */
+  callModel: VerifyCallModel
+  /** Default provider route for the scoring model. */
+  provider: string
+  /** Default verifier model when neither args nor config name one. */
   model?: string
-  /** Subagent runtime for auto_spawn; undefined disables auto_spawn. */
+  /** Optional subagent runtime enabling `auto_spawn` candidate generation. */
   subagents?: SubagentRuntime
-  /** Subagent provider name used by auto_spawn. Default 'spawn'. */
+  /** Subagent provider name used by auto_spawn. */
   subagentProvider?: string
-  /** Max characters captured from each spawned child's result. Default 20000. */
+  /** Max characters captured from each spawned child's result. */
   maxChildChars?: number
   /**
-   * P1-fix: callback to register an auto_spawn controller for session-tracked
-   * abort. Returns an unregister function. When provided, auto_spawn children
-   * are aborted on session disposal (mirrors host-handlers.ts abortSession).
+   * Callback to register an auto_spawn controller for session-tracked abort.
+   * Returns an unregister function.
    */
   trackController?: (sessionId: string, controller: AbortController) => () => void
   /**
    * `display` annotates rendered output with per-judge provenance; `full`
-   * masks credential/PII material in candidate text before scoring prompts.
+   * masks candidate text before scoring prompts.
    */
   privacyFilter?: '' | 'display' | 'full'
   /** Named judge profiles addressable via the `judges` argument. */
-  judgeProfiles?: Record<string, JudgeProfile>
+  judgeProfiles?: Record<string, { model: string; provider?: string }>
+  /** Max output tokens per scoring call (reference default 4096). */
+  maxTokens?: number
 }
+
+const DEFAULT_CRITERIA: Array<JudgeCriterion> = [
+  { id: 'Specification', name: 'Specification', description: 'Does the trajectory satisfy all task requirements (exact paths, formats, constraints)?' },
+  { id: 'Output', name: 'Output', description: 'Does the final output match the expected result?' },
+  { id: 'Errors', name: 'Errors', description: 'Is the trajectory free of unresolved failure signals (errors, tracebacks, nonzero exits)?' },
+]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
- * Build the `verify` tool. Registered by the plugin's apply fiber; resolves
- * the kernel registry lazily so the tool works even before plugin-rlm-kernel
- * has provisioned anything.
+ * Resolve the `criteria` argument (a JSON object mapping criterion name to
+ * description) into the ordered judge-criterion list, falling back to the
+ * bundled tri-criteria when absent or malformed.
  */
+function resolveCriteria(raw: unknown): Array<JudgeCriterion> {
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (isRecord(parsed)) {
+        const entries = Object.entries(parsed)
+          .filter(([, v]) => typeof v === 'string')
+          .map(([id, description]) => ({ id, name: id, description: description as string }))
+        if (entries.length > 0) return entries
+      }
+    } catch {
+      // Fall back to defaults on malformed criteria JSON.
+    }
+  }
+  return DEFAULT_CRITERIA.map(criterion => ({ ...criterion }))
+}
+
+/** Build the `verify` tool around the injected transport. */
 export function createVerifyTool(options: VerifyToolOptions) {
+  const maxCallTokens = options.maxTokens ?? 4_096
   return defineTool({
     name: 'verify',
     description:
-      'Score N candidate solutions/trajectories for a task with an LLM verifier and return the best one. ' +
-      'Uses a fine-grained continuous reward over scoring-token logprobs and a Probabilistic Pivot Tournament. ' +
-      'Pass the task as `problem` and each candidate solution as an element of `candidates`.',
+      'Score N candidate solutions/trajectories for a task with an LLM verifier panel ' +
+      '(fine-grained reward over scoring-token logprobs, Probabilistic Pivot Tournament) ' +
+      'and return the best one. Pass the task as `problem` and each candidate as an element of `candidates`.',
     parameters: {
       problem: {
         type: 'string',
@@ -113,7 +135,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
       },
       seed: {
         type: 'integer',
-        description: 'Random seed for the ring pass (default 0)',
+        description: 'Seed for the ring pass (default 0)',
       },
       model: {
         type: 'string',
@@ -123,7 +145,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Named judge profiles: run one independent verification per profile and fuse the rankings. Requires judgeProfiles in plugin config.',
+          'Named judge profiles: run one independent verification per profile and fuse the rankings.',
       },
       auto_spawn: {
         type: 'integer',
@@ -152,7 +174,6 @@ export function createVerifyTool(options: VerifyToolOptions) {
               },
             },
           },
-          fusedRanking: { type: 'array', items: { type: 'integer' } },
         },
       },
       render: (_args, value) => {
@@ -170,36 +191,27 @@ export function createVerifyTool(options: VerifyToolOptions) {
     },
     async execute(args, exec) {
       const problem = typeof args.problem === 'string' ? args.problem : ''
-      const raw = args.candidates
-      let candidates = Array.isArray(raw)
-        ? raw.filter((c): c is string => typeof c === 'string').map(text => ({ text }))
-        : []
       if (!problem.trim()) throw new Error('verify: problem is required')
-      // `full` privacy mode masks credential/PII material in candidate text
-      // before it enters any scoring prompt.
-      if (options.privacyFilter === 'full') {
-        candidates = candidates.map(c => ({ text: redactReferenceText(c.text) }))
-      }
+      const raw = args.candidates
+      let candidates: string[] = Array.isArray(raw)
+        ? raw.filter((c): c is string => typeof c === 'string')
+        : []
 
-      // auto_spawn: if candidates were not provided and the caller asked for
-      // N subagents, dispatch N children against the same task and use their
-      // results as the candidate pool.
-      // P1-fix: controllers are registered for session-tracked abort (mirrors
-      // host-handlers.ts abortSession), so children cannot outlive their parent.
+      // auto_spawn: dispatch N children against the task and use their results
+      // as the candidate pool. Controllers register before start so disposal
+      // during startup still aborts pending spawns (host-handlers pattern).
       const autoSpawn = typeof args.auto_spawn === 'number' && args.auto_spawn > 0 ? Math.floor(args.auto_spawn) : 0
       if (candidates.length === 0 && autoSpawn > 0) {
         const subagents = options.subagents
         if (!subagents) throw new Error('verify: auto_spawn requires the subagent service')
         const owner = exec.agent
         if (!owner) throw new Error('verify: auto_spawn requires an owning agent')
+        const sid = owner.session?.id !== undefined ? String(owner.session.id) : undefined
         const maxChars = options.maxChildChars ?? 20_000
-        const sid = exec.agent?.session.id ? String(exec.agent.session.id) : undefined
-        const runs = await Promise.all(
+        const results = await Promise.all(
           Array.from({ length: autoSpawn }, async (_, i) => {
             const controller = new AbortController()
-            // P1-fix: register controller BEFORE start so disposal during startup
-            // still aborts the pending spawn (same pattern as host-handlers.ts).
-            const unregister = sid && options.trackController
+            const unregister = sid !== undefined && options.trackController
               ? options.trackController(sid, controller)
               : undefined
             const request: SubagentStartRequest = {
@@ -212,199 +224,240 @@ export function createVerifyTool(options: VerifyToolOptions) {
               const run = await subagents.start(options.subagentProvider ?? 'spawn', request)
               const result = await run.result
               const text = (result.output ?? [])
-                .map(block => (block.type === 'text' ? block.text ?? '' : ''))
+                .map(block => (block.type === 'text' ? (block.text ?? '') : ''))
                 .join('\n')
                 .trim()
-              return { text: text.slice(0, maxChars) }
+              return text.slice(0, maxChars)
             } finally {
               unregister?.()
             }
           }),
         )
-        candidates = runs
+        candidates = results.filter(text => text.length > 0)
       }
 
       if (candidates.length < 2) {
         throw new Error(`verify: need at least 2 candidates, got ${candidates.length}`)
       }
 
-      // Criteria: default tri-criteria unless the caller overrides.
-      let criteria = DEFAULT_CRITERIA
-      if (typeof args.criteria === 'string' && args.criteria.trim()) {
-        try {
-          const parsed = JSON.parse(args.criteria)
-          if (isRecord(parsed)) {
-            const entries = Object.entries(parsed)
-              .filter(([, v]) => typeof v === 'string')
-              .map(([k, v]) => [k, v as string])
-            if (entries.length > 0) criteria = Object.fromEntries(entries)
-          }
-        } catch {
-          // Fall back to defaults on malformed criteria JSON.
-        }
-      }
-
-      const nEvaluations = typeof args.n_evaluations === 'number' && args.n_evaluations > 0 ? Math.floor(args.n_evaluations) : 4
-      const pivots = typeof args.pivots === 'number' && args.pivots > 0 ? Math.floor(args.pivots) : 2
+      const criteria = resolveCriteria(args.criteria)
+      const nEvaluations = typeof args.n_evaluations === 'number' && args.n_evaluations > 0
+        ? Math.floor(args.n_evaluations)
+        : 4
+      const pivotsArg = typeof args.pivots === 'number' && args.pivots > 0 ? Math.floor(args.pivots) : 2
       const seed = typeof args.seed === 'number' && Number.isFinite(args.seed) ? Math.floor(args.seed) : 0
-      const model = typeof args.model === 'string' && args.model.trim() ? args.model : options.model ?? 'deepseek-v4-flash'
-
-      const sessionId = exec.agent?.session.id
-      const sid = sessionId ? String(sessionId) : undefined
-      const payload: VerifyRequest = {
-        problem,
-        candidates,
-        criteria,
-        nEvaluations,
-        pivots,
-        seed,
-        model,
-        ...(options.cacheFile !== undefined ? { cache: options.cacheFile } : {}),
-      }
-      const payloadBase = { ...payload }
-      delete (payloadBase as { model?: string }).model
-
-      const kernels = sid ? options.getKernels() : undefined
       const session = exec.agent?.session ?? null
       const startedAt = Date.now()
 
-      // Multi-judge mode: one independent subprocess per named profile, each
-      // authenticated only with that profile's variables, then Borda fusion.
-      // Subprocess-forced by design: the kernel's env whitelist cannot carry
-      // arbitrary vendor credentials (known limitation).
+      // Multi-judge: one independent seam tournament per named profile, then
+      // Borda fusion over their rankings.
       const judgeNames = Array.isArray(args.judges) ? args.judges.filter((j): j is string => typeof j === 'string') : []
       if (judgeNames.length > 0) {
         const profiles = options.judgeProfiles ?? {}
-        const available = Object.keys(profiles)
-        const selected = judgeNames.map(name => ({ name, profile: profiles[name] }))
-        const unknown = selected.filter(s => s.profile === undefined).map(s => s.name)
-        if (unknown.length > 0) {
-          throw new Error(`verify: unknown judge profile(s) '${unknown.join(', ')}'. Available: ${available.join(', ') || '(none)'}`)
+        const selected: Array<{ name: string; profile: { model: string; provider?: string } }> = []
+        for (const name of judgeNames) {
+          const profile = profiles[name]
+          if (profile === undefined) continue
+          selected.push({ name, profile })
         }
-        const validJudges = selected as Array<{ name: string; profile: JudgeProfile }>
+        const unknown = judgeNames.filter(name => !selected.some(s => s.name === name))
+        if (unknown.length > 0) {
+          throw new Error(
+            `verify: unknown judge profile(s) '${unknown.join(', ')}'. Available: ${Object.keys(profiles).join(', ') || '(none)'}`,
+          )
+        }
+
         emitVerifyEvent(session, 'session/verify-request', {
-          mode: 'subprocess',
-          models: validJudges.map(j => j.profile.model),
-          criteria,
+          engine: 'seam',
+          models: selected.map(s => s.profile.model),
+          criteria: Object.fromEntries(criteria.map(c => [c.id, c.description])),
           candidateCount: candidates.length,
-          candidatesDigest: candidates.map(c => c.text.slice(0, 120)),
+          candidatesDigest: digestCandidates(candidates, options.privacyFilter),
           judgeProfiles: judgeNames,
         })
-        type JudgeRun = JudgeOutcome & { scores?: number[]; ranking?: number[]; index?: number; nComparisons?: number }
-        const outcomes: JudgeRun[] = await Promise.all(
-          validJudges.map(async ({ name, profile }) => {
-            try {
-              const payload: VerifyRequest = { ...payloadBase, model: profile.model }
-              const judgeStdout = await runVerifySubprocess(defaultVenvPython(), buildPythonProgram(), payload, {
-                signal: exec.signal,
-                ...(profile.baseUrl !== undefined ? { envOverrides: { OPENAI_BASE_URL: profile.baseUrl } } : {}),
-                forwardEnvNames: [profile.keyEnv, ...(profile.extraEnv ?? [])].filter((n): n is string => Boolean(n)),
-              })
-              const parsed = parseResultJson(judgeStdout)
-              return { model: name, status: 'ok' as const, scores: parsed.scores, ranking: parsed.ranking, index: parsed.index, nComparisons: parsed.nComparisons }
-            } catch {
-              return { model: name, status: 'failed' as const }
-            }
-          }),
-        )
-        if (!outcomes.some(o => o.status === 'ok')) {
+
+        const outcomes = await Promise.all(selected.map(async ({ name, profile }) => {
+          try {
+            const scored = await runTournament(candidates.length, seed, pivotsArg, async (a, b) =>
+              scorePairOnSeam(options.callModel, {
+                provider: profile.provider ?? options.provider ?? 'deepseek-official',
+                model: profile.model,
+              }, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens))
+            return { name, model: profile.model, status: 'ok' as const, ...scored }
+          } catch {
+            return { name, model: profile.model, status: 'failed' as const, bestIndex: -1, meanPreference: [], nComparisons: 0 }
+          }
+        }))
+        const okOutcomes = outcomes.filter(o => o.status === 'ok')
+        if (okOutcomes.length === 0) {
           throw new Error(`verify: all ${outcomes.length} judges failed (${outcomes.map(o => o.model).join(', ')})`)
         }
-        const fusion = fuseJudgeOutcomes(outcomes, candidates.length)
-        const bestScores = fusion.fusedScores
-        const text = [
-          `fused best = candidate[${fusion.bestIndex}] over ${outcomes.filter(o => o.status === 'ok').length} judge(s)`,
-          `ranking: ${fusion.fusedRanking.join(' > ')}`,
-          `fused scores: [${bestScores.map(s => s.toFixed(3)).join(', ')}]`,
-          '',
-          candidates[fusion.bestIndex]?.text ?? '',
-        ].join('\n')
+        const fused = fuseMeanPreferences(okOutcomes.map(o => ({ model: o.model, status: o.status, meanPreference: o.meanPreference })))
+        const baseScores = okOutcomes[0]?.meanPreference ?? []
+        const bestScores = fused.fusedRanking.map(i => baseScores[i] ?? 0)
+
         emitVerifyEvent(session, 'session/verify-result', {
-          models: judgeNames,
-          index: fusion.bestIndex,
+          engine: 'seam',
+          models: selected.map(s => s.profile.model),
+          index: fused.bestIndex,
           scores: bestScores,
-          ranking: fusion.fusedRanking,
-          nComparisons: outcomes.reduce((sum, o) => sum + (o.nComparisons ?? 0), 0),
-          ...(fusion.failedJudges.length > 0 ? { failedJudges: fusion.failedJudges } : {}),
-          fusedRanking: fusion.fusedRanking,
+          ranking: fused.fusedRanking,
+          nComparisons: okOutcomes.reduce((sum, o) => sum + o.nComparisons, 0),
           durationMs: Date.now() - startedAt,
         })
+
         return {
-          text,
-          index: fusion.bestIndex,
+          text: renderFused(fused, candidates, okOutcomes.length),
+          index: fused.bestIndex,
           scores: bestScores,
-          ranking: fusion.fusedRanking,
-          nComparisons: outcomes.reduce((sum, o) => sum + (o.nComparisons ?? 0), 0),
+          ranking: fused.fusedRanking,
+          nComparisons: okOutcomes.reduce((sum, o) => sum + o.nComparisons, 0),
           judges: outcomes.map(o => ({ model: o.model, status: o.status })),
-          fusedRanking: fusion.fusedRanking,
         }
       }
 
+      // Single-judge seam tournament.
+      const model = typeof args.model === 'string' && args.model.trim() ? args.model.trim() : options.model ?? 'deepseek-v4-flash'
+      const route = { provider: options.provider ?? 'deepseek-official', model }
       emitVerifyEvent(session, 'session/verify-request', {
-        mode: sid && kernels?.hasSession(sid) ? 'kernel' : 'subprocess',
+        engine: 'seam',
         models: [model],
-        criteria,
+        criteria: Object.fromEntries(criteria.map(c => [c.id, c.description])),
         candidateCount: candidates.length,
-        candidatesDigest: candidates.map(c => c.text.slice(0, 120)),
+        candidatesDigest: digestCandidates(candidates, options.privacyFilter),
       })
-
-      let stdout: string
-
-      if (sid && kernels?.hasSession(sid)) {
-        // Kernel path: run the program inside the session's live kernel. The
-        // payload is embedded base64 in the program source: the kernel process
-        // was spawned with its own env snapshot, so a `PY_VERIFY_PAYLOAD` env
-        // var set here would never reach `os.environ` inside it — and a shared
-        // mutable env var would also race between concurrent verify calls.
-        const program = buildPythonProgram(payload)
-        const result = await kernels.execute(sid, program, { signal: exec.signal })
-        stdout = result.stdout || ''
-        // The program prints `VERIFY_ERROR {...}` and exits nonzero on failure;
-        // without this check the error JSON would be mis-parsed as a result.
-        if (stdout.includes('VERIFY_ERROR')) {
-          throw new Error(`verify: kernel cell failed: ${stdout.slice(0, 1000)}`)
-        }
-        if (result.status === 'error' && !stdout) {
-          const detail = result.error?.evalue ?? result.stderr ?? ''
-          // If the kernel's venv lacks llm-verifier, fall back to subprocess
-          // which uses the canonical venv path.
-          if (/ModuleNotFoundError|ImportError/.test(detail)) {
-            stdout = await runVerifySubprocess(defaultVenvPython(), program, payload, { signal: exec.signal })
-          } else {
-            throw new Error(`verify: kernel cell failed: ${detail}`)
-          }
-        }
-      } else {
-        // Subprocess path: spawn the venv python (payload via env var).
-        // P1-fix: pass signal so cancelling verify also terminates the subprocess.
-        stdout = await runVerifySubprocess(defaultVenvPython(), buildPythonProgram(), payload, { signal: exec.signal })
-      }
-
-      const parsed: VerifyResult = parseResultJson(stdout)
+      const startedSingle = Date.now()
+      const tournament = await runTournament(candidates.length, seed, Math.min(pivotsArg, candidates.length), async (a, b) =>
+        scorePairOnSeam(options.callModel, route, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens))
       emitVerifyEvent(session, 'session/verify-result', {
+        engine: 'seam',
         models: [model],
-        index: parsed.index,
-        scores: parsed.scores,
-        ranking: parsed.ranking,
-        nComparisons: parsed.nComparisons,
-        durationMs: Date.now() - startedAt,
+        index: tournament.bestIndex,
+        scores: tournament.meanPreference,
+        ranking: rankByMean(tournament.meanPreference),
+        nComparisons: tournament.nComparisons,
+        durationMs: Date.now() - startedSingle,
       })
-      const best = candidates[parsed.index]?.text ?? ''
+
+      const best = candidates[tournament.bestIndex] ?? ''
+      const scores = tournament.meanPreference
+      const ranking = rankByMean(scores)
       const lines = [
-        `best = candidate[${parsed.index}] (${parsed.scores[parsed.index]?.toFixed(3)})`,
-        `ranking: ${parsed.ranking.join(' > ')}`,
-        `scores: [${parsed.scores.map(s => s.toFixed(3)).join(', ')}]`,
-        `comparisons: ${parsed.nComparisons}, criteria: ${parsed.criteria.join('+')}`,
+        `best = candidate[${tournament.bestIndex}] (${scores[tournament.bestIndex]?.toFixed(3)})`,
+        `ranking: ${ranking.join(' > ')}`,
+        `scores: [${scores.map(s => s.toFixed(3)).join(', ')}]`,
+        `comparisons: ${tournament.nComparisons}, criteria: ${criteria.map(c => c.id).join('+')}`,
         '',
         best,
       ]
       return {
         text: lines.join('\n'),
-        index: parsed.index,
-        scores: parsed.scores,
-        ranking: parsed.ranking,
-        nComparisons: parsed.nComparisons,
+        index: tournament.bestIndex,
+        scores,
+        ranking,
+        nComparisons: tournament.nComparisons,
       }
     },
   })
+}
+
+function renderFused(
+  fused: { bestIndex: number; fusedRanking: number[] },
+  candidates: string[],
+  judgeCount: number,
+): string {
+  return [
+    `fused best = candidate[${fused.bestIndex}] over ${judgeCount} judge(s)`,
+    `ranking: ${fused.fusedRanking.join(' > ')}`,
+    '',
+    candidates[fused.bestIndex] ?? '',
+  ].join('\n')
+}
+
+function fuseMeanPreferences(
+  outcomes: Array<{ model: string; status: string; meanPreference: number[] }>,
+): { bestIndex: number; fusedRanking: number[] } {
+  const n = outcomes[0]?.meanPreference.length ?? 0
+  const borda = new Array<number>(n).fill(0)
+  for (const outcome of outcomes) {
+    const order = outcome.meanPreference
+      .map((score, index) => ({ index, score }))
+      .sort((x, y) => y.score - x.score || x.index - y.index)
+    order.forEach((entry, position) => {
+      borda[entry.index] = (borda[entry.index] ?? 0) + n - position
+    })
+  }
+  const fusedRanking = borda
+    .map((points, index) => ({ index, points: points ?? 0 }))
+    .sort((a, b) => b.points - a.points || a.index - b.index)
+    .map(entry => entry.index)
+  return { bestIndex: fusedRanking[0] ?? -1, fusedRanking }
+}
+
+function rankByMean(meanPreference: readonly number[]): number[] {
+  return meanPreference
+    .map((score, index) => ({ index, score }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(entry => entry.index)
+}
+
+function digestCandidates(candidates: readonly string[], privacyFilter: string | undefined): string[] {
+  return candidates.map((text) => {
+    const masked = privacyFilter === 'full' ? text.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}\b/g, '[redacted key]') : text
+    return masked.slice(0, 120)
+  })
+}
+
+async function scorePairOnSeam(
+  callModel: VerifyCallModel,
+  route: { provider: string; model: string },
+  problem: string,
+  traceA: string,
+  traceB: string,
+  criteria: JudgeCriterion[],
+  nEvaluations: number,
+  signal: AbortSignal,
+  maxTokens: number,
+): Promise<[number, number]> {
+  let raSum = 0
+  let rbSum = 0
+  let count = 0
+  for (let rep = 0; rep < nEvaluations; rep++) {
+    // Odd repetitions swap the prompt slots so the verifier's slot bias cancels;
+    // rewards are mapped back so score_A always means candidate a.
+    const swapped = rep % 2 === 1
+    for (const criterion of criteria) {
+      const prompt = buildJudgePrompt({
+        problem,
+        traceA: swapped ? traceB : traceA,
+        traceB: swapped ? traceA : traceB,
+        criterion,
+      })
+      let ra: number
+      let rb: number
+      try {
+        const out = await callModel({
+          route,
+          userText: prompt,
+          maxTokens,
+          signal,
+        })
+        const tokens = out.logprobs.map(entry => entry.token)
+        const positions = out.logprobs.map(entry => [[entry.token, entry.logprob]] as const)
+        ra = extractScore(out.text, tokens, positions, '<score_A>')
+        rb = extractScore(out.text, tokens, positions, '<score_B>')
+      } catch {
+        // on_error "tie": a failed call contributes a neutral 0.5/0.5 for this
+        // repetition instead of failing the whole comparison.
+        ra = 0.5
+        rb = 0.5
+      }
+      if (swapped) [ra, rb] = [rb, ra]
+      raSum += ra
+      rbSum += rb
+      count += 1
+    }
+  }
+  if (count === 0) return [0.5, 0.5]
+  return [raSum / count, rbSum / count]
 }

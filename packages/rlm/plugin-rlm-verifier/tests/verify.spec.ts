@@ -1,132 +1,171 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { Context } from '@deepseek-ai/cordis'
-import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SubagentRuntime from '@deepseek-ai/dsh-subagent'
-import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
-import * as PluginRlmKernel from '@deepseek-ai/dsh-plugin-rlm-kernel'
-import * as PluginRlmVerifier from '@deepseek-ai/dsh-plugin-rlm-verifier'
-import { SessionId } from '@deepseek-ai/dsh-session'
-import { CallId } from '@deepseek-ai/dsh-llm'
-import { buildPythonProgram, parseResultJson } from '@deepseek-ai/dsh-plugin-rlm-verifier/src/python-bridge.ts'
+/**
+ * Seam-engine unit tests for the `verify` tool. The transport is injected,
+ * so provider traffic never happens; fixtures emit score-tag text plus
+ * matching chosen-token logprobs and pin Eq 3.1 extraction, PPT selection
+ * counts, slot-swap bias cancellation, on-error ties, auto_spawn truncation,
+ * and the process-event sequence through a recording session.
+ */
+import { describe, expect, it } from 'vitest'
+import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
+import { createVerifyTool } from '../src/verify-tool.ts'
+import type { VerifyCallModel, VerifyToolOptions } from '../src/verify-tool.ts'
 
-const roots: string[] = []
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-})
+const TAGS = ['<score_A> A </score_A>', '<score_B> T </score_B>']
 
-async function setup() {
-  const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx)
-  const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-verify-'))
-  roots.push(root)
-  await ctx.plugin(JsonlSessionPersistence, { root })
-  await ctx.plugin(AgentLoop, { agents: [] })
-  await ctx.plugin(SubagentRuntime)
-  await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
-  await ctx.plugin(PluginRlmKernel, { dataDir: root })
-  await ctx.plugin(PluginRlmVerifier, {})
-  return { ctx, root }
+/** Transport that answers every scoring call with A=20 / T=1 distributions. */
+function biasedToA(): { callModel: VerifyCallModel; prompts: string[] } {
+  const prompts: string[] = []
+  const callModel: VerifyCallModel = async (request) => {
+    prompts.push(request.userText)
+    const tokens: TokenLogprob[] = [
+      { token: TAGS[0], logprob: -0.01 },
+      { token: 'A', logprob: -0.02 },
+      { token: TAGS[1], logprob: -0.01 },
+      { token: 'T', logprob: -3.5 },
+    ]
+    return {
+      text: `analysis\n${TAGS[0]}\n${TAGS[1]}`,
+      logprobs: tokens,
+    }
+  }
+  return { callModel, prompts }
 }
 
-describe('verify plugin host mount', () => {
-  it('mounts and registers the verify tool', async () => {
-    const { ctx } = await setup()
-    const tool = ctx.tools.get('verify')
-    expect(tool).toBeDefined()
-    expect(tool?.name).toBe('verify')
-  })
+function baseOptions(overrides: Partial<VerifyToolOptions> = {}): VerifyToolOptions {
+  return {
+    callModel: async () => ({ text: 'x', logprobs: [] }),
+    provider: 'deepseek-official',
+    model: 'deepseek-v4-flash',
+    privacyFilter: '',
+    ...overrides,
+  }
+}
 
-  it('exposes the rlm.kernels registry from plugin-rlm-kernel', async () => {
-    const { ctx } = await setup()
-    const kernels = ctx.get('rlm.kernels')
-    expect(kernels).toBeDefined()
-    expect(typeof kernels?.hasSession).toBe('function')
-    expect(typeof kernels?.execute).toBe('function')
-  })
-})
+const execStub = { signal: new AbortController().signal } as never
 
-describe('verify python bridge', () => {
-  it('parses a VERIFY_RESULT line from python output', () => {
-    const line = 'VERIFY_RESULT {"index":2,"scores":[0.3,0.5,0.9],"ranking":[2,1,0],"n_comparisons":8,"criteria":["Specification","Output","Errors"]}'
-    const parsed = parseResultJson(line)
-    expect(parsed.index).toBe(2)
-    expect(parsed.scores).toEqual([0.3, 0.5, 0.9])
-    expect(parsed.ranking).toEqual([2, 1, 0])
-    expect(parsed.nComparisons).toBe(8)
-  })
+describe('verify seam engine', () => {
+  it('selects the logprobs-favored candidate via the PPT', async () => {
+    const { callModel, prompts } = biasedToA()
+    const tool = createVerifyTool(baseOptions({ callModel }))
+    const value = (await tool.execute(
+      { problem: 'reverse a string', candidates: ['good', 'bad'] },
+      execStub,
+    )) as { index: number; scores: number[]; ranking: number[]; nComparisons: number }
 
-  it('tolerates surrounding text before the JSON payload', () => {
-    const line = 'analysis noise...\nVERIFY_RESULT {"index":0,"scores":[0.7,0.6],"ranking":[0,1],"n_comparisons":3,"criteria":[]}'
-    const parsed = parseResultJson(line)
-    expect(parsed.index).toBe(0)
-  })
-
-  it('rejects output with no JSON payload', () => {
-    expect(() => parseResultJson('no json here')).toThrow(/no JSON result/)
-  })
-
-  it('builds a python program that imports llm_verifier', () => {
-    const program = buildPythonProgram()
-    expect(program).toContain('import llm_verifier')
-    expect(program).toContain('llm_verifier.select')
-    expect(program).toContain('VERIFY_RESULT')
-    expect(program).toContain('VERIFY_ERROR')
-  })
-
-  it('embeds the payload base64 in the program source (kernel path)', () => {
-    const payload = {
-      problem: 'test "problem" with \\ escapes',
-      candidates: [{ text: 'a\nb' }, { text: 'c' }],
-    }
-    const program = buildPythonProgram(payload as never)
-    expect(program).toContain('_PAYLOAD_B64 = ')
-    // base64 round-trips arbitrary JSON text without escaping issues.
-    const b64 = program.match(/_PAYLOAD_B64 = "([^"]*)"/)?.[1] ?? ''
-    expect(JSON.parse(Buffer.from(b64, 'base64').toString('utf8'))).toEqual(payload)
-    expect(program).toContain('base64.b64decode(_PAYLOAD_B64)')
-  })
-})
-
-// Direct tool-execution e2e: runs the verify tool end to end (venv python
-// subprocess path) against real candidate texts. Requires a verifier backend
-// credential (DEEPSEEK_API_KEY / OPENAI_BASE_URL / VERTEX_API_KEY); skipped
-// when absent, mirroring the rlm e2e key gate.
-describe.skipIf(!process.env.DEEPSEEK_API_KEY && !process.env.OPENAI_BASE_URL)('verify tool with-key e2e', () => {
-  it('selects the correct reverse-string candidate via the verify tool', async () => {
-    const { ctx } = await setup()
-    const agent = ctx.agentLoop.create(SessionId('verify-e2e'), {
-      provider: 'probe',
-      model: 'probe',
-    })
-
-    const result = await ctx.tools.execute({
-      name: 'verify',
-      callId: CallId('verify-e2e-call'),
-      arguments: {
-        problem: 'Write a function that reverses a string.',
-        candidates: [
-          'def rev(s): return s[::-1]',
-          'def rev(s): return s',
-          "def rev(s): return ''.join(sorted(s))",
-        ],
-        criteria: '{"Correctness":"Does the code actually reverse the string?"}',
-        n_evaluations: 1,
-        pivots: 1,
-        seed: 0,
-      },
-      agent,
-      signal: new AbortController().signal,
-    })
-
-    // The tool returns { text, index, scores, ranking, nComparisons }.
-    const value = result.value as { index: number; ranking: number[]; text: string }
     expect(value.index).toBe(0)
-    expect(value.ranking[0]).toBe(0)
-    expect(value.text).toContain('best = candidate[0]')
-  }, 120_000)
+    expect(value.ranking).toEqual([0, 1])
+    // N=2, k clamped to 2: ring(2) + pivot pair(1) = 3 directed comparisons.
+    expect(value.nComparisons).toBe(3)
+    expect(prompts.length).toBeGreaterThanOrEqual(3)
+    expect(prompts[0]).toContain('<score_A> LETTER_A_TO_T </score_A>')
+  })
+
+  it('swaps prompt slots on odd repetitions so first-slot bias cancels', async () => {
+    // Judge always prefers whoever sits in slot A — with K=2 reps the bias
+    // cancels and both candidates end at mean 0.5.
+    const seenOrders: string[] = []
+    const callModel: VerifyCallModel = async (_request) => {
+      void _request
+      return { text: `${TAGS[0]}\n${TAGS[1]}`, logprobs: [] }
+    }
+    const instrumented: VerifyCallModel = async (request) => {
+      const segment = (request.userText.split('**Trajectory A:**')[1] ?? '').split('**Trajectory B:**')[0]
+      seenOrders.push(segment.includes('CAND_A') ? 'A-first' : 'B-first')
+      return callModel(request)
+    }
+    const candidates = ['traj CAND_A', 'traj CAND_B']
+    const tool = createVerifyTool(baseOptions({
+      callModel: instrumented,
+      maxTokens: 4_096,
+    }))
+    const value = (await tool.execute(
+      { problem: 'p', candidates, n_evaluations: 2 },
+      execStub,
+    )) as { scores: number[] }
+
+    expect(seenOrders).toContain('A-first')
+    expect(seenOrders).toContain('B-first')
+    expect(Math.abs(value.scores[0] - 0.5)).toBeLessThan(1e-9)
+  })
+
+  it('scores failed calls as neutral ties instead of failing the run', async () => {
+    const callModel: VerifyCallModel = async () => {
+      throw new Error('route down')
+    }
+    const tool = createVerifyTool(baseOptions({ callModel }))
+    const value = (await tool.execute(
+      { problem: 'p', candidates: ['a', 'b'] },
+      execStub,
+    )) as { scores: number[]; nComparisons: number }
+    expect(value.scores[0]).toBeCloseTo(0.5)
+    expect(value.scores[1]).toBeCloseTo(0.5)
+    expect(value.nComparisons).toBeGreaterThan(0)
+  })
+
+  it('fuses two judge panels and records request/result events', async () => {
+    const appended: Array<{ name: string; payload: Record<string, unknown> }> = []
+    const session = {
+      id: 'sess-j',
+      append: (name: string, payload: unknown) => { appended.push({ name, payload: payload as Record<string, unknown> }) },
+    }
+    const callModel: VerifyCallModel = async (request) => {
+      const prefersA = request.route.model === 'judge-a'
+      return {
+        text: prefersA ? `${TAGS[0]}\n${TAGS[1]}` : `${TAGS[1]}\n${TAGS[0]}`,
+        logprobs: [
+          { token: TAGS[0], logprob: -0.01 },
+          { token: prefersA ? 'A' : 'T', logprob: -0.02 },
+          { token: TAGS[1], logprob: -0.03 },
+          { token: prefersA ? 'T' : 'A', logprob: -2 },
+        ],
+      }
+    }
+    const tool = createVerifyTool(baseOptions({
+      callModel,
+      judgeProfiles: {
+        'judge-a': { model: 'model-a' },
+        'judge-b': { model: 'model-b' },
+      },
+    }))
+    const value = (await tool.execute(
+      { problem: 'p', candidates: ['cand-A', 'cand-B'], judges: ['judge-a', 'judge-b'] },
+      { signal: new AbortController().signal, agent: { session } } as never,
+    )) as { judges: Array<{ model: string; status: string }>; nComparisons: number }
+
+    expect(value.judges.map(j => j.status)).toEqual(['ok', 'ok'])
+    expect(value.nComparisons).toBeGreaterThan(0)
+    const names = appended.map(a => a.name)
+    expect(names[0]).toBe('session/verify-request')
+    expect(names.at(-1)).toBe('session/verify-result')
+    const request = appended[0].payload as { models: string[] }
+    expect(request.models).toEqual(['model-a', 'model-b'])
+  })
+
+  it('auto_spawn builds the candidate pool from spawned children', async () => {
+    const started: string[] = []
+    const subagents = {
+      start: async (_provider: string, request: { label?: string }) => {
+        started.push(request.label ?? '')
+        return {
+          result: Promise.resolve({
+            output: [{ type: 'text' as const, text: `child answer ${request.label}` }],
+          }),
+        }
+      },
+    }
+    const prompts: string[] = []
+    const tool = createVerifyTool(baseOptions({
+      subagents: subagents as never,
+      maxChildChars: 1000,
+      callModel: async (request) => {
+        prompts.push(request.userText)
+        return { text: 'x' }
+      },
+    }))
+    const execWithAgent = { signal: new AbortController().signal, agent: { session: { id: 'sess-auto' } } }
+    await tool.execute({ problem: 'p', candidates: [], auto_spawn: 2 }, execWithAgent as never)
+    expect(started).toEqual(['verify-child-1', 'verify-child-2'])
+    expect(prompts.join('\n')).toContain('child answer verify-child-1')
+    expect(prompts.join('\n')).toContain('child answer verify-child-2')
+  })
 })

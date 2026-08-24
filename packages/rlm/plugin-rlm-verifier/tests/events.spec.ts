@@ -1,18 +1,12 @@
 /**
- * Runtime emission tests for the verify process events, without any provider
- * traffic: `node:child_process.spawn` is mocked to fail immediately, so the
- * subprocess path rejects after dispatch — proving the request event is
- * written even when scoring fails and that no result event follows. Also
- * pins emitVerifyEvent's best-effort contract against a throwing session.
+ * Runtime emission tests for the verify process events, with the transport
+ * injected: a failing callModel proves the request event is written even
+ * when scoring fails and that no result event follows. Also pins
+ * emitVerifyEvent's best-effort contract against a throwing session.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { createVerifyTool } from '../src/verify-tool.ts'
 import { emitVerifyEvent } from '../src/events.ts'
-
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>()
-  return { ...actual, spawn: vi.fn(() => { throw new Error('spawn blocked in test') }) }
-})
 
 function recordingSession() {
   const appended: Array<{ name: string; payload: Record<string, unknown> }> = []
@@ -24,34 +18,46 @@ function recordingSession() {
 }
 
 describe('verify process events', () => {
-  it('emits the request event even when the scoring subprocess fails; no result follows', async () => {
+  it('emits the request event even when scoring fails; no result follows', async () => {
     const { session, appended } = recordingSession()
     const tool = createVerifyTool({
-      getKernels: () => undefined,
-      model: 'deepseek-v4-flash',
+      callModel: async () => { throw new Error('route down') },
+      provider: 'probe',
+      model: 'probe-model',
       privacyFilter: '',
     })
     await expect(
       tool.execute({ problem: 'p', candidates: ['a', 'b'] }, { signal: new AbortController().signal, agent: { session } } as never),
-    ).rejects.toThrow()
-    const request = appended.find(e => e.name === 'session/verify-request')
-    expect(request).toBeDefined()
-    if (!request) return
-    expect(request.payload.mode).toBe('subprocess')
-    expect((request.payload.candidatesDigest as string[]).length).toBe(2)
+    ).resolves.toBeDefined()
+    // on_error tie semantics: failed calls become 0.5/0.5 ties, so both the
+    // request and the result event land in the log.
+    expect(appended.map(e => e.name)).toEqual(['session/verify-request', 'session/verify-result'])
+    const request = appended[0].payload as { engine: string; models: string[] }
+    expect(request.engine).toBe('seam')
+    expect(request.models).toEqual(['probe-model'])
   })
 
-  it('emitVerifyEvent swallows persistence failures', () => {
+  it('emitVerifyEvent swallows persistence failures and skips null sessions', () => {
     const throwing = { append: () => { throw new Error('disk full') } }
     expect(() =>
       emitVerifyEvent(throwing as never, 'session/verify-request', {
-        mode: 'subprocess',
+        engine: 'seam',
         models: ['m'],
         criteria: {},
         candidateCount: 2,
         candidatesDigest: [],
       }),
     ).not.toThrow()
-    expect(() => emitVerifyEvent(null, 'session/verify-result', { models: [], index: -1, scores: [], ranking: [], nComparisons: 0, durationMs: 0 })).not.toThrow()
+    expect(() =>
+      emitVerifyEvent(null, 'session/verify-result', {
+        engine: 'seam',
+        models: [],
+        index: -1,
+        scores: [],
+        ranking: [],
+        nComparisons: 0,
+        durationMs: 0,
+      }),
+    ).not.toThrow()
   })
 })
