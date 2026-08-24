@@ -18,8 +18,9 @@ import CommandRuntime from '@deepseek-ai/dsh-commands'
 import AgentPresets from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-agent-presets/types'
 
-// The shipped rlm preset composition lives under apps/cli/config/agent-presets.
-const RLM_PRESET_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'apps', 'cli', 'config', 'agent-presets')
+// The rlm preset composition lives under docs/recipes (dev-mode assembly
+// recipe, deliberately outside the shipped app config roster).
+const RLM_PRESET_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'docs', 'recipes', 'agent-presets')
 // base for bare specifier resolution: the harness repo root.
 const HARNESS_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '..')
 
@@ -69,6 +70,7 @@ describe('rlm preset', () => {
     const schemas = ctx.tools.schemas(handle.agent).map(s => s.name).sort()
     expect(schemas).toContain('ipython')
     expect(schemas).toContain('verify')
+    expect(schemas).toContain('moa')
     await handle.dispose()
   })
 })

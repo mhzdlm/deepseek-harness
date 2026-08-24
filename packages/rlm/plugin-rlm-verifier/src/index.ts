@@ -21,6 +21,13 @@ import { createVerifyTool } from './verify-tool.ts'
 export const name = 'plugin-rlm-verifier'
 export const inject = ['tools', 'subagents', 'sessions', 'agents']
 
+export interface JudgeProfileConfig {
+  model?: string
+  baseUrl?: string
+  keyEnv?: string
+  extraEnv?: string[]
+}
+
 export interface Config {
   /** Optional JSON score-cache file for incremental re-runs. */
   cacheFile?: string
@@ -30,6 +37,13 @@ export interface Config {
   subagentProvider?: string
   /** Max characters captured from each spawned child's result. Default 20000. */
   maxChildChars?: number
+  /**
+   * `''` (off), `'display'` (render judge provenance), or `'full'` (also mask
+   * credential/PII material in candidate text before scoring prompts).
+   */
+  privacyFilter?: string
+  /** Named multi-judge profiles addressable via the tool's `judges` argument. */
+  judgeProfiles?: Record<string, JudgeProfileConfig>
 }
 
 export const Config: z<Config> = z.object({
@@ -37,6 +51,13 @@ export const Config: z<Config> = z.object({
   model: z.string(),
   subagentProvider: z.string(),
   maxChildChars: z.natural(),
+  privacyFilter: z.string(),
+  judgeProfiles: z.dict(z.object({
+    model: z.string(),
+    baseUrl: z.string(),
+    keyEnv: z.string(),
+    extraEnv: z.array(z.string()),
+  })),
 })
 
 export function apply(ctx: Context, config: Config): void {
@@ -57,6 +78,11 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   const subagents = ctx.get('subagents')
+  const privacyFilter = config.privacyFilter === 'display' || config.privacyFilter === 'full' ? config.privacyFilter : ''
+  const judgeProfiles: Record<string, { model: string; baseUrl?: string; keyEnv?: string; extraEnv?: string[] }> = {}
+  for (const [name, profile] of Object.entries(config.judgeProfiles ?? {})) {
+    if (profile.model !== undefined) judgeProfiles[name] = { ...profile, model: profile.model }
+  }
   const tool = createVerifyTool({
     // Lazily resolve the kernel registry from plugin-rlm-kernel. Optional:
     // when the sibling plugin is absent or un-provisioned, falls back to the
@@ -67,6 +93,8 @@ export function apply(ctx: Context, config: Config): void {
     ...(subagents !== undefined ? { subagents } : {}),
     ...(config.subagentProvider !== undefined ? { subagentProvider: config.subagentProvider } : {}),
     ...(config.maxChildChars !== undefined ? { maxChildChars: config.maxChildChars } : {}),
+    privacyFilter,
+    ...(Object.keys(judgeProfiles).length > 0 ? { judgeProfiles } : {}),
     // P1-fix: register auto_spawn controllers for session-tracked abort.
     trackController: (sessionId, controller) => {
       let controllers = sessionControllers.get(sessionId)

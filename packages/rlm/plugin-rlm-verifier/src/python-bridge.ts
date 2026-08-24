@@ -182,7 +182,16 @@ export function runVerifySubprocess(
   python: string,
   program: string,
   payload: VerifyRequest & { criteria?: Record<string, string> },
-  options?: { signal?: AbortSignal },
+  options?: {
+    signal?: AbortSignal
+    /** Judge-specific non-secret overrides (e.g. OPENAI_BASE_URL) merged last. */
+    envOverrides?: Record<string, string>
+    /**
+     * Extra credential variable names forwarded for this judge (resolved from
+     * `process.env` at spawn time, on top of the default provider pair).
+     */
+    forwardEnvNames?: readonly string[]
+  },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     // P1-fix: env 白名单化，排除凭据类变量（与 plugin-rlm-kernel/src/kernel-env.ts
@@ -191,7 +200,8 @@ export function runVerifySubprocess(
     const child = spawn(python, ['-c', program], {
       env: {
         ...safeEnv,
-        ...forwardProviderCredentials(),
+        ...forwardProviderCredentials(process.env, options?.forwardEnvNames),
+        ...(options?.envOverrides ?? {}),
         PY_VERIFY_PAYLOAD: JSON.stringify(payload),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -229,15 +239,22 @@ export function runVerifySubprocess(
 const PROVIDER_CREDENTIAL_VARS = ['DEEPSEEK_API_KEY', 'OPENAI_BASE_URL'] as const
 
 /**
- * Pick {@link PROVIDER_CREDENTIAL_VARS} out of an environment.
+ * Pick provider credential variables out of an environment.
  *
  * @param source - Environment to read; defaults to `process.env`.
- * @returns Only the provider variables that are present, ready to merge over a
- *   scrubbed child env.
+ * @param extraNames - Additional environment variable names to forward beyond
+ *   the defaults (judge profiles name vendor keys this way). Unknown names
+ *   that are unset contribute nothing.
+ * @returns Only the requested variables that are present, ready to merge over
+ *   a scrubbed child env.
  */
-export function forwardProviderCredentials(source: Record<string, string | undefined> = process.env): Record<string, string> {
+export function forwardProviderCredentials(
+  source: Record<string, string | undefined> = process.env,
+  extraNames: readonly string[] = [],
+): Record<string, string> {
   const forwarded: Record<string, string> = {}
-  for (const name of PROVIDER_CREDENTIAL_VARS) {
+  const names = [...PROVIDER_CREDENTIAL_VARS, ...extraNames]
+  for (const name of names) {
     const value = source[name]
     if (value !== undefined) forwarded[name] = value
   }

@@ -17,6 +17,22 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { buildPythonProgram, defaultVenvPython, parseResultJson, runVerifySubprocess } from './python-bridge.ts'
 import type { KernelExecutor, VerifyRequest, VerifyResult } from './python-bridge.ts'
 import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import type { JudgeOutcome } from './fusion.ts'
+import { fuseJudgeOutcomes } from './fusion.ts'
+import { emitVerifyEvent } from './events.ts'
+import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel/src/redact.ts'
+
+/** A named judge profile: which model to score with and how to authenticate. */
+export interface JudgeProfile {
+  /** Verifier model id passed to `llm_verifier.select`. */
+  model: string
+  /** Optional OpenAI-compatible endpoint override (non-secret). */
+  baseUrl?: string
+  /** Environment variable holding this vendor's API key. */
+  keyEnv?: string
+  /** Additional environment variables forwarded alongside `keyEnv`. */
+  extraEnv?: string[]
+}
 
 /** Default criteria when the caller names none (Sec 4.3 tri-criteria). */
 export const DEFAULT_CRITERIA: Record<string, string> = {
@@ -44,6 +60,13 @@ export interface VerifyToolOptions {
    * are aborted on session disposal (mirrors host-handlers.ts abortSession).
    */
   trackController?: (sessionId: string, controller: AbortController) => () => void
+  /**
+   * `display` annotates rendered output with per-judge provenance; `full`
+   * masks credential/PII material in candidate text before scoring prompts.
+   */
+  privacyFilter?: '' | 'display' | 'full'
+  /** Named judge profiles addressable via the `judges` argument. */
+  judgeProfiles?: Record<string, JudgeProfile>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -96,6 +119,12 @@ export function createVerifyTool(options: VerifyToolOptions) {
         type: 'string',
         description: 'Verifier model name (default deepseek-v4-flash)',
       },
+      judges: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Named judge profiles: run one independent verification per profile and fuse the rankings. Requires judgeProfiles in plugin config.',
+      },
       auto_spawn: {
         type: 'integer',
         description:
@@ -112,9 +141,32 @@ export function createVerifyTool(options: VerifyToolOptions) {
           scores: { type: 'array', items: { type: 'number' }, required: true },
           ranking: { type: 'array', items: { type: 'integer' }, required: true },
           nComparisons: { type: 'integer', required: true },
+          judges: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                model: { type: 'string', required: true },
+                status: { type: 'string', required: true },
+              },
+            },
+          },
+          fusedRanking: { type: 'array', items: { type: 'integer' } },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: value.text }],
+      render: (_args, value) => {
+        const lines: string[] = []
+        if (options.privacyFilter === 'display' && Array.isArray(value.judges)) {
+          lines.push(`verify panel (${value.judges.length} judges)`)
+          for (const judge of value.judges as Array<{ model: string; status: string }>) {
+            lines.push(`  ${judge.status === 'ok' ? '✓' : '✗'} ${judge.model}`)
+          }
+          lines.push('')
+        }
+        lines.push(value.text)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
     },
     async execute(args, exec) {
       const problem = typeof args.problem === 'string' ? args.problem : ''
@@ -123,6 +175,11 @@ export function createVerifyTool(options: VerifyToolOptions) {
         ? raw.filter((c): c is string => typeof c === 'string').map(text => ({ text }))
         : []
       if (!problem.trim()) throw new Error('verify: problem is required')
+      // `full` privacy mode masks credential/PII material in candidate text
+      // before it enters any scoring prompt.
+      if (options.privacyFilter === 'full') {
+        candidates = candidates.map(c => ({ text: redactReferenceText(c.text) }))
+      }
 
       // auto_spawn: if candidates were not provided and the caller asked for
       // N subagents, dispatch N children against the same task and use their
@@ -204,9 +261,94 @@ export function createVerifyTool(options: VerifyToolOptions) {
         model,
         ...(options.cacheFile !== undefined ? { cache: options.cacheFile } : {}),
       }
+      const payloadBase = { ...payload }
+      delete (payloadBase as { model?: string }).model
+
+      const kernels = sid ? options.getKernels() : undefined
+      const session = exec.agent?.session ?? null
+      const startedAt = Date.now()
+
+      // Multi-judge mode: one independent subprocess per named profile, each
+      // authenticated only with that profile's variables, then Borda fusion.
+      // Subprocess-forced by design: the kernel's env whitelist cannot carry
+      // arbitrary vendor credentials (known limitation).
+      const judgeNames = Array.isArray(args.judges) ? args.judges.filter((j): j is string => typeof j === 'string') : []
+      if (judgeNames.length > 0) {
+        const profiles = options.judgeProfiles ?? {}
+        const available = Object.keys(profiles)
+        const selected = judgeNames.map(name => ({ name, profile: profiles[name] }))
+        const unknown = selected.filter(s => s.profile === undefined).map(s => s.name)
+        if (unknown.length > 0) {
+          throw new Error(`verify: unknown judge profile(s) '${unknown.join(', ')}'. Available: ${available.join(', ') || '(none)'}`)
+        }
+        const validJudges = selected as Array<{ name: string; profile: JudgeProfile }>
+        emitVerifyEvent(session, 'session/verify-request', {
+          mode: 'subprocess',
+          models: validJudges.map(j => j.profile.model),
+          criteria,
+          candidateCount: candidates.length,
+          candidatesDigest: candidates.map(c => c.text.slice(0, 120)),
+          judgeProfiles: judgeNames,
+        })
+        type JudgeRun = JudgeOutcome & { scores?: number[]; ranking?: number[]; index?: number; nComparisons?: number }
+        const outcomes: JudgeRun[] = await Promise.all(
+          validJudges.map(async ({ name, profile }) => {
+            try {
+              const payload: VerifyRequest = { ...payloadBase, model: profile.model }
+              const judgeStdout = await runVerifySubprocess(defaultVenvPython(), buildPythonProgram(), payload, {
+                signal: exec.signal,
+                ...(profile.baseUrl !== undefined ? { envOverrides: { OPENAI_BASE_URL: profile.baseUrl } } : {}),
+                forwardEnvNames: [profile.keyEnv, ...(profile.extraEnv ?? [])].filter((n): n is string => Boolean(n)),
+              })
+              const parsed = parseResultJson(judgeStdout)
+              return { model: name, status: 'ok' as const, scores: parsed.scores, ranking: parsed.ranking, index: parsed.index, nComparisons: parsed.nComparisons }
+            } catch {
+              return { model: name, status: 'failed' as const }
+            }
+          }),
+        )
+        if (!outcomes.some(o => o.status === 'ok')) {
+          throw new Error(`verify: all ${outcomes.length} judges failed (${outcomes.map(o => o.model).join(', ')})`)
+        }
+        const fusion = fuseJudgeOutcomes(outcomes, candidates.length)
+        const bestScores = fusion.fusedScores
+        const text = [
+          `fused best = candidate[${fusion.bestIndex}] over ${outcomes.filter(o => o.status === 'ok').length} judge(s)`,
+          `ranking: ${fusion.fusedRanking.join(' > ')}`,
+          `fused scores: [${bestScores.map(s => s.toFixed(3)).join(', ')}]`,
+          '',
+          candidates[fusion.bestIndex]?.text ?? '',
+        ].join('\n')
+        emitVerifyEvent(session, 'session/verify-result', {
+          models: judgeNames,
+          index: fusion.bestIndex,
+          scores: bestScores,
+          ranking: fusion.fusedRanking,
+          nComparisons: outcomes.reduce((sum, o) => sum + (o.nComparisons ?? 0), 0),
+          ...(fusion.failedJudges.length > 0 ? { failedJudges: fusion.failedJudges } : {}),
+          fusedRanking: fusion.fusedRanking,
+          durationMs: Date.now() - startedAt,
+        })
+        return {
+          text,
+          index: fusion.bestIndex,
+          scores: bestScores,
+          ranking: fusion.fusedRanking,
+          nComparisons: outcomes.reduce((sum, o) => sum + (o.nComparisons ?? 0), 0),
+          judges: outcomes.map(o => ({ model: o.model, status: o.status })),
+          fusedRanking: fusion.fusedRanking,
+        }
+      }
+
+      emitVerifyEvent(session, 'session/verify-request', {
+        mode: sid && kernels?.hasSession(sid) ? 'kernel' : 'subprocess',
+        models: [model],
+        criteria,
+        candidateCount: candidates.length,
+        candidatesDigest: candidates.map(c => c.text.slice(0, 120)),
+      })
 
       let stdout: string
-      const kernels = sid ? options.getKernels() : undefined
 
       if (sid && kernels?.hasSession(sid)) {
         // Kernel path: run the program inside the session's live kernel. The
@@ -239,6 +381,14 @@ export function createVerifyTool(options: VerifyToolOptions) {
       }
 
       const parsed: VerifyResult = parseResultJson(stdout)
+      emitVerifyEvent(session, 'session/verify-result', {
+        models: [model],
+        index: parsed.index,
+        scores: parsed.scores,
+        ranking: parsed.ranking,
+        nComparisons: parsed.nComparisons,
+        durationMs: Date.now() - startedAt,
+      })
       const best = candidates[parsed.index]?.text ?? ''
       const lines = [
         `best = candidate[${parsed.index}] (${parsed.scores[parsed.index]?.toFixed(3)})`,
