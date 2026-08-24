@@ -27,6 +27,10 @@ export interface WireRequest {
    * produces any one of these strings. Mapped from `GenerateOptions.stop`.
    */
   stop?: string[]
+  /** Chosen-token logprobs requested (mapped from `GenerateOptions.logprobs`). */
+  logprobs?: boolean
+  /** Per-position variant list bound served alongside the chosen tokens. */
+  top_logprobs?: number
 }
 
 /** System-role message: a single string of instructions. */
