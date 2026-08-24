@@ -112,8 +112,8 @@ const AUDITS: FileAudit[] = [
 				mustContain: [/BOOTSTRAP_LOCK_WAIT_TIMEOUT_MS = 60_000/, /Date\.now\(\) [<>]=? deadline/],
 			},
 			{
-				label: "#12 llm-verifier in default extra packages",
-				mustContain: [/uvArg:\s*"llm-verifier"/],
+				label: "#12 retired: llm-verifier must NOT be in default extra packages",
+				mustNotContain: [/uvArg:\s*"llm-verifier"/],
 			},
 			{
 				label: "#13d processIsRunning delegates to isPidAlive",

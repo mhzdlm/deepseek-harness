@@ -16,8 +16,8 @@ export const inject = ['invariants']
 
 /**
  * No runtime invariant: the verify tool is a stateless wrapper around the
- * `llm_verifier` Python package (executed via the kernel or a subprocess), so
- * there is no package-owned event or snapshot for a companion to observe.
+ * TypeScript scoring/tournament engine on the host LLM seam, so there is no
+ * package-owned event or snapshot for a companion to observe.
  */
 const install: InvariantInstaller = () => {}
 

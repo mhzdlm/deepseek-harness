@@ -77,9 +77,12 @@
 #   - PRIME_AGENT_* → DSH_RLM_* (new name first, legacy name fallback via rlmEnv())
 #   - Affected: bootstrap.ts, boot-gate.ts, fork-server.ts, harness.py
 #
-# #12 llm-verifier injection (2026-08-23)
-#     - DEFAULT_RLM_EXTRA_PACKAGES gains llm-verifier entry
-#     - Auto-installs LLM-as-a-Verifier into kernel venv
+# #12 llm-verifier injection (2026-08-23) — RETIRED (2026-08-24)
+#     - Originally: DEFAULT_RLM_EXTRA_PACKAGES gains llm-verifier entry
+#       (auto-installs LLM-as-a-Verifier into kernel venv)
+#     - Retired: verify scoring migrated onto the host LLM seam (Phase 2b);
+#       the kernel-installed llm_verifier package is no longer used by any
+#       consumer. audit-vendor.mts now asserts the entry must NOT exist.
 #     Affected: bootstrap.ts
 #
 # #13 Windows platform adaptation (2026-08-23)
