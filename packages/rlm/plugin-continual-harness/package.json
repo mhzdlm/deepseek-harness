@@ -24,7 +24,8 @@
     "lib/index.js",
     "lib/invariant.js",
     "lib/types/**/*.js",
-    "lib/types/**/*.d.ts"
+    "lib/types/**/*.d.ts",
+    "src/**/*"
   ],
   "license": "MIT",
   "dependencies": {

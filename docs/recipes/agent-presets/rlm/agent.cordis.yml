@@ -49,3 +49,6 @@
 
     - id: continual-harness
       name: '@deepseek-ai/dsh-plugin-continual-harness'
+
+    - id: rlm-moa
+      name: '@deepseek-ai/dsh-plugin-rlm-moa'
