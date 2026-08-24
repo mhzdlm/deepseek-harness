@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process'
 import {
   lstatSync,
   readdirSync,
-  rmSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -172,7 +172,10 @@ export function safeRmDirSync(dirPath: string): void {
   }
 
   try {
-    rmSync(dirPath, { recursive: false, force: true })
+    // rmdirSync, not rmSync: with recursive:false rmSync rejects directories
+    // outright (ERR_FS_EISDIR on every platform), so the tree skeleton would
+    // survive. The directory is empty at this point by construction.
+    rmdirSync(dirPath)
   } catch {
     // Already gone.
   }

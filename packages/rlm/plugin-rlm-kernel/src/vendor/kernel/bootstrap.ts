@@ -59,6 +59,17 @@ export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) =>
 export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
 export const DEFAULT_RLM_EXTRA_IMPORT_LABELS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.promptLabel);
 const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
+// [local patch #15] Windows has no POSIX shell: run the official PowerShell
+// installer pipeline instead of `sh -c 'curl | sh'`.
+const UV_INSTALL_COMMAND_PWSH = "irm https://astral.sh/uv/install.ps1 | iex";
+function uvInstallSpec(): { command: string; args: string[] } {
+	return process.platform === "win32"
+		? { command: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", UV_INSTALL_COMMAND_PWSH] }
+		: { command: "sh", args: ["-c", UV_INSTALL_COMMAND] };
+}
+function uvInstallHint(): string {
+	return process.platform === "win32" ? UV_INSTALL_COMMAND_PWSH : UV_INSTALL_COMMAND;
+}
 const REQUIRED_HARNESS_METHODS = [
 	"create_memory",
 	"update_memory",
@@ -578,17 +589,19 @@ async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
 		rlmEnv(...ENV_INSTALL_UV) === "1" || (!options.onProgress && (await confirmUvInstall()));
 	if (!shouldInstallUv) {
 		throw new Error(
-			`uv is required to set up the Python kernel. Install uv yourself: ${UV_INSTALL_COMMAND}, ` +
+			`uv is required to set up the Python kernel. Install uv yourself: ${uvInstallHint()}, ` +
 				"or set DSH_RLM_INSTALL_UV=1 (legacy PRIME_AGENT_INSTALL_UV=1) to let the runtime run that installer.",
 		);
 	}
 
 	reportProgress(options, "› installing uv (one-time)…");
 	try {
-		await run("sh", ["-c", UV_INSTALL_COMMAND], { stdio: options.onProgress ? "ignore" : "inherit" });
+		// [local patch #15] per-platform installer invocation (see uvInstallSpec).
+		const installer = uvInstallSpec();
+		await run(installer.command, installer.args, { stdio: options.onProgress ? "ignore" : "inherit" });
 	} catch (error) {
 		throw new Error(
-			`couldn't install uv from astral.sh; install it yourself: ${UV_INSTALL_COMMAND}, then re-run prime-agent. ${errorMessage(error)}`,
+			`couldn't install uv from astral.sh; install it yourself: ${uvInstallHint()}, then re-run prime-agent. ${errorMessage(error)}`,
 		);
 	}
 
@@ -718,9 +731,11 @@ async function writeBootstrapVersion(
 function runtimeCandidateDirs(): string[] {
 	const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 	// [local patch] Replaced prime's `dist/prime-agent-runtime` lookup with this
-	// package's vendored Python runtime. moduleDir is `src/vendor/kernel`, so the
-	// candidates resolve to `vendor/prime-agent-runtime` at the package root.
+	// package's vendored Python runtime. Candidates cover both shipped layouts:
+	// source tree (`src/vendor/kernel`) and tsc output (`lib/types/vendor/kernel`),
+	// each resolving to `vendor/prime-agent-runtime` at the package root.
 	return [
+		path.resolve(moduleDir, "..", "..", "..", "..", "vendor", "prime-agent-runtime"),
 		path.resolve(moduleDir, "..", "..", "..", "vendor", "prime-agent-runtime"),
 		path.resolve(moduleDir, "..", "prime-agent-runtime"),
 	];

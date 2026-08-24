@@ -27,9 +27,10 @@ describe('kernel child env boundary (end-to-end, #14)', () => {
     const artifactDir = join(root, 'session-artifacts', sid)
     mkdirSync(artifactDir, { recursive: true })
 
-    // Plant a credential exactly where a leaked host env would carry it.
-    planted = process.env.DEEPSEEK_API_KEY
-    process.env.DEEPSEEK_API_KEY = 'sk-e2e-canary-must-not-leak'
+    // Plant a canary variable that carries a credential-blocklist prefix
+    // (DSH_ is default-denied) without touching any real provider key name.
+    planted = process.env.DSH_RLM_TEST_CREDENTIAL
+    process.env.DSH_RLM_TEST_CREDENTIAL = 'e2e-canary-must-not-leak'
 
     const kernel = new KernelManager({
       cwd: process.cwd(),
@@ -52,7 +53,7 @@ describe('kernel child env boundary (end-to-end, #14)', () => {
       // exactly what the spawn handed the child. The cell's final expression
       // is the result value (print() output does not reach `.result`).
       const probe = await kernel.execute(
-        "import os\n(int('DEEPSEEK_API_KEY' in os.environ), int(bool(os.environ.get('PATH') or os.environ.get('Path'))))",
+        "import os\n(int('DSH_RLM_TEST_CREDENTIAL' in os.environ), int(bool(os.environ.get('PATH') or os.environ.get('Path'))))",
       )
       expect(probe.status).toBe('ok')
       const match = /\((\d+),\s*(\d+)\)/.exec(String(probe.result))
@@ -61,8 +62,8 @@ describe('kernel child env boundary (end-to-end, #14)', () => {
       expect(leaked).toBe(0)
       expect(hasPath).toBe(1)
     } finally {
-      if (planted === undefined) delete process.env.DEEPSEEK_API_KEY
-      else process.env.DEEPSEEK_API_KEY = planted
+      if (planted === undefined) delete process.env.DSH_RLM_TEST_CREDENTIAL
+      else process.env.DSH_RLM_TEST_CREDENTIAL = planted
       await kernel.dispose()
       rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }

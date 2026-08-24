@@ -7,10 +7,11 @@
 // or a spawn request fails/times out, callers catch ForkServerUnavailable and fall
 // back to the existing path, so correctness never depends on fork.
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { ENV_FORKSERVER, rlmEnv } from "../../env.ts";
 // [local patch #13a] killSignalSafe: POSIX signals are no-ops on Windows.
-import { killSignalSafe } from "../../util/platform";
+// [local patch #13b] safeRmDirSync: cut symlinks instead of recursing into targets.
+import { killSignalSafe, safeRmDirSync } from "../../util/platform";
 // [local patch #14] shared kernel-env builder: the forkserver template must not
 // carry host credentials any more than a directly spawned kernel does.
 import { buildKernelEnv } from "../../kernel-env.ts";
@@ -301,7 +302,9 @@ class ForkServer {
 		}
 		if (this.socketDir) {
 			try {
-				rmSync(this.socketDir, { recursive: true, force: true });
+				// [local patch #13b] Junction-safe removal: cut symlinks instead of
+				// recursing into targets — same policy as index.ts cleanupResources.
+				safeRmDirSync(this.socketDir);
 			} catch {
 				// Leave the socket dir for OS tmp cleanup.
 			}

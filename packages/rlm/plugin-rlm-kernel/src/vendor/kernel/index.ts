@@ -21,7 +21,7 @@ import {
 	type SnapshotResult,
 } from "./state-snapshot.ts";
 // [local patch #13] Windows platform-adaptation helpers (signals / rmSync / file mode).
-import { killSignalSafe, safeRmDirSync, writeFileSecureSync } from "../../util/platform";
+import { isPidAlive, killSignalSafe, safeRmDirSync, writeFileSecureSync } from "../../util/platform";
 // [local patch #14] shared kernel-env builders (default-deny allowlist for the
 // kernel process; case-insensitive name matching on Windows).
 import { buildKernelEnv } from "../../kernel-env.ts";
@@ -848,14 +848,10 @@ export class KernelManager {
 	// pid so a dead child fails fast instead of burning the full resolve timeout.
 	private forkedKernelDied(): boolean {
 		if (this.kernelPid === undefined) return false;
-		try {
-			process.kill(this.kernelPid, 0);
-			return false;
-		} catch (error) {
-			// EPERM means the pid exists but isn't signalable by us — still alive.
-			// Only ESRCH (no such process) is genuine death.
-			return !(error instanceof Error && (error as NodeJS.ErrnoException).code === "EPERM");
-		}
+		// [local patch #13f] Route the liveness probe through isPidAlive: a bare
+		// zero-signal kill misreads EPERM on Windows (pid may be alive but
+		// unsignalable); the helper resolves that via a tasklist fallback.
+		return !isPidAlive(this.kernelPid);
 	}
 
 	private async waitForResolvedConnection(connectionPath: string): Promise<ConnectionInfo> {

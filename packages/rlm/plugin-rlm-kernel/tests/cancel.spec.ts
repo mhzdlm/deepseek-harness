@@ -8,11 +8,18 @@
  * No LLM key required; needs the kernel venv.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { KernelManager } from '../src/vendor/kernel/index.ts'
+import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
 import { SessionKernelRegistry } from '../src/kernels.ts'
+
+// Real kernel required; self-skip when the venv is missing so machines
+// without it stay green in the default suite (same pattern as
+// kernel-env-runtime.spec.ts).
+const venvReady = existsSync(venvPythonPath(getKernelVenvDir()))
+const dIt = venvReady ? it : it.skip
 
 const roots: string[] = []
 afterEach(() => {
@@ -41,7 +48,7 @@ async function makeKernel(root: string, sid: string): Promise<KernelManager> {
 }
 
 describe('ipython cancellation (item-6)', () => {
-  it('abort interrupts a running CPU-bound cell; the kernel stays immediately usable', async () => {
+  dIt('abort interrupts a running CPU-bound cell; the kernel stays immediately usable', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-cancel-'))
     roots.push(root)
     const kernel = await makeKernel(root, 'cancel-session')
@@ -75,7 +82,7 @@ describe('ipython cancellation (item-6)', () => {
     await kernel.dispose()
   }, 90_000)
 
-  it('recovers a kernel stuck on an uninterruptible blocking cell (item-6 recovery)', async () => {
+  dIt('recovers a kernel stuck on an uninterruptible blocking cell (item-6 recovery)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-cancel-recover-'))
     roots.push(root)
     const kernels = new SessionKernelRegistry({

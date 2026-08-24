@@ -3,10 +3,16 @@
  * background at session creation (no ipython call needed). No LLM key required.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
 import { SessionKernelRegistry, warmUpSession } from '../src/kernels.ts'
+
+// Real kernel required; self-skip when the venv is missing (same pattern as
+// kernel-env-runtime.spec.ts).
+const venvReady = existsSync(venvPythonPath(getKernelVenvDir()))
+const dIt = venvReady ? it : it.skip
 
 const roots: string[] = []
 afterEach(() => {
@@ -14,7 +20,7 @@ afterEach(() => {
 })
 
 describe('kernel warmup (item-7)', () => {
-  it('provisions a kernel for a session without an ipython call', async () => {
+  dIt('provisions a kernel for a session without an ipython call', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-warmup-'))
     roots.push(root)
     const kernels = new SessionKernelRegistry({

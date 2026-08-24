@@ -84,7 +84,8 @@ export class IdleTracker {
  * sweep that disposes kernels unused for `idleTimeoutMs` — their dill snapshot
  * is flushed on dispose, so a later ipython call re-provisions from it.
  */
-export class SessionKernelRegistry {	private readonly kernels = new Map<string, KernelManager>()
+export class SessionKernelRegistry {
+  private readonly kernels = new Map<string, KernelManager>()
   private readonly pendingRestore = new Map<string, RestoreResult>()
   /**
 	 * In-flight provision promises, keyed by session id. Guards against two

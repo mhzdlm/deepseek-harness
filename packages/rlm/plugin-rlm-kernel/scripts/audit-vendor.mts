@@ -86,6 +86,11 @@ const AUDITS: FileAudit[] = [
 				mustNotContain: [/process\.kill\([^)]*,\s*killSignal\)/],
 			},
 			{
+				label: "#13f forked-liveness probe via isPidAlive (no bare zero-signal)",
+				mustContain: [/\[local patch #13f\]/, /return !isPidAlive\(/],
+				mustNotContain: [/process\.kill\([^)]*,\s*0\s*\)/],
+			},
+			{
 				label: "#14 kernel env built by the shared kernel-env module",
 				mustContain: [/import\s*\{[^}]*buildKernelEnv[^}]*\}\s*from\s*["']\.\.\/\.\.\/kernel-env\.ts["']/],
 			},
@@ -122,6 +127,11 @@ const AUDITS: FileAudit[] = [
 				label: "#14 boot helper children get a credential-scrubbed env",
 				mustContain: [/\[local patch #14\]/, /env: buildScrubbedEnv\(\)/],
 			},
+			{
+				label: "#15 per-platform uv installer (no sh on Windows)",
+				mustContain: [/\[local patch #15\]/, /install\.ps1/, /uvInstallSpec\(\)/],
+				mustNotContain: [/run\(\s*"sh"/],
+			},
 		],
 	},
 	{
@@ -138,6 +148,10 @@ const AUDITS: FileAudit[] = [
 			{
 				label: "#13a no direct POSIX signal kill",
 				mustNotContain: [/process\.kill\([^)]*,\s*"(?:SIGTERM|SIGKILL|SIGINT)"\)/],
+			},
+			{
+				label: "#13b junction-safe dir removal",
+				mustNotContain: [/rmSync\([^)]*recursive:\s*true/],
 			},
 			{
 				label: "#14 forkserver template launched with a scrubbed env",

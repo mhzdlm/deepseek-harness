@@ -5,10 +5,16 @@
  * No LLM key required; needs the kernel venv (bootstrap happens once).
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
 import { SessionKernelRegistry } from '../src/kernels.ts'
+
+// Real kernel required; self-skip when the venv is missing (same pattern as
+// kernel-env-runtime.spec.ts).
+const venvReady = existsSync(venvPythonPath(getKernelVenvDir()))
+const dIt = venvReady ? it : it.skip
 
 const roots: string[] = []
 afterEach(() => {
@@ -16,7 +22,7 @@ afterEach(() => {
 })
 
 describe('idle kernel reclamation (real kernel)', () => {
-  it('disposes an idle kernel and restores its namespace from the dill snapshot', async () => {
+  dIt('disposes an idle kernel and restores its namespace from the dill snapshot', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-idle-'))
     roots.push(root)
     let now = 1_000_000
