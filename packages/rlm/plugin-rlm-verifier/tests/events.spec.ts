@@ -32,9 +32,9 @@ describe('verify process events', () => {
     // on_error tie semantics: failed calls become 0.5/0.5 ties, so both the
     // request and the result event land in the log.
     expect(appended.map(e => e.name)).toEqual(['session/verify-request', 'session/verify-result'])
-    const request = appended[0].payload as { engine: string; models: string[] }
-    expect(request.engine).toBe('seam')
-    expect(request.models).toEqual(['probe-model'])
+    const request = appended[0]?.payload as { engine: string; models: string[] } | undefined
+    expect(request?.engine).toBe('seam')
+    expect(request?.models).toEqual(['probe-model'])
   })
 
   it('emitVerifyEvent swallows persistence failures and skips null sessions', () => {

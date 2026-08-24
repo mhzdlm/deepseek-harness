@@ -10,7 +10,7 @@ import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
 import { createVerifyTool } from '../src/verify-tool.ts'
 import type { VerifyCallModel, VerifyToolOptions } from '../src/verify-tool.ts'
 
-const TAGS = ['<score_A> A </score_A>', '<score_B> T </score_B>']
+const TAGS = ['<score_A> A </score_A>', '<score_B> T </score_B>'] as const
 
 /** Transport that answers every scoring call with A=20 / T=1 distributions. */
 function biasedToA(): { callModel: VerifyCallModel; prompts: string[] } {
@@ -69,7 +69,7 @@ describe('verify seam engine', () => {
       return { text: `${TAGS[0]}\n${TAGS[1]}`, logprobs: [] }
     }
     const instrumented: VerifyCallModel = async (request) => {
-      const segment = (request.userText.split('**Trajectory A:**')[1] ?? '').split('**Trajectory B:**')[0]
+      const segment = (request.userText.split('**Trajectory A:**')[1] ?? '').split('**Trajectory B:**')[0] ?? ''
       seenOrders.push(segment.includes('CAND_A') ? 'A-first' : 'B-first')
       return callModel(request)
     }
@@ -85,7 +85,7 @@ describe('verify seam engine', () => {
 
     expect(seenOrders).toContain('A-first')
     expect(seenOrders).toContain('B-first')
-    expect(Math.abs(value.scores[0] - 0.5)).toBeLessThan(1e-9)
+    expect(Math.abs((value.scores[0] ?? 0) - 0.5)).toBeLessThan(1e-9)
   })
 
   it('scores failed calls as neutral ties instead of failing the run', async () => {
@@ -137,8 +137,8 @@ describe('verify seam engine', () => {
     const names = appended.map(a => a.name)
     expect(names[0]).toBe('session/verify-request')
     expect(names.at(-1)).toBe('session/verify-result')
-    const request = appended[0].payload as { models: string[] }
-    expect(request.models).toEqual(['model-a', 'model-b'])
+    const request = appended[0]?.payload as { models: string[] } | undefined
+    expect(request?.models).toEqual(['model-a', 'model-b'])
   })
 
   it('auto_spawn builds the candidate pool from spawned children', async () => {
@@ -159,7 +159,7 @@ describe('verify seam engine', () => {
       maxChildChars: 1000,
       callModel: async (request) => {
         prompts.push(request.userText)
-        return { text: 'x' }
+        return { text: 'x', logprobs: [] }
       },
     }))
     const execWithAgent = { signal: new AbortController().signal, agent: { session: { id: 'sess-auto' } } }

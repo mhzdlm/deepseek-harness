@@ -1,24 +1,73 @@
 /**
- * Keyed end-to-end for multi-judge verification: two DeepSeek models score the
- * same tiny candidate pool through real subprocesses, exercising the
- * per-judge credential forwarding (`keyEnv`) and Borda fusion against live
- * provider responses. Self-skips without `DEEPSEEK_API_KEY`.
+ * Keyed end-to-end for multi-judge verification on the host seam: two DeepSeek
+ * models score the same tiny candidate pool through real `ctx.llm.stream()`
+ * calls that carry chosen-token logprobs, exercising per-judge routes and
+ * Borda fusion against live provider responses. Self-skips without
+ * `DEEPSEEK_API_KEY`.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import LlmRuntime, { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
 import { createVerifyTool } from '../src/verify-tool.ts'
-import type { KernelExecutor } from '../src/python-bridge.ts'
+import type { VerifyCallModel } from '../src/verify-tool.ts'
 
 const hasKey = Boolean(process.env.DEEPSEEK_API_KEY)
 const dIt = hasKey ? it : it.skip
 
-describe('multi-judge verification (real providers)', () => {
+const contexts: Context[] = []
+
+afterEach(async () => {
+  await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose()))
+})
+
+/**
+ * Live seam transport: reduce one `ctx.llm.stream()` call to its text plus
+ * chosen-token logprobs, exactly as the plugin's `callSeamModel` does.
+ */
+async function liveSeam(): Promise<VerifyCallModel> {
+  const ctx = new Context()
+  contexts.push(ctx)
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(LlmDeepSeek, {})
+  return async (request) => {
+    const assembler = new BlockAssembler()
+    const options: GenerateOptions = {
+      provider: request.route.provider,
+      model: request.route.model,
+      messages: [
+        createUserMessage({
+          content: [{ type: 'text', text: request.userText }],
+          source: { kind: 'plugin', plugin: 'dsh-plugin-rlm-verifier' },
+        }),
+      ],
+      maxTokens: request.maxTokens,
+      logprobs: { topLogprobs: 20 },
+      signal: request.signal,
+    }
+    for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
+    const finish = assembler.finish
+    if (finish.kind === 'error') throw new Error(`verify scoring failed: ${finish.failure.message}`)
+    if (finish.kind === 'aborted') throw new Error('verify scoring aborted')
+    const text = assembler
+      .blocks()
+      .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
+      .map(block => block.text)
+      .join('')
+    return { text, logprobs: [...assembler.logprobs] }
+  }
+}
+
+describe('multi-judge verification (real providers, host seam)', () => {
   dIt('fuses two deepseek judges over a trivial pool', async () => {
     const tool = createVerifyTool({
-      getKernels: () => undefined,
+      callModel: await liveSeam(),
+      provider: 'deepseek-official',
       privacyFilter: '',
       judgeProfiles: {
-        flash: { model: 'deepseek-v4-flash', keyEnv: 'DEEPSEEK_API_KEY' },
-        pro: { model: 'deepseek-v4-pro', keyEnv: 'DEEPSEEK_API_KEY' },
+        flash: { model: 'deepseek-v4-flash', provider: 'deepseek-official' },
+        pro: { model: 'deepseek-v4-pro', provider: 'deepseek-official' },
       },
     })
     const value = (await tool.execute(
@@ -33,24 +82,22 @@ describe('multi-judge verification (real providers)', () => {
     )) as {
       index: number
       ranking: number[]
-      failedJudges?: string[]
+      nComparisons: number
       judges: Array<{ model: string; status: string }>
-      fusedRanking: number[]
     }
 
     expect(value.judges.map(j => j.status)).toEqual(['ok', 'ok'])
-    expect(value.failedJudges ?? []).toEqual([])
-    expect(value.fusedRanking).toHaveLength(2)
+    expect(value.nComparisons).toBeGreaterThanOrEqual(1)
     expect(value.index).toBeGreaterThanOrEqual(0)
     expect(value.index).toBeLessThan(2)
     // The mathematically correct candidate must win with both judges voting.
     expect(value.ranking[0]).toBe(0)
   }, 240_000)
 
-  dIt('kernel-less single-model path still works against the live provider', async () => {
-    const kernels: KernelExecutor | undefined = undefined
+  dIt('single-model path still works against the live provider', async () => {
     const tool = createVerifyTool({
-      getKernels: () => kernels,
+      callModel: await liveSeam(),
+      provider: 'deepseek-official',
       model: 'deepseek-v4-flash',
       privacyFilter: '',
     })
