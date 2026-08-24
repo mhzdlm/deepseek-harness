@@ -71,7 +71,8 @@ describe('moa over the real llm seam', () => {
     }
     expect(adapter.seen.map(o => o.model)).toEqual(['ref-a', 'ref-b', 'aggregator'])
     // Reference cap applies to references only; the aggregator stays uncapped.
-    expect(adapter.seen[0].maxTokens).toBe(256)
-    expect(adapter.seen[2].maxTokens).toBeUndefined()
+    const [refA, , aggregatorCall] = adapter.seen
+    expect(refA?.maxTokens).toBe(256)
+    expect(aggregatorCall?.maxTokens).toBeUndefined()
   })
 })

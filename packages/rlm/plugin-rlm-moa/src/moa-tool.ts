@@ -38,7 +38,7 @@ export type MoaCallModel = (
   request: MoaModelRequest,
   signal: AbortSignal,
   maxTokens: number | undefined,
-  sessionId: GenerateOptions['sessionId'] | undefined,
+  sessionId?: GenerateOptions['sessionId'],
 ) => Promise<MoaModelResult>
 
 /**

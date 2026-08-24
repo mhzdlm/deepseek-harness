@@ -28,15 +28,26 @@ function twoSlotPreset(overrides: Partial<MoaResolvedPreset> = {}): MoaResolvedP
   return {
     name: 'panel',
     references: [
-      { provider: 'p-a', model: 'model-a', label: 'model-a@p-a' },
-      { provider: 'p-b', model: 'model-b', label: 'model-b@p-b' },
+      { provider: 'p-a', model: 'model-a', label: 'model-a@p-a', mode: 'llm', providerFromDefault: false },
+      { provider: 'p-b', model: 'model-b', label: 'model-b@p-b', mode: 'llm', providerFromDefault: false },
     ],
-    aggregator: { provider: 'p-agg', model: 'agg', label: 'agg@p-agg' },
+    aggregator: { provider: 'p-agg', model: 'agg', label: 'agg@p-agg', mode: 'llm', providerFromDefault: false },
     referenceMaxTokens: 512,
     referenceTimeoutMs: 120_000,
     degradedPolicy: 'loud',
     ...overrides,
   }
+}
+
+/** Narrowed shape of the moa tool's successful output, for typed assertions. */
+interface MoaExecuteValue {
+  synthesis: string
+  preset: string
+  references: Array<{ label: string; status: string }>
+  failedLabels: string[]
+  truncated: boolean
+  judges?: Array<{ model: string; status: string }>
+  fusedRanking?: number[]
 }
 
 function singlePreset(preset: MoaResolvedPreset): {
@@ -80,18 +91,28 @@ function hangingModel(): MoaCallModel {
 async function runTool(
   options: Partial<Parameters<typeof createMoaTool>[0]>,
   args: Record<string, unknown>,
-): Promise<{ value: Awaited<ReturnType<ReturnType<typeof createMoaTool>['execute']>>; calls: CallRecord[] }> {
+): Promise<{ value: MoaExecuteValue; calls: CallRecord[] }> {
   const calls: CallRecord[] = []
   const base = okModel('answer')
   const wrapped: MoaCallModel = async (slot, request, signal, maxTokens) => {
     calls.push({ slotLabel: slot.label, request, maxTokens })
     return base(slot, request, signal, maxTokens)
   }
-  const tool = createMoaTool({ ...options, callModel: options.callModel ?? wrapped })
-  const value = await tool.execute(args, {
+  const tool = createMoaTool({
+    resolvePreset: options.resolvePreset ?? (() => { throw new Error('no preset resolver in this test') }),
+    availablePresets: options.availablePresets ?? (() => []),
+    privacyFilter: options.privacyFilter ?? '',
+    ...(options.redactReference !== undefined ? { redactReference: options.redactReference } : {}),
+    ...(options.traceDir !== undefined ? { traceDir: options.traceDir } : {}),
+    ...(options.callSubagent !== undefined ? { callSubagent: options.callSubagent } : {}),
+    ...(options.trackSubagentController !== undefined ? { trackSubagentController: options.trackSubagentController } : {}),
+    callModel: options.callModel ?? wrapped,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  })
+  const value = (await tool.execute(args, {
     signal: new AbortController().signal,
-  } as Parameters<typeof tool.execute>[1])
-  return { value: value as Awaited<ReturnType<ReturnType<typeof createMoaTool>['execute']>>, calls }
+  } as Parameters<typeof tool.execute>[1])) as MoaExecuteValue
+  return { value, calls }
 }
 
 describe('moa orchestration', () => {
@@ -122,11 +143,11 @@ describe('moa orchestration', () => {
       { problem: 'derive x', context: 'ctx-material' },
     )
     expect(aggregatorRequest).toBeDefined()
-    expect(aggregatorRequest!.userText).toContain('## Task')
-    expect(aggregatorRequest!.userText).toContain('derive x')
-    expect(aggregatorRequest!.userText).toContain('ctx-material')
-    expect(aggregatorRequest!.userText).toContain('Reference 1 — model-a@p-a:')
-    expect(aggregatorRequest!.userText).toContain('Reference 2 — model-b@p-b:')
+    expect(aggregatorRequest?.userText).toContain('## Task')
+    expect(aggregatorRequest?.userText).toContain('derive x')
+    expect(aggregatorRequest?.userText).toContain('ctx-material')
+    expect(aggregatorRequest?.userText).toContain('Reference 1 — model-a@p-a:')
+    expect(aggregatorRequest?.userText).toContain('Reference 2 — model-b@p-b:')
   })
 
   it('loud policy announces failed references to the aggregator; quiet omits them', async () => {
@@ -149,8 +170,8 @@ describe('moa orchestration', () => {
         },
         { problem: 'p' },
       )
-      if (policy === 'loud') expect(seen[0]).toContain('Reference failed: model-a@p-a.')
-      else expect(seen[0]).not.toContain('Reference failed')
+      if (policy === 'loud') expect(seen[0] ?? '')('Reference failed: model-a@p-a.')
+      else expect(seen[0] ?? '').not.toContain('Reference failed')
     }
   })
 
@@ -261,10 +282,10 @@ describe('moa orchestration', () => {
       { ...singlePreset(twoSlotPreset()), privacyFilter: 'full', redactReference: redactReferenceText, callModel },
       { problem: 'p' },
     )
-    expect(aggregatorRequest!.userText).toContain('[redacted email]')
-    expect(aggregatorRequest!.userText).toContain('[redacted key]')
-    expect(aggregatorRequest!.userText).not.toContain('bob@corp.io')
-    expect(aggregatorRequest!.userText).not.toContain('sk-proj-abc123def456789')
+    expect(aggregatorRequest?.userText).toContain('[redacted email]')
+    expect(aggregatorRequest?.userText).toContain('[redacted key]')
+    expect(aggregatorRequest?.userText).not.toContain('bob@corp.io')
+    expect(aggregatorRequest?.userText).not.toContain('sk-proj-abc123def456789')
   })
 
   it('routes subagent-mode slots through callSubagent with folded prompts', async () => {
@@ -291,10 +312,10 @@ describe('moa orchestration', () => {
     const value = (await tool.execute({ problem: 'panel task' }, exec as never)) as { failedLabels: string[] }
     expect(value.failedLabels).toEqual([])
     expect(subCalls.length).toBe(1)
-    expect(subCalls[0].label).toBe('agent:researcher@spawn')
+    expect(subCalls[0]?.label).toBe('agent:researcher@spawn')
     // The child prompt folds the reference persona into the task text at the
     // wiring boundary (index.ts); here the pieces are asserted separately.
-    expect(subCalls[0].userText).toContain('panel task')
+    expect(subCalls[0]?.userText).toContain('panel task')
   })
 
   it('an unwired callSubagent degrades its slot instead of failing the panel', async () => {
@@ -315,6 +336,7 @@ describe('moa orchestration', () => {
     const tool = createMoaTool({
       ...singlePreset(preset),
       privacyFilter: '',
+      callModel: okModel('unused'),
       callSubagent: async () => {
         called++
         return { text: 'x' }

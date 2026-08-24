@@ -170,7 +170,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('rlm with-key e2e', () => {
     // child must receive the subagent-end notice (i.e., the recursion's
     // "async send-back" actually worked, not just that the handle was created).
     const grandchildId = grandchildren[0]!.id
-    const grandchildSession = ctx.sessions.get(grandchildId)
+    const grandchildSession = ctx.sessions.get(SessionId(grandchildId))
     expect(grandchildSession).toBeDefined()
     const grandchildEnd = await waitForEnd(grandchildId, 120_000, 'grandchild')
     expect(grandchildEnd).toBeDefined()
