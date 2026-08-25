@@ -63,7 +63,7 @@ const AUDITS: FileAudit[] = [
 		checks: [
 			{
 				label: "#13 platform helpers imported (killSignalSafe/safeRmDirSync/writeFileSecureSync)",
-				mustContain: [/import\s*\{[^}]*killSignalSafe[^}]*safeRmDirSync[^}]*writeFileSecureSync[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform["']/],
+				mustContain: [/import\s*\{[^}]*killSignalSafe[^}]*safeRmDirSync[^}]*writeFileSecureSync[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform\.ts["']/],
 			},
 			{
 				label: "#1/#4 disposeKernelsForSession exported (pi-ai cleanup replacement)",
@@ -117,7 +117,7 @@ const AUDITS: FileAudit[] = [
 			},
 			{
 				label: "#13d processIsRunning delegates to isPidAlive",
-				mustContain: [/\[local patch #13d\]/, /return isPidAlive\(pid\)/, /import\s*\{[^}]*isPidAlive[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform["']/],
+				mustContain: [/\[local patch #13d\]/, /return isPidAlive\(pid\)/, /import\s*\{[^}]*isPidAlive[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform\.ts["']/],
 			},
 			{
 				label: "#13e PATHEXT-aware executable lookup",
@@ -147,7 +147,7 @@ const AUDITS: FileAudit[] = [
 			},
 			{
 				label: "#13a killSignalSafe imported and used for orphan kill",
-				mustContain: [/import\s*\{[^}]*killSignalSafe[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform["']/, /killSignalSafe\(msg\.pid/],
+				mustContain: [/import\s*\{[^}]*killSignalSafe[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform\.ts["']/, /killSignalSafe\(msg\.pid/],
 			},
 			{
 				label: "#13a no direct POSIX signal kill",

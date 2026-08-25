@@ -9,7 +9,7 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ENV_INSTALL_UV, ENV_KERNEL_PYTHON, ENV_KERNEL_VENV, rlmEnv } from "../../env.ts";
-import { isPidAlive } from "../../util/platform";
+import { isPidAlive } from "../../util/platform.ts";
 // [local patch #14] credential-scrubbed env for boot helper children (uv install,
 // venv provisioning): deny-list strip instead of the kernel's default-deny
 // allowlist, because the installer shell needs a broad environment.

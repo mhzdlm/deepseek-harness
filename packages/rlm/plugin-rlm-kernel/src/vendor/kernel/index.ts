@@ -21,7 +21,7 @@ import {
 	type SnapshotResult,
 } from "./state-snapshot.ts";
 // [local patch #13] Windows platform-adaptation helpers (signals / rmSync / file mode).
-import { isPidAlive, killSignalSafe, safeRmDirSync, writeFileSecureSync } from "../../util/platform";
+import { isPidAlive, killSignalSafe, safeRmDirSync, writeFileSecureSync } from "../../util/platform.ts";
 // [local patch #14] shared kernel-env builders (default-deny allowlist for the
 // kernel process; case-insensitive name matching on Windows).
 import { buildKernelEnv } from "../../kernel-env.ts";

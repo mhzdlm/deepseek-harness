@@ -11,7 +11,7 @@ import { mkdtempSync } from "node:fs";
 import { ENV_FORKSERVER, rlmEnv } from "../../env.ts";
 // [local patch #13a] killSignalSafe: POSIX signals are no-ops on Windows.
 // [local patch #13b] safeRmDirSync: cut symlinks instead of recursing into targets.
-import { killSignalSafe, safeRmDirSync } from "../../util/platform";
+import { killSignalSafe, safeRmDirSync } from "../../util/platform.ts";
 // [local patch #14] shared kernel-env builder: the forkserver template must not
 // carry host credentials any more than a directly spawned kernel does.
 import { buildKernelEnv } from "../../kernel-env.ts";
