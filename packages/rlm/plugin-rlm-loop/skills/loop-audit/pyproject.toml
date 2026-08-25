@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loop-audit"
+version = "0.1.0"
+description = "Deterministic Loop Engineering audit-header validation as a callable kernel skill"
+
+[tool.setuptools]
+py-modules = ["loop_audit"]
