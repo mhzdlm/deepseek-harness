@@ -148,3 +148,58 @@ describe('leased reclaim with snapshot-failure protection (T3.2)', () => {
     expect(k.kernels.has('s1')).toBe(false)
   })
 })
+
+/**
+ * Real-kernel integration (mirrors idle-reclaim.spec): a pinned kernel must
+ * survive the idle sweep while an unpinned sibling is reclaimed; after unpin,
+ * the same sweep reclaims it and the namespace still revives from the dill
+ * snapshot. Self-skips when the shared venv is missing.
+ */
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
+
+const venvReady = existsSync(venvPythonPath(getKernelVenvDir()))
+const rIt = venvReady ? it : it.skip
+
+describe('pinned kernel vs real idle sweep', () => {
+  rIt('keeps a pinned kernel HOT through the sweep, then reclaims normally after unpin', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-pin-'))
+    roots.push(root)
+    let now = 1_000_000
+    const kernels = new SessionKernelRegistry({
+      dataDir: root,
+      hostHandlers: {
+        'model.info': async () => ({ provider: 'stub', model: 'pin-test' }),
+      },
+      idleTimeoutMs: 1_000,
+      now: () => now,
+    })
+
+    const pinned = await kernels.forSession('pin-session')
+    await pinned.execute('y = 7')
+    await kernels.forSession('free-session')
+
+    // Both past idle timeout; pin-session holds a lease.
+    now += 5_000
+    kernels.pin('pin-session', 'schedule')
+    const first = await kernels.disposeIdle()
+    expect(first).toContain('free-session')
+    expect(first).not.toContain('pin-session')
+    expect(kernels.hasSession('pin-session')).toBe(true)
+
+    // Unpin → the next sweep reclaims it; the variable survives via snapshot.
+    kernels.unpin('pin-session', 'schedule')
+    now += 5_000
+    const second = await kernels.disposeIdle()
+    expect(second).toContain('pin-session')
+
+    const revived = await kernels.forSession('pin-session')
+    const result = await revived.execute('y + 1')
+    expect(result.status).toBe('ok')
+    expect(String(result.result)).toContain('8')
+    expect(kernels.consumeRestoreNotice('pin-session')).toBeDefined()
+
+    await kernels.disposeAll()
+  }, 180_000)
+})
