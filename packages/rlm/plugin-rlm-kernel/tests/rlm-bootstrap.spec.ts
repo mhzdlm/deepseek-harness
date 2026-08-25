@@ -40,6 +40,7 @@ describe('rlm bootstrap code', () => {
     expect(code).toContain('host_request("session.query", payload)')
     expect(code).toContain('async def tail(self, n=20, max_chars=2000):')
     expect(code).toContain('async def grep(self, pattern, limit=50, max_chars=2000):')
+    expect(code).toContain('async def search(self, pattern, limit=20, max_chars=2000):')
   })
 
   it('injects the agent_message object for retained-child follow-ups', () => {

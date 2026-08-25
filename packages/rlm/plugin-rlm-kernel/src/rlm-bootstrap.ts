@@ -71,6 +71,12 @@ except Exception as _prime_agent_rlm_error:
             result = await self._query({"op": "grep", "pattern": pattern, "limit": limit, "maxChars": max_chars})
             return result.get("messages", [])
 
+        async def search(self, pattern, limit=20, max_chars=2000):
+            """Cross-session full-text search (requires the host-side
+            session-query service; fails loud when it is not mounted)."""
+            result = await self._query({"op": "search", "pattern": pattern, "limit": limit, "maxChars": max_chars})
+            return result.get("messages", [])
+
     transcript = _PrimeAgentTranscript()
 
     class _PrimeAgentMessage:

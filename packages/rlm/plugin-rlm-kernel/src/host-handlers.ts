@@ -35,6 +35,19 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 // Importing the subagent package's types pulls its `declare module '@deepseek-ai/cordis'`
 // augmentation into the program, making `ctx.subagents` type-check.
 import type { SubagentListEntry, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+
+/** Minimal structural surface of the optional host-side session-query engine. */
+interface SessionQueryEngineLike {
+  searchSessions(request: { query: string; limit?: number }): Promise<{
+    items: ReadonlyArray<{
+      header: { id: unknown; title?: unknown }
+      bestMatch: { snippet: string }
+      live: boolean
+    }>
+    /** Opaque continuation cursor; present when more pages exist. */
+    nextCursor?: string
+  }>
+}
 // Importing the llm package's types pulls its `declare module '@deepseek-ai/cordis'`
 // augmentation into the program, making `ctx.llm` type-check (same trick as the
 // subagent import above). `ctx.llm` is `LlmRuntime | undefined` at runtime when
@@ -371,10 +384,14 @@ export function createHostHandlers(
     // Programmatic read access to the owning session's own transcript
     // (prompt-as-a-variable): `transcript.tail(n)` / `transcript.grep(pattern)`
     // in the kernel are thin wrappers over this type. Read-only, capped.
+    //
+    // op=search extends the same type with cross-session full-text search via
+    // the optional host-side session-query engine; it fails loud when that
+    // service is not mounted instead of silently degrading to own-session.
     'session.query': async (payload) => {
       const agent = ctx.agents.currentInitiator()
       if (!agent) throw new Error('session.query requires an owning agent session')
-      const op = payload.op === 'grep' ? 'grep' : 'tail'
+      const op = payload.op === 'grep' ? 'grep' : payload.op === 'search' ? 'search' : 'tail'
       const n = typeof payload.n === 'number' && Number.isFinite(payload.n) ? Math.floor(payload.n) : 20
       const limit = typeof payload.limit === 'number' && Number.isFinite(payload.limit)
         ? Math.min(200, Math.max(1, Math.floor(payload.limit)))
@@ -385,14 +402,40 @@ export function createHostHandlers(
         typeof payload.maxTotal === 'number' && Number.isFinite(payload.maxTotal) ? Math.floor(payload.maxTotal) : 40_000))
 
       let pattern: RegExp | undefined
-      if (op === 'grep') {
+      if (op === 'grep' || op === 'search') {
         const source = typeof payload.pattern === 'string' ? payload.pattern : ''
-        if (!source.trim()) throw new Error('session.query grep requires a non-empty pattern')
-        try {
-          pattern = new RegExp(source, 'i')
-        } catch (error) {
-          throw new Error(`session.query: invalid pattern: ${error instanceof Error ? error.message : String(error)}`)
+        if (!source.trim()) throw new Error(`session.query ${op} requires a non-empty pattern`)
+        if (op === 'grep') {
+          try {
+            pattern = new RegExp(source, 'i')
+          } catch (error) {
+            throw new Error(`session.query: invalid pattern: ${error instanceof Error ? error.message : String(error)}`)
+          }
         }
+      }
+
+      // Cross-session full-text search rides the optional host-side session
+      // query engine. Optional by design: the deployment mounts it when it
+      // wants the capability; absent, we fail loud instead of silently
+      // degrading to own-session scope.
+      if (op === 'search') {
+        const engine = (ctx as unknown as { get(name: string): unknown }).get('sessionQuery') as
+          | SessionQueryEngineLike
+          | undefined
+        if (!engine) {
+          throw new Error(
+            'session.query search requires the host-side session-query service '
+            + '(mount @deepseek-ai/dsh-session-query-sqlite on the host composition)',
+          )
+        }
+        const page = await engine.searchSessions({ query: payload.pattern as string, limit })
+        const items = page.items.map(hit => ({
+          sessionId: String(hit.header.id),
+          ...(typeof hit.header.title === 'string' ? { title: hit.header.title } : {}),
+          snippet: hit.bestMatch.snippet.slice(0, perMessageCap),
+          live: hit.live,
+        }))
+        return { messages: items, truncated: page.nextCursor !== undefined || items.length === limit, total: items.length }
       }
 
       const render = (message: { role: string; content: unknown }): { role: string; text: string } => {

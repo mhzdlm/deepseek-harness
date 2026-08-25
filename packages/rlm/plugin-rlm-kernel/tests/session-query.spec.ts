@@ -14,7 +14,7 @@ interface FakeMessage {
   content: Array<{ type: string; text?: string }>
 }
 
-function fakeCtx(messages: FakeMessage[]) {
+function fakeCtx(messages: FakeMessage[], engine?: { searchSessions: (request: unknown) => Promise<unknown> }) {
   const ctx = {
     agents: {
       currentInitiator: () => ({
@@ -22,16 +22,23 @@ function fakeCtx(messages: FakeMessage[]) {
         options: { provider: 'p', model: 'm' },
       }),
     },
+    get(name: string) {
+      return name === 'sessionQuery' ? engine : undefined
+    },
   }
   return ctx as unknown as Context
 }
 
-async function query(payload: Record<string, unknown>, messages: FakeMessage[] = [
-  { role: 'user', content: [{ type: 'text', text: 'hello world' }] },
-  { role: 'assistant', content: [{ type: 'text', text: 'greetings WORLD again' }] },
-  { role: 'user', content: [{ type: 'text', text: 'unrelated third' }] },
-]) {
-  const { handlers } = createHostHandlers(fakeCtx(messages), 'spawn', 'unused')
+async function query(
+  payload: Record<string, unknown>,
+  messages: FakeMessage[] = [
+    { role: 'user', content: [{ type: 'text', text: 'hello world' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'greetings WORLD again' }] },
+    { role: 'user', content: [{ type: 'text', text: 'unrelated third' }] },
+  ],
+  engine?: { searchSessions: (request: unknown) => Promise<unknown> },
+) {
+  const { handlers } = createHostHandlers(fakeCtx(messages, engine), 'spawn', 'unused')
   const requireHandler = (name: string) => {
     const handler = handlers[name]
     if (!handler) throw new Error(`missing handler ${name}`)
@@ -96,5 +103,26 @@ describe('session.query bridge', () => {
       { role: 'user', content: [{ type: 'text', text: 'visible' }] },
     ])
     expect(result.messages).toEqual([{ role: 'user', text: 'visible' }])
+  })
+
+  it('search maps cross-session hits through the optional engine (T1.1b)', async () => {
+    const engine = {
+      searchSessions: async (_request: unknown) => ({
+        items: [
+          { header: { id: 'sess-a', title: 'Auth work' }, bestMatch: { snippet: 'jwt rotation snippet' }, live: true },
+          { header: { id: 'sess-b' }, bestMatch: { snippet: 'older jwt note' }, live: false },
+        ],
+        nextCursor: 'cursor-1',
+      }),
+    }
+    const result = await query({ op: 'search', pattern: 'jwt', limit: 5 }, [], engine)
+    expect(result.messages).toHaveLength(2)
+    expect(result.messages[0]).toMatchObject({ sessionId: 'sess-a', title: 'Auth work', snippet: 'jwt rotation snippet', live: true })
+    // A continuation cursor means more pages exist → flagged as truncated.
+    expect(result.truncated).toBe(true)
+  })
+
+  it('fails loud when the session-query service is not mounted', async () => {
+    await expect(query({ op: 'search', pattern: 'jwt' }, [])).rejects.toThrow(/session-query service/)
   })
 })
