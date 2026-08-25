@@ -17,6 +17,10 @@ LIFETIME.md (T3.2 design) resolved the dsh idle-reclaim/session-dispose model ve
 - Per-lease TTL in the registry: lifetimes belong to the holder's semantics (Phase B consumers pin for their window), per LIFETIME.md §6.
 - Phase B wiring and Phase C supervisor both remain documented and deferred.
 
+## Phase B status (same day)
+
+tool-jobs / tool-goal rows joined the rlm agent preset over the host-mounted services (shipped-preset pattern; probe MOUNT_OK). The trigger path is the existing prompt-delivery route — session/created warms up, restore revives WARM snapshots, and busy covers active cells — so no rlm-side lease consumer exists yet: upstream triggers expose no task-window events. The pin/unpin API is ready for when they do (LIFETIME.md open question 4).
+
 ## Required verification
 
 - Unit suite (`keep-alive.spec.ts`): oldest ordering, lease counting/clearing, LRU eviction order with lease/busy exclusion, and the snapshot-failure retry cycle. Real-kernel integration continues via the existing idle-reclaim spec.
