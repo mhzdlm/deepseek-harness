@@ -51,6 +51,27 @@ except Exception as _prime_agent_rlm_error:
             return await self.run(prompt, **kwargs)
 
     rlm = _PrimeAgentMissingRlm()
+
+    class _PrimeAgentTranscript:
+        """Programmatic read access to this session's own transcript.
+
+        Backed by the host read-only session.query bridge: the model can
+        inspect and search its own history as data (prompt-as-a-variable)
+        instead of relying on memory alone. Output is capped host-side.
+        """
+
+        async def _query(self, payload):
+            return await rlm.host_request("session.query", payload)
+
+        async def tail(self, n=20, max_chars=2000):
+            result = await self._query({"op": "tail", "n": n, "maxChars": max_chars})
+            return result.get("messages", [])
+
+        async def grep(self, pattern, limit=50, max_chars=2000):
+            result = await self._query({"op": "grep", "pattern": pattern, "limit": limit, "maxChars": max_chars})
+            return result.get("messages", [])
+
+    transcript = _PrimeAgentTranscript()
 `.trim()
 
 /**

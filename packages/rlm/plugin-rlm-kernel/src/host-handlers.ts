@@ -21,6 +21,11 @@
  * schema the vendored runtime's `_subagent_from_payload` actually requires
  * (the raw `SubagentListEntry` shape previously would have raised
  * "missing rlm_child_id" on the Python side).
+ *
+ * `session.query` gives the kernel programmatic read access to the owning
+ * session's own transcript (`transcript.tail` / `transcript.grep` in the
+ * injected bootstrap): the prompt-as-a-variable half of the RLM model.
+ * Read-only and hard-capped; writes still never leave the host.
  * @module @deepseek-ai/dsh-plugin-rlm-kernel
  */
 
@@ -255,6 +260,67 @@ export function createHostHandlers(
         provider: agent?.options.provider ?? null,
         input: [],
       }
+    },
+
+    // Programmatic read access to the owning session's own transcript
+    // (prompt-as-a-variable): `transcript.tail(n)` / `transcript.grep(pattern)`
+    // in the kernel are thin wrappers over this type. Read-only, capped.
+    'session.query': async (payload) => {
+      const agent = ctx.agents.currentInitiator()
+      if (!agent) throw new Error('session.query requires an owning agent session')
+      const op = payload.op === 'grep' ? 'grep' : 'tail'
+      const n = typeof payload.n === 'number' && Number.isFinite(payload.n) ? Math.floor(payload.n) : 20
+      const limit = typeof payload.limit === 'number' && Number.isFinite(payload.limit)
+        ? Math.min(200, Math.max(1, Math.floor(payload.limit)))
+        : 50
+      const perMessageCap = Math.min(10_000, Math.max(50,
+        typeof payload.maxChars === 'number' && Number.isFinite(payload.maxChars) ? Math.floor(payload.maxChars) : 2_000))
+      const totalCap = Math.min(80_000, Math.max(500,
+        typeof payload.maxTotal === 'number' && Number.isFinite(payload.maxTotal) ? Math.floor(payload.maxTotal) : 40_000))
+
+      let pattern: RegExp | undefined
+      if (op === 'grep') {
+        const source = typeof payload.pattern === 'string' ? payload.pattern : ''
+        if (!source.trim()) throw new Error('session.query grep requires a non-empty pattern')
+        try {
+          pattern = new RegExp(source, 'i')
+        } catch (error) {
+          throw new Error(`session.query: invalid pattern: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+
+      const render = (message: { role: string; content: unknown }): { role: string; text: string } => {
+        const blocks = Array.isArray(message.content) ? message.content : []
+        const text = blocks
+          .map((block) => {
+            const record = block as { type?: string; text?: unknown }
+            return record.type === 'text' && typeof record.text === 'string' ? record.text : ''
+          })
+          .filter(Boolean)
+          .join(' ')
+          .slice(0, perMessageCap)
+        return { role: message.role, text }
+      }
+
+      const derived = agent.session.deriveMessages()
+      let selected = derived.map(render).filter(item => item.text.length > 0)
+      let truncated = false
+      if (op === 'tail') {
+        selected = selected.slice(-Math.min(Math.max(n, 1), 200))
+      } else {
+        if (pattern === undefined) throw new Error('session.query: pattern missing for grep')
+        const matched = selected.filter(item => pattern.test(item.text))
+        truncated = matched.length > limit
+        selected = matched.slice(0, limit)
+      }
+      let used = 0
+      const kept = selected.filter((item) => {
+        if (used + item.text.length > totalCap) { truncated = true; return false }
+        used += item.text.length
+        return true
+      })
+
+      return { messages: kept, truncated, total: derived.length }
     },
   }
 

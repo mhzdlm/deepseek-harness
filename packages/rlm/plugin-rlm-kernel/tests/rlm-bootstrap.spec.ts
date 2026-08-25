@@ -32,4 +32,13 @@ describe('rlm bootstrap code', () => {
     ] as never)
     expect(code.match(/"weather"/g)).toHaveLength(1)
   })
+
+  it('injects the transcript object backed by the session.query bridge', () => {
+    const code = buildRlmBootstrapCode()
+    expect(code).toContain('class _PrimeAgentTranscript')
+    expect(code).toContain('transcript = _PrimeAgentTranscript()')
+    expect(code).toContain('host_request("session.query", payload)')
+    expect(code).toContain('async def tail(self, n=20, max_chars=2000):')
+    expect(code).toContain('async def grep(self, pattern, limit=50, max_chars=2000):')
+  })
 })
