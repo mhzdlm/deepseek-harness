@@ -41,4 +41,11 @@ describe('rlm bootstrap code', () => {
     expect(code).toContain('async def tail(self, n=20, max_chars=2000):')
     expect(code).toContain('async def grep(self, pattern, limit=50, max_chars=2000):')
   })
+
+  it('injects the agent_message object for retained-child follow-ups', () => {
+    const code = buildRlmBootstrapCode()
+    expect(code).toContain('class _PrimeAgentMessage')
+    expect(code).toContain('agent_message = _PrimeAgentMessage()')
+    expect(code).toContain('host_request("rlm.message", payload)')
+  })
 })

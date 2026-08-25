@@ -56,6 +56,17 @@ interface RunStub {
 
 type RunFactory = (request: SubagentStartRequest) => RunStub
 
+interface ContinuableCapture {
+  provider: string
+  label: string
+  request: { prompt: Array<{ type: string; text: string }>; persona?: string; maxDepth?: number }
+}
+
+interface FollowupCapture {
+  childId: string
+  message: string
+}
+
 /**
  * Fake subagent provider: records each start, yields one microtask so the
  * caller can abort inside the real registration window, then honors a
@@ -65,9 +76,16 @@ function makeCtx(
   parent: ReturnType<typeof fakeParent> | undefined,
   starts: StartCapture[],
   runFactory?: RunFactory,
-): Context & { __children: SubagentListEntry[]; __failListModels: () => void } {
+): Context & {
+  __children: SubagentListEntry[]
+  __failListModels: () => void
+  __continuables: ContinuableCapture[]
+  __followups: FollowupCapture[]
+} {
   let failListModels = false
   const children: SubagentListEntry[] = []
+  const continuables: ContinuableCapture[] = []
+  const followups: FollowupCapture[] = []
 
   async function start(provider: string, request: SubagentStartRequest): Promise<SubagentRun> {
     starts.push({ provider, request })
@@ -81,9 +99,20 @@ function makeCtx(
     return run as unknown as SubagentRun
   }
 
+  async function startContinuable(spec: { provider: string; label: string; request: ContinuableCapture['request'] }) {
+    continuables.push({ provider: spec.provider, label: spec.label, request: spec.request })
+    const childId = `cont-${continuables.length}`
+    return { childId, messageId: 'inbox-1' }
+  }
+
+  async function followup(_parent: unknown, childId: string, content: Array<{ type: string; text?: string }>) {
+    followups.push({ childId, message: content.map(block => block.text ?? '').join('') })
+    return 'msg-1'
+  }
+
   const ctx = {
     agents: { currentInitiator: () => parent },
-    subagents: { start, listChildren: async (): Promise<SubagentListEntry[]> => children },
+    subagents: { start, listChildren: async (): Promise<SubagentListEntry[]> => children, startContinuable, followup },
     llm: {
       listModels: async () => {
         if (failListModels) throw new Error('catalog unavailable')
@@ -97,6 +126,8 @@ function makeCtx(
     __failListModels: () => {
       failListModels = true
     },
+    __continuables: continuables,
+    __followups: followups,
   }
   return ctx as typeof ctx & Context
 }
@@ -252,6 +283,59 @@ describe('host.request handler table', () => {
 
     const bare = createHostHandlers(makeCtx(undefined, starts), 'spawn', 'unused')
     await expect(requireHandler(bare.handlers, 'model.info')({})).resolves.toEqual({ id: null, provider: null, input: [] })
+  })
+
+  it('rlm.run retained=true starts a continuable child registered for follow-ups (T1.2)', async () => {
+    const parent = fakeParent()
+    const starts: StartCapture[] = []
+    const ctx = makeCtx(parent, starts)
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
+
+    const result = await requireHandler(handlers, 'rlm.run')({
+      prompt: 'own the auth review',
+      kwargs: { name: 'auth-reviewer', retained: true },
+    })
+
+    expect(ctx.__continuables).toHaveLength(1)
+    expect(ctx.__continuables[0]!.provider).toBe('spawn')
+    expect(ctx.__continuables[0]!.label).toBe('auth-reviewer')
+    expect(result.retained).toBe(true)
+    // The durable child id is the continuation manager's reserved session id.
+    expect(String(result.rlm_child_id)).toMatch(/^cont-/)
+
+    // The registry keeps retained children even though there is no run to await.
+    await expect(requireHandler(handlers, 'rlm.message')({
+      target: 'auth-reviewer',
+      message: 'check the new regression test',
+    })).resolves.toMatchObject({ child_id: result.rlm_child_id })
+  })
+
+  it('rlm.message routes by child id or label and acknowledges delivery (T1.2)', async () => {
+    const parent = fakeParent()
+    const starts: StartCapture[] = []
+    const { handlers } = createHostHandlers(makeCtx(parent, starts), 'spawn', 'unused')
+
+    await requireHandler(handlers, 'rlm.run')({
+      prompt: 'a', kwargs: { name: 'reviewer-a', retained: true },
+    })
+    await requireHandler(handlers, 'rlm.run')({
+      prompt: 'b', kwargs: { name: 'reviewer-b', retained: true },
+    })
+
+    const byName = await requireHandler(handlers, 'rlm.message')({
+      target: 'reviewer-b', message: 'focus on tests',
+    })
+    expect(byName.child_id).toBe('cont-2')
+    const byId = await requireHandler(handlers, 'rlm.message')({
+      target: 'cont-1', message: 'focus on api',
+    })
+    expect(byId.child_id).toBe('cont-1')
+    // Omitted target defaults to the most recently spawned retained child.
+    const defaulted = await requireHandler(handlers, 'rlm.message')({ message: 'again' })
+    expect(defaulted.child_id).toBe('cont-2')
+
+    await expect(requireHandler(handlers, 'rlm.message')({ message: 'x', target: 'ghost' }))
+      .rejects.toThrow(/no child matching/)
   })
 
   it('abortSession disposes every outstanding run of the session exactly once', async () => {

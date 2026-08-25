@@ -72,6 +72,22 @@ except Exception as _prime_agent_rlm_error:
             return result.get("messages", [])
 
     transcript = _PrimeAgentTranscript()
+
+    class _PrimeAgentMessage:
+        """Follow-up messaging for retained children (spawned with retained=True).
+
+        send() delivers the message as the child's next turn and returns only a
+        delivery acknowledgement; the child's answer arrives back here through
+        the ordinary settlement path.
+        """
+
+        async def send(self, message, receiver_name=None):
+            payload = {"message": message}
+            if receiver_name is not None:
+                payload["target"] = receiver_name
+            return await rlm.host_request("rlm.message", payload)
+
+    agent_message = _PrimeAgentMessage()
 `.trim()
 
 /**

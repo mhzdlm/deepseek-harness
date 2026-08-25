@@ -31,6 +31,7 @@
 
 import path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import { SessionId } from '@deepseek-ai/dsh-session'
 // Importing the subagent package's types pulls its `declare module '@deepseek-ai/cordis'`
 // augmentation into the program, making `ctx.subagents` type-check.
 import type { SubagentListEntry, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
@@ -52,9 +53,13 @@ export interface HostHandlersBundle {
 }
 
 interface ChildRecord {
-  run: SubagentRun
-  controller: AbortController
-  label: string
+  /** Durable child id: the run id for one-shot spawns, the reserved session id for retained children. */
+  readonly childId: string
+  readonly label: string
+  readonly controller: AbortController
+  /** One-shot runs carry a live SubagentRun; retained children are managed by the continuation manager. */
+  run?: SubagentRun
+  retained?: boolean
 }
 
 /** Project a `SubagentListEntry` (one-shot child) into the vendored `RLMSubagent` schema. */
@@ -106,7 +111,9 @@ export function createHostHandlers(
     if (sessionRunMap) {
       for (const record of [...sessionRunMap.values()]) {
         record.controller.abort()
-        void record.run.dispose().catch(() => undefined)
+        // Retained children have no run object: their lifecycle belongs to the
+        // continuation manager, so aborting the controller is all we own.
+        void record.run?.dispose().catch(() => undefined)
       }
       sessionRuns.delete(sessionId)
     }
@@ -147,9 +154,45 @@ export function createHostHandlers(
         ...(typeof kwargs.maxDepth === 'number' ? { maxDepth: kwargs.maxDepth } : {}),
       }
 
+      const retained = kwargs.retained === true
+
       try {
-        // `subagents.start` takes the provider NAME as its first argument;
-        // the child's display name rides on `request.label`.
+        if (retained) {
+          // Retained (continuable) child: durable, addressable for later
+          // `rlm.message` follow-ups. The continuation manager owns the whole
+          // lifecycle — we only record the reserved id. Admission resolves when
+          // the inbox accepts the initial prompt; there is no result to await.
+          const start = await ctx.subagents.startContinuable({
+            provider: subagentProvider,
+            label: name,
+            request: {
+              prompt: [{ type: 'text', text: prompt }],
+              parent,
+              ...(typeof kwargs.persona === 'string' ? { persona: kwargs.persona } : {}),
+              ...(typeof kwargs.maxDepth === 'number' ? { maxDepth: kwargs.maxDepth } : {}),
+            },
+            signal: controller.signal,
+          })
+          const childId = String(start.childId)
+
+          let runs = sessionRuns.get(sid)
+          if (!runs) {
+            runs = new Map<string, ChildRecord>()
+            sessionRuns.set(sid, runs)
+          }
+          runs.set(childId, { childId, label: name, controller, retained: true })
+
+          return {
+            rlm_child_id: childId,
+            name,
+            session_dir: path.join(dataDir, 'session-artifacts', childId),
+            model: parent.options.model ?? 'unknown',
+            retained: true,
+          }
+        }
+
+        // One-shot spawn: `subagents.start` takes the provider NAME as its first
+        // argument; the child's display name rides on `request.label`.
         const run: SubagentRun = await ctx.subagents.start(subagentProvider, request)
         const runId = String(run.id)
 
@@ -158,7 +201,7 @@ export function createHostHandlers(
           runs = new Map<string, ChildRecord>()
           sessionRuns.set(sid, runs)
         }
-        const record: ChildRecord = { run, controller, label: name }
+        const record: ChildRecord = { childId: runId, run, controller, label: name }
         runs.set(runId, record)
 
         void run.result
@@ -215,12 +258,75 @@ export function createHostHandlers(
         )
       }
       record.controller.abort()
-      await record.run.dispose().catch(() => undefined)
+      await record.run?.dispose().catch(() => undefined)
       runs.delete(target)
       if (runs.size === 0) sessionRuns.delete(sid)
       return {
         subagent: subagentDescriptor(dataDir, target, record.label, 'inactive'),
       }
+    },
+
+    // Deliver a follow-up message to a retained child as its next FIFO turn.
+    // The child's answer comes back through the ordinary settlement/notice
+    // path, never as this call's return value — mirroring prime's
+    // agent_message semantics where only delivery is acknowledged.
+    'rlm.message': async (payload) => {
+      const message = typeof payload.message === 'string' ? payload.message : ''
+      if (!message.trim()) throw new Error('rlm.message requires a non-empty message')
+      const parent = ctx.agents.currentInitiator()
+      if (!parent) throw new Error('rlm.message requires an owning agent session')
+      const sid = String(parent.session.id)
+
+      let target = typeof payload.target === 'string' ? payload.target.trim() : ''
+      if (!target) {
+        // Default to the most recently spawned retained child of this session.
+        const runs = sessionRuns.get(sid)
+        const retained = [...(runs?.values() ?? [])].filter(record => record.retained)
+        const last = retained.at(-1)
+        if (!last) {
+          throw new Error(
+            'rlm.message: no target given and no active retained child in this session (spawn one with rlm.run retained=true)',
+          )
+        }
+        target = last.childId
+      }
+
+      // Resolve the durable child id: exact registry hit first, then label
+      // match, then the subagent service's own listing (which knows children
+      // from earlier host processes too).
+      const runs = sessionRuns.get(sid)
+      const byId = runs?.get(target)
+      let childId = byId?.childId
+      if (!childId) {
+        const byLabel = [...(runs?.values() ?? [])].find(record => record.label === target)
+        childId = byLabel?.childId
+      }
+      if (!childId) {
+        const children = await ctx.subagents.listChildren(parent.session.id)
+        const entry = children.find(
+          candidate => String(candidate.id) === target
+            || ('label' in candidate && candidate.label === target),
+        )
+        childId = entry ? String(entry.id) : undefined
+      }
+      if (!childId) {
+        throw new Error(`rlm.message: no child matching "${target}" in this session`)
+      }
+
+      // Delivery is a short host-side operation with no kernel-facing cancel
+      // channel, so the controller exists only to satisfy the followup
+      // contract; nothing aborts it.
+      const controller = new AbortController()
+      const messageId = await ctx.subagents.followup(
+        parent,
+        SessionId(childId),
+        [{ type: 'text', text: message }],
+        {
+          source: { kind: 'coordinator', form: 'relay', senderSessionId: parent.session.id },
+          signal: controller.signal,
+        },
+      )
+      return { child_id: childId, message_id: String(messageId) }
     },
 
     'rlm.find_models': async (payload) => {
