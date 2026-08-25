@@ -14,8 +14,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createHostHandlers } from './host-handlers.ts'
 import { createIpythonTool } from './ipython-tool.ts'
+import { createSkillCreateTool } from './skill-create.ts'
 import { DEFAULT_IDLE_TIMEOUT_MS, IDLE_SWEEP_INTERVAL_MS, SessionKernelRegistry, warmUpSession } from './kernels.ts'
-import { collectPythonSkills } from './skill-source.ts'
+import { collectPythonSkills, upsertPythonSkillEntry } from './skill-source.ts'
 
 // Re-exported so sibling judgment plugins can consume the shared redaction
 // through this package's compiled entry instead of a cross-package src/*.ts
@@ -102,6 +103,11 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(
     () => ctx.tools.register(createIpythonTool(kernels, config.maxOutputChars ?? 65_536)),
     'register ipython tool',
+  )
+  // T2.3: the model-facing last step of the skill-creation workflow.
+  ctx.effect(
+    () => ctx.tools.register(createSkillCreateTool({ dataDir, upsert: upsertPythonSkillEntry })),
+    'register create_python_skill tool',
   )
 
   // item-4: periodic idle sweep. Unref'd so a long-lived desktop host with no

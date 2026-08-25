@@ -17,10 +17,13 @@
  */
 
 import { existsSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import {
   globalHarnessStatePath,
   readHarnessStateDetailed,
+  readHarnessStatesDetailed,
+  writeHarnessStates,
   type HarnessEntry,
 } from '@deepseek-ai/dsh-plugin-continual-harness'
 import type { PythonSkillRuntimeInfo } from './vendor/kernel/bootstrap.ts'
@@ -67,4 +70,76 @@ export async function collectPythonSkills(dataDir: string): Promise<CollectedPyt
     skills.push({ name: entry.id, importName: entry.reference.import, packagePath, pyprojectPath })
   }
   return { skills, missing }
+}
+
+/** One python-backed skill registration request for {@link upsertPythonSkillEntry}. */
+export interface PythonSkillEntrySpec {
+  /** Entry id and package directory name under `<dataDir>/skills/`. Slug form. */
+  readonly id: string
+  /** Human-facing title stored on the entry. */
+  readonly title: string
+  /** What the skill does; becomes the entry `content` the prompt layer renders. */
+  readonly description: string
+  /** The module name the kernel wrapper will bind (`reference.import`). */
+  readonly importName: string
+  /** Callable inside the module the wrapper binds. Defaults to `"run"`. */
+  readonly callable?: string
+}
+
+/**
+ * Create or update the global-scope harness entry for one python-backed skill
+ * (T2.3). Read-modify-write under mtime CAS on both state files, recording a
+ * `skill-create` refinement event whose `after` snapshot enables rollback.
+ * @param dataDir - the rlm data dir the harness state lives under.
+ * @returns the stored entry as written.
+ * @throws HarnessConflictError when either state file moved mid-operation.
+ */
+export async function upsertPythonSkillEntry(dataDir: string, spec: PythonSkillEntrySpec): Promise<HarnessEntry> {
+  const sessionId = 'skill-create'
+  const states = await readHarnessStatesDetailed(dataDir, sessionId)
+  const global = states.global.state
+  const local = states.local.state
+
+  const existing = global.entries.skill?.[spec.id]
+  const timestamp = new Date().toISOString()
+  const entry: HarnessEntry = {
+    id: spec.id,
+    kind: 'skill',
+    title: spec.title,
+    content: spec.description,
+    path: '',
+    scope: 'global',
+    reference: { type: 'python', import: spec.importName, callable: spec.callable ?? 'run' },
+    arguments: {},
+    metadata: {},
+    source: 'skill-create',
+    created_at: existing?.created_at ?? timestamp,
+    updated_at: timestamp,
+    version: (existing?.version ?? 0) + 1,
+  }
+
+  const nextGlobal = {
+    ...global,
+    entries: {
+      ...global.entries,
+      skill: { ...(global.entries.skill ?? {}), [spec.id]: entry },
+    },
+    refinements: [
+      ...global.refinements,
+      {
+        id: randomUUID(),
+        trigger: 'skill-create',
+        changes: [`skill/${spec.id}`],
+        evidence: `python package <dataDir>/skills/${spec.id}`,
+        outcome: existing === undefined ? 'created' : 'updated',
+        after: { [`skill/${spec.id}`]: entry },
+      },
+    ],
+  }
+
+  await writeHarnessStates(dataDir, sessionId, nextGlobal, local, {
+    global: states.global.mtimeMs,
+    local: states.local.mtimeMs,
+  })
+  return entry
 }

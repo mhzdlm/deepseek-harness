@@ -23,6 +23,14 @@ Orthogonal to the host-side markdown skill registry ([skill system](../architect
 - A `/skill-create` host command and routing-consistency invariants in this change (NEXT T2.2/T2.3): the collector only trusts entries that pass the vendored runtime's own reference validation on write.
 - Per-session venvs.
 
+## Skill creation tool (NEXT T2.3, same day)
+
+`create_python_skill` (kernel package, `skill-create.ts`) is the model-facing last step of the workflow: distill the repeated workflow from the transcript via `transcript.grep`, write `<dataDir>/skills/<name>/` yourself, then call the tool with name/import_name/title/description. The tool validates slug/identifier shapes, checks the package on disk (pyproject present; module body as `<import>.py` or `<import>/__init__.py`), fails loud naming each concrete missing file, then registers the global entry under CAS (`upsertPythonSkillEntry`, `skill-source.ts`) and reports that the callable goes live at the next kernel provision.
+
+Given up:
+- A `/skill-create` slash command: `CommandResult` is success/error only — there is no prompt-expansion result kind, so a handler cannot hand a workflow brief to the model. Revisit when commands grow a prompt variant.
+- Hosting the upsert in continual-harness: in vitest suite workers the continual-harness entry namespace arrived partially initialized (`upsertPythonSkillEntry` undefined) while the same entry's collector bindings resolved fine — a cross-worker module-graph quirk around its heavyweight service imports. The upsert therefore lives beside the collector in kernel's `skill-source.ts`, composed from the same proven entry primitives (readHarnessStatesDetailed/writeHarnessStates). Symptom to watch: cross-package entry imports resolving `undefined` for some named exports only inside full-suite workers.
+
 ## Required verification
 
 - `collectPythonSkills` unit tests: materialization against the convention, missing-package reporting, non-python/non-skill filtering.

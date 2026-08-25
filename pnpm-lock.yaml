@@ -5952,6 +5952,9 @@ importers:
 
   packages/rlm/plugin-rlm-kernel:
     dependencies:
+      '@deepseek-ai/dsh-plugin-continual-harness':
+        specifier: workspace:^
+        version: link:../plugin-continual-harness
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
