@@ -13,6 +13,7 @@ import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isPidAlive, killSignalSafe, safeRmDirSync, writeFileSecureSync } from '../src/util/platform.ts'
+import { windowsBatchSpawnSpec } from '../src/vendor/kernel/bootstrap.ts'
 
 // ESM namespaces are not configurable, so intercept at module resolution:
 // both mocks delegate to the real implementation unless a test overrides them.
@@ -180,5 +181,56 @@ describe('writeFileSecureSync', () => {
     // Mode argument omitted entirely on the win32 branch.
     expect(writeMock).toHaveBeenCalledWith(file, '{}')
     expect(writeMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('windowsBatchSpawnSpec (#16)', () => {
+  it('passes non-batch commands through untouched', () => {
+    stubPlatform('linux')
+    expect(windowsBatchSpawnSpec('C:\\venv\\Scripts\\python.exe', ['-c', 'import ipykernel'])).toEqual({
+      command: 'C:\\venv\\Scripts\\python.exe',
+      args: ['-c', 'import ipykernel'],
+      verbatim: false,
+    })
+
+    stubPlatform('win32')
+    // .exe targets spawn directly even on Windows.
+    expect(windowsBatchSpawnSpec('uv.exe', ['pip', 'install'])).toEqual({
+      command: 'uv.exe',
+      args: ['pip', 'install'],
+      verbatim: false,
+    })
+  })
+
+  it('routes .bat shims through COMSPEC with a verbatim quoted command line', () => {
+    stubPlatform('win32')
+    const realComspec = process.env.COMSPEC
+    process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+    try {
+      const spec = windowsBatchSpawnSpec('C:\\WINDOWS\\system32\\uv.bat', ['python', 'install', '3.11'])
+      expect(spec.command).toBe('C:\\Windows\\system32\\cmd.exe')
+      expect(spec.args[0]).toBe('/d')
+      expect(spec.args[1]).toBe('/s')
+      expect(spec.args[2]).toBe('/c')
+      // Outer quotes are stripped by /s; the bare path needs no inner quoting.
+      expect(spec.args[3]).toBe('"C:\\WINDOWS\\system32\\uv.bat python install 3.11"')
+      expect(spec.verbatim).toBe(true)
+    } finally {
+      process.env.COMSPEC = realComspec
+    }
+  })
+
+  it('quotes arguments containing spaces and matches batch extensions case-insensitively', () => {
+    stubPlatform('win32')
+    delete process.env.COMSPEC
+    try {
+      const spec = windowsBatchSpawnSpec('C:\\Program Files\\tool.CMD', ['--out', 'C:\\my dir\\out.json'])
+      expect(spec.command).toBe('cmd.exe')
+      // Inner quotes survive cmd's /s outer-pair strip; the spaced path and
+      // spaced argument each carry their own pair.
+      expect(spec.args[3]).toBe('""C:\\Program Files\\tool.CMD" --out "C:\\my dir\\out.json""')
+    } finally {
+      process.env.COMSPEC = undefined
+    }
   })
 })

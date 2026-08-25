@@ -132,6 +132,10 @@ const AUDITS: FileAudit[] = [
 				mustContain: [/\[local patch #15\]/, /install\.ps1/, /uvInstallSpec\(\)/],
 				mustNotContain: [/run\(\s*"sh"/],
 			},
+			{
+				label: "#16 batch-file spawn routing (PATHEXT .bat/.cmd shims)",
+				mustContain: [/\[local patch #16\]/, /windowsBatchSpawnSpec\(/, /windowsVerbatimArguments/],
+			},
 		],
 	},
 	{

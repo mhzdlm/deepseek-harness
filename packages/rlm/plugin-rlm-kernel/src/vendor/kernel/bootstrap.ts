@@ -416,12 +416,37 @@ async function resolveWritableKernelVenvDir(): Promise<string> {
 	}
 }
 
+// [local patch #16] Windows resolves PATH lookups through PATHEXT, so a
+// command like `uv` may resolve to a .bat/.cmd shim (e.g. a winget-style
+// launcher in system32). Node refuses to spawn batch files directly since the
+// CVE-2024-27980 mitigation (EINVAL), so route them through COMSPEC with fully
+// quoted arguments. `/s` makes cmd treat the final quoted string verbatim;
+// windowsVerbatimArguments stops node from re-quoting it.
+const WINDOWS_BATCH_FILE_RE = /\.(bat|cmd)$/i;
+
+/** Exported for tests: translate one spawn target into its cmd-safe form. */
+export function windowsBatchSpawnSpec(
+	command: string,
+	args: readonly string[],
+): { command: string; args: string[]; verbatim: boolean } {
+	if (process.platform !== "win32" || !WINDOWS_BATCH_FILE_RE.test(command)) {
+		return { command, args: [...args], verbatim: false };
+	}
+	const quoteForCmd = (arg: string): string =>
+		/[\s"]/.test(arg) ? `"${arg.replace(/"/g, '""')}"` : arg;
+	const comspec = process.env.COMSPEC ?? "cmd.exe";
+	const quoted = [command, ...args].map(quoteForCmd).join(" ");
+	return { command: comspec, args: ["/d", "/s", "/c", `"${quoted}"`], verbatim: true };
+}
+
 function run(command: string, args: string[], options: { stdio?: "ignore" | "inherit" } = {}): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, {
+		const spec = windowsBatchSpawnSpec(command, args);
+		const child = spawn(spec.command, spec.args, {
 			// [local patch #14] do not hand host credentials to the installer child.
 			env: buildScrubbedEnv(),
 			stdio: options.stdio ?? "ignore",
+			...(spec.verbatim ? { windowsVerbatimArguments: true } : {}),
 		});
 		child.on("error", reject);
 		child.on("exit", (code, signal) => {
