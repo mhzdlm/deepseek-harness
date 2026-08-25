@@ -55,7 +55,16 @@ const noDirectPrimeEnv: RegExp = /process\.env\.PRIME_AGENT_/;
  */
 const noFullEnvPassthrough: RegExp = /\.\.\.process\.env|env:\s*process\.env\s*[,}]/;
 
-const COMMON_FORBIDDEN: RegExp[] = [noDotJsImports, noDirectPrimeEnv, noFullEnvPassthrough];
+/**
+ * Shared: an extensionless relative import survives tsc emit verbatim, and
+ * plain Node over node_modules cannot resolve it — the deployed preset mount
+ * fails with "Cannot find module .../lib/types/util/platform". Every relative
+ * import must carry its explicit .ts extension (rewritten to .js on emit).
+ * Anchored to physical import lines so commented examples never match.
+ */
+const noExtensionlessRelativeImports: RegExp = /^[ \t]*import[^;\n]*from\s*["']\.[^"']*(?<!\.ts)["']/m;
+
+const COMMON_FORBIDDEN: RegExp[] = [noDotJsImports, noDirectPrimeEnv, noFullEnvPassthrough, noExtensionlessRelativeImports];
 
 const AUDITS: FileAudit[] = [
 	{
