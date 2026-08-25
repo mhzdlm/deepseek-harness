@@ -18,7 +18,7 @@ import type { MoaResolvedSlot } from './presets.ts'
 import type { MoaModelRequest } from './moa-tool.ts'
 import { createMoaTool } from './moa-tool.ts'
 import { createPresetView } from './preset-store.ts'
-import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel/src/redact.ts'
+import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel'
 import { listMoaPresetsText, removeManagedMoaPreset, showMoaPresetText, useMoaPresetDefault } from './moa-cmd.ts'
 
 export const name = 'plugin-rlm-moa'

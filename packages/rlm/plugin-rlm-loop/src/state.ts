@@ -14,7 +14,7 @@ import {
   type HarnessEntry,
   readHarnessStatesDetailed,
   writeHarnessStates,
-} from '@deepseek-ai/dsh-plugin-continual-harness/src/harness-file.ts'
+} from '@deepseek-ai/dsh-plugin-continual-harness'
 
 const SOURCE = 'plugin-rlm-loop'
 

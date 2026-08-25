@@ -16,6 +16,11 @@ import { createHostHandlers } from './host-handlers.ts'
 import { createIpythonTool } from './ipython-tool.ts'
 import { DEFAULT_IDLE_TIMEOUT_MS, IDLE_SWEEP_INTERVAL_MS, SessionKernelRegistry, warmUpSession } from './kernels.ts'
 
+// Re-exported so sibling judgment plugins can consume the shared redaction
+// through this package's compiled entry instead of a cross-package src/*.ts
+// specifier, which plain Node cannot load from node_modules.
+export { redactReferenceText } from './redact.ts'
+
 export const name = 'plugin-rlm-kernel'
 export const inject = ['tools', 'subagents', 'sessions', 'agents']
 
