@@ -29,6 +29,9 @@ env:
 jobs:
   pack:
     name: Pack npm tarballs
+    # Fork guard: releases belong to the upstream repository (publish
+    # credentials and the src-in-tarball gate live there).
+    if: github.repository == 'deepseek-ai/deepseek-harness'
     runs-on: ubuntu-24.04
     steps:
       # Complete history: the release scripts read tags.

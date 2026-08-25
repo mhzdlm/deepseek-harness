@@ -40,6 +40,9 @@ jobs:
   # e2e.yml's key preflight guards against. Each leg therefore asserts BOTH
   # its platform files actually ran: `Test Files  2 passed (2)`, no skips.
   sandbox-e2e:
+    # Fork guard: the seatbelt/landlock reference lanes assume upstream
+    # runners/tooling; on forks they only produce failure mail.
+    if: github.repository == 'deepseek-ai/deepseek-harness'
     strategy:
       fail-fast: false
       matrix:
