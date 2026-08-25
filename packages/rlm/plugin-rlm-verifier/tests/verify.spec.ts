@@ -5,7 +5,10 @@
  * counts, slot-swap bias cancellation, on-error ties, auto_spawn truncation,
  * and the process-event sequence through a recording session.
  */
-import { describe, expect, it } from 'vitest'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
 import * as PluginRlmVerifier from '@deepseek-ai/dsh-plugin-rlm-verifier'
@@ -149,6 +152,7 @@ describe('verify seam engine', () => {
       start: async (_provider: string, request: { label?: string }) => {
         started.push(request.label ?? '')
         return {
+          id: `run-${started.length}`,
           result: Promise.resolve({
             output: [{ type: 'text' as const, text: `child answer ${request.label}` }],
           }),
@@ -283,5 +287,54 @@ describe('verify seam engine', () => {
     ctx.emit('session/disposed', { id: 'sess-dispose-v' } as never)
     await expect(pending).rejects.toThrow(/child cancelled by disposal/)
     expect(signals[0]?.aborted).toBe(true)
+  })
+
+  it('writes a full-detail file and links auto_spawn child sessions (T2.6)', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'dsh-rlm-vdetail-'))
+    const cleanupRoots = [root]
+    afterEach(() => {
+      for (const dir of cleanupRoots.splice(0)) rmSync(dir, { recursive: true, force: true })
+    })
+    const artifactRoot = path.join(root, 'session-artifacts')
+    const appended: Array<{ name: string; payload: Record<string, unknown> }> = []
+    const session = {
+      id: 'sess-detail',
+      append: (name: string, payload: unknown) => { appended.push({ name, payload: payload as Record<string, unknown> }) },
+    }
+    const subagents = {
+      start: async (_provider: string, request: { label?: string }) => ({
+        id: `child-${request.label}`,
+        result: Promise.resolve({
+          output: [{ type: 'text' as const, text: `answer for ${request.label} holding sk-secret123456789012` }],
+        }),
+      }),
+    }
+    const tool = createVerifyTool(baseOptions({
+      callModel: async () => ({ text: 'x', logprobs: [{ token: 'x', logprob: -0.5 }] }),
+      subagents: subagents as never,
+      maxChildChars: 5000,
+      privacyFilter: 'full',
+      artifactRoot,
+    }))
+    const execWithAgent = { signal: new AbortController().signal, agent: { session } }
+    await tool.execute(
+      { problem: 'p', candidates: [], auto_spawn: 2 },
+      execWithAgent as never,
+    )
+
+    const result = appended.find(a => a.name === 'session/verify-result')
+    expect(result).toBeDefined()
+    const payload = result!.payload as { childSessionIds?: string[]; detailPath?: string }
+    expect(payload.childSessionIds).toEqual(['child-verify-child-1', 'child-verify-child-2'])
+    expect(payload.detailPath).toBeTruthy()
+    expect(existsSync(payload.detailPath!)).toBe(true)
+
+    const detail = JSON.parse(readFileSync(payload.detailPath!, 'utf8')) as {
+      candidates: unknown
+      calls: Array<{ rawText: string }>
+    }
+    // privacy 'full': credential material masked in archived candidates
+    expect(JSON.stringify(detail.candidates)).not.toContain('sk-secret123456789012')
+    expect((detail.calls ?? []).length).toBeGreaterThan(0)
   })
 })

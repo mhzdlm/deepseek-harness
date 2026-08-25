@@ -6,6 +6,8 @@
  * @module @deepseek-ai/dsh-plugin-rlm-verifier
  */
 
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -43,6 +45,12 @@ export interface Config {
   privacyFilter?: string
   /** Named multi-judge profiles addressable via the tool's `judges` argument. */
   judgeProfiles?: Record<string, JudgeProfileConfig>
+  /**
+   * T2.6: root directory for session artifacts. When set, every verify run
+   * writes a full-detail JSON under `<dataDir>/session-artifacts/<sid>/verify/`
+   * and the result event carries the path. Defaults to `~/.dsh/rlm`.
+   */
+  dataDir?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -51,6 +59,7 @@ export const Config: z<Config> = z.object({
   subagentProvider: z.string(),
   maxChildChars: z.natural(),
   privacyFilter: z.string(),
+  dataDir: z.string(),
   judgeProfiles: z.dict(z.object({
     model: z.string().required(),
     provider: z.string(),
@@ -131,6 +140,8 @@ export function apply(ctx: Context, config: Config): void {
   const tool = createVerifyTool({
     callModel: request => callSeamModel(ctx, request),
     provider,
+    // T2.6: session artifacts root for per-run detail files.
+    artifactRoot: join(config.dataDir ?? join(homedir(), '.dsh', 'rlm'), 'session-artifacts'),
     ...(config.model !== undefined ? { model: config.model } : {}),
     ...(subagents !== undefined ? { subagents } : {}),
     ...(config.subagentProvider !== undefined ? { subagentProvider: config.subagentProvider } : {}),

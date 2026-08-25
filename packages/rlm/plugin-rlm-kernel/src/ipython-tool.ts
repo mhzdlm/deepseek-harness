@@ -5,10 +5,29 @@
  * @module @deepseek-ai/dsh-plugin-rlm-kernel
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { SessionKernelRegistry } from './kernels.ts'
+import { DEFAULT_FULL_OUTPUT_CAP, type SessionKernelRegistry } from './kernels.ts'
 
 const MAX_OUTPUT_CHARS = 65_536
+
+/**
+ * T2.6: archive one overflowing cell output verbatim under the session's
+ * artifacts and return the pointer line appended to the truncated view.
+ * Best-effort — an archive failure degrades to the plain truncation notice.
+ */
+function writeToolResultArchive(artifactDir: string, length: number, fullText: string): string {
+  try {
+    const dir = path.join(artifactDir, 'tool-results')
+    mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, `${Date.now()}.log`)
+    writeFileSync(file, fullText, 'utf8')
+    return `\n[... output truncated at ${MAX_OUTPUT_CHARS} chars; full ${length} chars archived at ${file} — read it in slices from the kernel or fs tools]`
+  } catch {
+    return `\n[... output truncated at ${MAX_OUTPUT_CHARS} chars ...]`
+  }
+}
 
 /**
  * Build the `ipython` tool. The tool is registered by the plugin's apply fiber;
@@ -52,9 +71,12 @@ export function createIpythonTool(kernels: SessionKernelRegistry, maxOutputChars
         // to be interrupted (Windows blocking-C-call case).
         kernels.markBusy(sid)
         try {
+          // T2.6: request the vendor's hard backstop window (10MB) so the full
+          // output reaches the plugin layer; the model-facing view is capped
+          // here and the overflow is archived under the session's artifacts.
           const result = await kernels.execute(sid, code, {
             signal: exec.signal,
-            maxOutputChars,
+            maxOutputChars: DEFAULT_FULL_OUTPUT_CAP,
           })
 
           let text = result.stdout
@@ -62,6 +84,14 @@ export function createIpythonTool(kernels: SessionKernelRegistry, maxOutputChars
           if (result.result) text += (text ? '\n' : '') + result.result
           if (result.status === 'error' && result.error) {
             text += (text ? '\n' : '') + result.error.traceback.join('\n')
+          }
+
+          // T2.6: archive-then-truncate. The transcript view keeps the model-
+          // facing cap; anything beyond it is preserved verbatim beside the
+          // session's other artifacts, with a pointer handed to the model.
+          if (text.length > maxOutputChars) {
+            const pointer = writeToolResultArchive(kernels.sessionArtifactDir(sid), text.length, text)
+            text = text.slice(0, maxOutputChars) + pointer
           }
 
           // Surface a kernel-restart restore notice as a prefix on the next result.

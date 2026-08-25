@@ -5,9 +5,17 @@
  * The character cap itself is enforced inside `kernels.execute`; here we pin
  * that the tool forwards `maxOutputChars` untouched.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { SessionKernelRegistry } from '../src/kernels.ts'
 import { createIpythonTool } from '../src/ipython-tool.ts'
+
+const roots: string[] = []
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
 
 interface ExecuteCall {
   sessionId: string
@@ -61,7 +69,7 @@ const exec = (sessionId = 'sess-tool') =>
   ({ signal: new AbortController().signal, agent: { session: { id: sessionId } } }) as never
 
 describe('ipython tool shell', () => {
-  it('forwards code, signal, and maxOutputChars to the registry untouched', async () => {
+  it('forwards code and signal untouched, and requests the full-output backstop window', async () => {
     const { registry, calls } = makeRegistry()
     const tool = createIpythonTool(registry, 1_234)
 
@@ -70,7 +78,9 @@ describe('ipython tool shell', () => {
     const call = calls[0]!
     expect(call.sessionId).toBe('sess-tool')
     expect(call.code).toBe('print(1)')
-    expect(call.opts.maxOutputChars).toBe(1_234)
+    // T2.6: the model-facing cap is applied in the tool layer, so the kernel
+    // is asked for the much larger backstop window instead of 1234.
+    expect(call.opts.maxOutputChars).toBe(10 * 1024 * 1024)
     expect(call.opts.signal).toBeInstanceOf(AbortSignal)
   })
 
@@ -121,6 +131,50 @@ describe('ipython tool shell', () => {
     const tool = createIpythonTool(registry)
     await expect(tool.execute({ code: 'x' }, { signal: new AbortController().signal } as never))
       .rejects.toThrow(/owning agent session/)
+  })
+
+  it('archives overflowing output verbatim and hands the model a capped view with a pointer (T2.6)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-arch-'))
+    roots.push(root)
+    const longOutput = 'z'.repeat(2_000)
+    const artifactDir = join(root, 'session-artifacts', 'sess-tool')
+    const registry = {
+      markBusy: () => undefined,
+      markIdle: () => undefined,
+      consumeRestoreNotice: () => null,
+      sessionArtifactDir: (sid: string) => join(root, 'session-artifacts', sid),
+      execute: async () => ({ stdout: longOutput, stderr: '', result: undefined, status: 'ok' as const, durationMs: 1, retried: false }),
+    } as unknown as SessionKernelRegistry
+    const tool = createIpythonTool(registry, 500)
+
+    const executed = await tool.execute({ code: 'big' }, exec()) as { text: string }
+    const rendered = (tool as unknown as {
+      output: { render: (args: unknown, value: { text: string }) => Array<{ type: string; text: string }> }
+    }).output.render({}, executed)
+
+    const text = rendered[0]!.text
+    expect(text.startsWith('z'.repeat(500))).toBe(true)
+    expect(text).toContain(`full ${longOutput.length} chars archived at`)
+    const archivedPath = /archived at (.+?) —/.exec(text)![1]!
+    expect(existsSync(archivedPath)).toBe(true)
+    expect(readFileSync(archivedPath, 'utf8')).toBe(longOutput)
+    void artifactDir
+  })
+
+  it('does not write an archive when output fits the model-facing cap', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-arch-'))
+    roots.push(root)
+    const registry = {
+      markBusy: () => undefined,
+      markIdle: () => undefined,
+      consumeRestoreNotice: () => null,
+      sessionArtifactDir: (sid: string) => join(root, 'session-artifacts', sid),
+      execute: async () => ({ stdout: 'small', stderr: '', result: undefined, status: 'ok' as const, durationMs: 1, retried: false }),
+    } as unknown as SessionKernelRegistry
+    const tool = createIpythonTool(registry, 500)
+
+    await tool.execute({ code: 'small' }, exec())
+    expect(existsSync(join(root, 'session-artifacts', 'sess-tool', 'tool-results'))).toBe(false)
   })
 
   it('render projects the composed text verbatim', () => {

@@ -15,12 +15,21 @@
  * @module @deepseek-ai/dsh-plugin-rlm-verifier/verify-tool
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
 import { buildJudgePrompt, extractScore, type JudgeCriterion } from './scoring.ts'
 import { runTournament } from './tournament.ts'
 import { emitVerifyEvent } from './events.ts'
+/** One teed bypass scoring call, archived in the run's detail file (T2.6). */
+export interface VerifyCallRecord {
+  model: string
+  userText: string
+  rawText: string
+  chosenLogprobs: Array<{ token: string; logprob: number }>
+}
 
 /** A named judge entry for multi-judge panels. */
 export interface JudgeProfile {
@@ -60,6 +69,14 @@ export interface VerifyToolOptions {
    * masks candidate text before scoring prompts.
    */
   privacyFilter?: '' | 'display' | 'full'
+  /**
+   * T2.6: `<dataDir>/session-artifacts` root. When set, each run writes a
+   * full-detail JSON (masked candidates, per-call raw judge outputs and
+   * chosen-token logprobs) under `<artifactRoot>/<sessionId>/verify/`, and
+   * the result event carries the path. Best-effort: write failures drop the
+   * file, never the verification.
+   */
+  artifactRoot?: string
   /** Named judge profiles addressable via the `judges` argument. */
   judgeProfiles?: Record<string, { model: string; provider?: string }>
   /** Max output tokens per scoring call (reference default 4096). */
@@ -197,6 +214,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
         ? raw.filter((c): c is string => typeof c === 'string')
         : []
 
+      const childSessionIds: string[] = []
       // auto_spawn: dispatch N children against the task and use their results
       // as the candidate pool. Controllers register before start so disposal
       // during startup still aborts pending spawns (host-handlers pattern).
@@ -222,6 +240,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
             }
             try {
               const run = await subagents.start(options.subagentProvider ?? 'spawn', request)
+              childSessionIds.push(String(run.id))
               const result = await run.result
               const text = (result.output ?? [])
                 .map(block => (block.type === 'text' ? (block.text ?? '') : ''))
@@ -248,6 +267,30 @@ export function createVerifyTool(options: VerifyToolOptions) {
       const seed = typeof args.seed === 'number' && Number.isFinite(args.seed) ? Math.floor(args.seed) : 0
       const session = exec.agent?.session ?? null
       const startedAt = Date.now()
+      // T2.6: tee every bypass scoring call so the durable detail file can
+      // answer "what did each judge actually say" — raw text plus the
+      // chosen-token logprob stream, in call order.
+      const calls: VerifyCallRecord[] = []
+      const callModelTee: VerifyCallModel = async (request) => {
+        const out = await options.callModel(request)
+        calls.push({
+          model: request.route.model,
+          userText: request.userText,
+          rawText: out.text,
+          chosenLogprobs: out.logprobs,
+        })
+        return out
+      }
+      const sessionIdForDetail = session ? String((session as unknown as { id: string }).id) : undefined
+      const writeDetail = (extra: Record<string, unknown>): string | undefined =>
+        writeVerifyDetail(options.artifactRoot, sessionIdForDetail, {
+          ts: new Date(startedAt).toISOString(),
+          problem,
+          criteria,
+          candidates: candidates.map(text => maskCandidateText(text, options.privacyFilter)),
+          ...extra,
+          calls,
+        })
 
       // Multi-judge: one independent seam tournament per named profile, then
       // Borda fusion over their rankings.
@@ -279,7 +322,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
         const outcomes = await Promise.all(selected.map(async ({ name, profile }) => {
           try {
             const scored = await runTournament(candidates.length, seed, pivotsArg, async (a, b) =>
-              scorePairOnSeam(options.callModel, {
+              scorePairOnSeam(callModelTee, {
                 provider: profile.provider ?? options.provider ?? 'deepseek-official',
                 model: profile.model,
               }, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens))
@@ -296,6 +339,18 @@ export function createVerifyTool(options: VerifyToolOptions) {
         const baseScores = okOutcomes[0]?.meanPreference ?? []
         const bestScores = fused.fusedRanking.map(i => baseScores[i] ?? 0)
 
+        const judgeOutcomes = outcomes.map(o => ({
+          model: o.model,
+          status: o.status,
+          meanPreference: o.meanPreference,
+          nComparisons: o.nComparisons,
+        }))
+        const detailPath = writeDetail({
+          childSessionIds,
+          judges: judgeOutcomes,
+          fused,
+        })
+
         emitVerifyEvent(session, 'session/verify-result', {
           engine: 'seam',
           models: selected.map(s => s.profile.model),
@@ -304,6 +359,9 @@ export function createVerifyTool(options: VerifyToolOptions) {
           ranking: fused.fusedRanking,
           nComparisons: okOutcomes.reduce((sum, o) => sum + o.nComparisons, 0),
           durationMs: Date.now() - startedAt,
+          judges: judgeOutcomes,
+          ...(childSessionIds.length > 0 ? { childSessionIds } : {}),
+          ...(detailPath !== undefined ? { detailPath } : {}),
         })
 
         return {
@@ -328,7 +386,11 @@ export function createVerifyTool(options: VerifyToolOptions) {
       })
       const startedSingle = Date.now()
       const tournament = await runTournament(candidates.length, seed, Math.min(pivotsArg, candidates.length), async (a, b) =>
-        scorePairOnSeam(options.callModel, route, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens))
+        scorePairOnSeam(callModelTee, route, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens))
+      const detailPathSingle = writeDetail({
+        childSessionIds,
+        judges: [{ model, status: 'ok', meanPreference: tournament.meanPreference, nComparisons: tournament.nComparisons }],
+      })
       emitVerifyEvent(session, 'session/verify-result', {
         engine: 'seam',
         models: [model],
@@ -337,6 +399,9 @@ export function createVerifyTool(options: VerifyToolOptions) {
         ranking: rankByMean(tournament.meanPreference),
         nComparisons: tournament.nComparisons,
         durationMs: Date.now() - startedSingle,
+        judges: [{ model, status: 'ok' as const, meanPreference: tournament.meanPreference, nComparisons: tournament.nComparisons }],
+        ...(childSessionIds.length > 0 ? { childSessionIds } : {}),
+        ...(detailPathSingle !== undefined ? { detailPath: detailPathSingle } : {}),
       })
 
       const best = candidates[tournament.bestIndex] ?? ''
@@ -402,10 +467,35 @@ function rankByMean(meanPreference: readonly number[]): number[] {
 }
 
 function digestCandidates(candidates: readonly string[], privacyFilter: string | undefined): string[] {
-  return candidates.map((text) => {
-    const masked = privacyFilter === 'full' ? text.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}\b/g, '[redacted key]') : text
-    return masked.slice(0, 120)
-  })
+  return candidates.map(text => maskCandidateText(text, privacyFilter).slice(0, 120))
+}
+
+/** T2.6: confidentiality masking for full-text persistence (mask ≠ truncate). */
+function maskCandidateText(text: string, privacyFilter: string | undefined): string {
+  return privacyFilter === 'full' ? text.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}\b/g, '[redacted key]') : text
+}
+
+/**
+ * T2.6: persist one run's full detail (masked candidates, per-call raw judge
+ * outputs with chosen-token logprobs, fusion inputs) under the session's
+ * artifacts directory. Best-effort — a write failure returns `undefined` and
+ * the run proceeds without the pointer.
+ */
+function writeVerifyDetail(
+  artifactRoot: string | undefined,
+  sessionId: string | undefined,
+  payload: Record<string, unknown>,
+): string | undefined {
+  if (!artifactRoot || !sessionId) return undefined
+  try {
+    const dir = path.join(artifactRoot, sessionId, 'verify')
+    mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, `${Date.now()}.json`)
+    writeFileSync(file, JSON.stringify(payload), 'utf8')
+    return file
+  } catch {
+    return undefined
+  }
 }
 
 async function scorePairOnSeam(

@@ -20,7 +20,18 @@ export interface VerifyRequestEventData {
   candidateCount: number
   /** First 120 chars of each candidate, after privacy masking when active. */
   candidatesDigest: string[]
+  /** Per-candidate character length, after privacy masking when active. */
+  candidatesChars?: number[]
   judgeProfiles?: string[]
+}
+
+/** One judge's fused-input record: everything needed to recompute the fusion. */
+export interface VerifyJudgeOutcomeData {
+  model: string
+  status: 'ok' | 'failed'
+  /** Judge preference vector over candidates (Borda input). */
+  meanPreference: number[]
+  nComparisons: number
 }
 
 /** Post-settlement record: the parseable outcome plus timing. */
@@ -33,6 +44,12 @@ export interface VerifyResultEventData {
   nComparisons: number
   failedJudges?: string[]
   durationMs: number
+  /** Per-judge fusion inputs so the ranking is recomputable (T2.6). */
+  judges?: VerifyJudgeOutcomeData[]
+  /** auto_spawn child session ids — the linkage to full candidate logs. */
+  childSessionIds?: string[]
+  /** Session-artifacts path holding the run's full detail JSON, when written. */
+  detailPath?: string
 }
 
 declare module '@deepseek-ai/dsh-session/types' {

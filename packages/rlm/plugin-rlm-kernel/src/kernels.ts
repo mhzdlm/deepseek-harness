@@ -27,6 +27,13 @@ export const IDLE_SWEEP_INTERVAL_MS = 60_000
 export const DEFAULT_MAX_LIVE_KERNELS = 4
 /** T3.2 Phase A: grace before retrying a leased kernel whose snapshot failed at reclaim. */
 export const DEFAULT_RECLAIM_SNAPSHOT_GRACE_MS = 5_000
+/**
+ * T2.6: hard backstop for the model-facing output cap. The ipython tool
+ * requests this larger window from the vendored kernel so the plugin layer
+ * can persist the full result to disk and hand the model a truncated view
+ * plus a pointer; beyond it even the archived copy is capped.
+ */
+export const DEFAULT_FULL_OUTPUT_CAP = 10 * 1024 * 1024
 
 export interface SessionKernelOptions {
   /** Python interpreter with ipykernel + prime-agent-runtime. Omitted → auto-bootstrapped venv. */
@@ -185,6 +192,14 @@ export class SessionKernelRegistry {
   /** item-7: whether a live (provisioned) kernel exists for the session. */
   hasSession(sessionId: string): boolean {
     return this.kernels.has(sessionId)
+  }
+
+  /**
+   * T2.6: this session's artifacts directory (snapshots, harness state, and
+   * the tool-results archive written by the ipython tool).
+   */
+  sessionArtifactDir(sessionId: string): string {
+    return path.join(this.artifactRoot, sessionId)
   }
 
   /**
