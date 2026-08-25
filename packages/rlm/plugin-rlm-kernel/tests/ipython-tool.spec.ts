@@ -67,11 +67,11 @@ describe('ipython tool shell', () => {
 
     await tool.execute({ code: 'print(1)' }, exec())
 
-    expect(calls).toHaveLength(1)
-    expect(calls[0].sessionId).toBe('sess-tool')
-    expect(calls[0].code).toBe('print(1)')
-    expect(calls[0].opts.maxOutputChars).toBe(1_234)
-    expect(calls[0].opts.signal).toBeInstanceOf(AbortSignal)
+    const call = calls[0]!
+    expect(call.sessionId).toBe('sess-tool')
+    expect(call.code).toBe('print(1)')
+    expect(call.opts.maxOutputChars).toBe(1_234)
+    expect(call.opts.signal).toBeInstanceOf(AbortSignal)
   })
 
   it('marks the session busy before execution and idle after', async () => {

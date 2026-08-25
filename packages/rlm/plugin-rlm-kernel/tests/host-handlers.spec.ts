@@ -10,7 +10,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentListEntry, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import type { HostRequestHandlers } from '../src/vendor/kernel/index.ts'
 import { createHostHandlers } from '../src/host-handlers.ts'
 
 const roots: string[] = []
@@ -24,9 +26,19 @@ function newDataDir(): string {
   return root
 }
 
+/** Index the handler map loudly: a missing bridge type must fail here, not as `undefined is not a function`. */
+function requireHandler(
+  handlers: HostRequestHandlers,
+  name: string,
+): (payload: Record<string, unknown>) => Promise<Record<string, unknown>> {
+  const handler = handlers[name]
+  if (!handler) throw new Error(`missing host handler: ${name}`)
+  return handler
+}
+
 function fakeParent(options: { provider?: string; model?: string } = {}) {
   return {
-    session: { id: 'sess-parent' },
+    session: { id: SessionId('sess-parent') },
     options: { provider: options.provider ?? 'deepseek-official', model: options.model ?? 'deepseek-v4-flash' },
   }
 }
@@ -108,13 +120,13 @@ describe('host.request handler table', () => {
     const dataDir = newDataDir()
     const { handlers } = createHostHandlers(ctx, 'spawn', dataDir)
 
-    const result = await handlers['rlm.run']({ prompt: 'solve this', kwargs: { name: 'worker-a' } })
+    const result = await requireHandler(handlers, 'rlm.run')({ prompt: 'solve this', kwargs: { name: 'worker-a' } })
 
     expect(starts).toHaveLength(1)
-    expect(starts[0].provider).toBe('spawn')
-    expect(starts[0].request.label).toBe('worker-a')
-    expect(starts[0].request.prompt).toEqual([{ type: 'text', text: 'solve this' }])
-    expect(starts[0].request.signal).toBeInstanceOf(AbortSignal)
+    expect(starts[0]!.provider).toBe('spawn')
+    expect(starts[0]!.request.label).toBe('worker-a')
+    expect(starts[0]!.request.prompt).toEqual([{ type: 'text', text: 'solve this' }])
+    expect(starts[0]!.request.signal).toBeInstanceOf(AbortSignal)
     expect(result.rlm_child_id).toBe('run-1')
     expect(result.name).toBe('worker-a')
     expect(result.session_dir).toBe(join(dataDir, 'session-artifacts', 'run-1'))
@@ -126,7 +138,7 @@ describe('host.request handler table', () => {
     const starts: StartCapture[] = []
     const ctx = makeCtx(undefined, starts)
     const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
-    await expect(handlers['rlm.run']({ prompt: 'x' })).rejects.toThrow(/owning agent/)
+    await expect(requireHandler(handlers, 'rlm.run')({ prompt: 'x' })).rejects.toThrow(/owning agent/)
     expect(starts).toHaveLength(0)
   })
 
@@ -136,12 +148,12 @@ describe('host.request handler table', () => {
     const ctx = makeCtx(parent, starts)
     const { handlers, abortSession } = createHostHandlers(ctx, 'spawn', 'unused')
 
-    const pending = handlers['rlm.run']({ prompt: 'long spawn' })
+    const pending = requireHandler(handlers, 'rlm.run')({ prompt: 'long spawn' })
     expect(starts).toHaveLength(1)
-    expect(starts[0].request.signal.aborted).toBe(false)
+    expect(starts[0]!.request.signal.aborted).toBe(false)
 
     abortSession('sess-parent')
-    expect(starts[0].request.signal.aborted).toBe(true)
+    expect(starts[0]!.request.signal.aborted).toBe(true)
     await expect(pending).rejects.toThrow(/aborted start/)
   })
 
@@ -151,21 +163,37 @@ describe('host.request handler table', () => {
     const ctx = makeCtx(parent, starts)
     const dataDir = newDataDir()
     const { handlers } = createHostHandlers(ctx, 'spawn', dataDir)
+    // Only the one-shot child passes the projection filter; the continuable
+    // sibling and non-child rows must not appear.
     ctx.__children.push(
-      { kind: 'child', mode: 'one-shot', id: 'child-a', label: 'Auditor', activity: 'running' },
-      { kind: 'child', mode: 'continuable', id: 'child-cont', label: 'Helper', activity: 'idle' },
-      { kind: 'self', mode: 'one-shot', id: 'self', activity: 'running' },
+      {
+        kind: 'child',
+        mode: 'one-shot',
+        id: SessionId('child-a'),
+        label: 'Auditor',
+        activity: 'running',
+        hasChildren: false,
+      },
+      {
+        kind: 'child',
+        mode: 'continuable',
+        id: SessionId('child-cont'),
+        label: 'Helper',
+        activity: 'inactive',
+        hasChildren: false,
+      },
+      { kind: 'diagnostic', id: SessionId('diag-row') } as unknown as SubagentListEntry,
     )
 
-    const result = await handlers['rlm.list_subagents']({})
+    const result = await requireHandler(handlers, 'rlm.list_subagents')({})
     const subagents = result.subagents as Array<Record<string, unknown>>
 
     expect(subagents).toHaveLength(1)
-    expect(subagents[0].rlm_child_id).toBe('child-a')
-    expect(subagents[0].session_name).toBe('Auditor')
-    expect(subagents[0].status).toBe('running')
-    expect(subagents[0].active_session_id).toBe('child-a')
-    expect(subagents[0].session_dir).toBe(join(dataDir, 'session-artifacts', 'child-a'))
+    expect(subagents[0]!.rlm_child_id).toBe('child-a')
+    expect(subagents[0]!.session_name).toBe('Auditor')
+    expect(subagents[0]!.status).toBe('running')
+    expect(subagents[0]!.active_session_id).toBe('child-a')
+    expect(subagents[0]!.session_dir).toBe(join(dataDir, 'session-artifacts', 'child-a'))
   })
 
   it('rlm.delete_subagent aborts and disposes the named active child once', async () => {
@@ -177,21 +205,22 @@ describe('host.request handler table', () => {
     }))
     const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
 
-    await expect(handlers['rlm.delete_subagent']({ target: '' })).rejects.toThrow(/non-empty target/)
-    await expect(handlers['rlm.delete_subagent']({ target: 'ghost' })).rejects.toThrow(/no active rlm child/)
+    await expect(requireHandler(handlers, 'rlm.delete_subagent')({ target: '' })).rejects.toThrow(/non-empty target/)
+    await expect(requireHandler(handlers, 'rlm.delete_subagent')({ target: 'ghost' })).rejects.toThrow(/no active rlm child/)
 
-    const spawned = await handlers['rlm.run']({ prompt: 'work', kwargs: { name: 'doomed' } })
-    expect(starts[0].request.signal.aborted).toBe(false)
+    const spawned = await requireHandler(handlers, 'rlm.run')({ prompt: 'work', kwargs: { name: 'doomed' } })
+    expect(starts[0]!.request.signal.aborted).toBe(false)
+    const childId = spawned.rlm_child_id as string
 
-    const result = await handlers['rlm.delete_subagent']({ target: spawned.rlm_child_id as string })
-    expect(starts[0].request.signal.aborted).toBe(true)
+    const result = await requireHandler(handlers, 'rlm.delete_subagent')({ target: childId })
+    expect(starts[0]!.request.signal.aborted).toBe(true)
     expect(disposeCount).toBe(1)
     // A deleted child projects as completed/inactive: no live session, kept for the kernel's listing.
     const descriptor = result.subagent as Record<string, unknown>
     expect(descriptor.status).toBe('completed')
     expect(descriptor.active_session_id).toBeNull()
 
-    await expect(handlers['rlm.delete_subagent']({ target: spawned.rlm_child_id as string })).rejects.toThrow(/no active rlm child/)
+    await expect(requireHandler(handlers, 'rlm.delete_subagent')({ target: childId })).rejects.toThrow(/no active rlm child/)
     expect(disposeCount).toBe(1)
   })
 
@@ -201,26 +230,28 @@ describe('host.request handler table', () => {
     const ctx = makeCtx(parent, starts)
     const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
 
-    const hit = await handlers['rlm.find_models']({ query: 'V4 PRO', limit: 5 })
+    const hit = await requireHandler(handlers, 'rlm.find_models')({ query: 'V4 PRO', limit: 5 })
     expect(hit.models).toEqual([
       { provider: 'deepseek-official', id: 'deepseek-v4-pro', name: 'DeepSeek v4 Pro', selector: 'deepseek-official/deepseek-v4-pro' },
     ])
 
-    expect((await handlers['rlm.find_models']({ limit: 1 })).models).toHaveLength(1)
+    const capped = await requireHandler(handlers, 'rlm.find_models')({ limit: 1 })
+    expect(capped.models).toHaveLength(1)
     // A non-finite limit floors at one instead of crashing Math.floor.
-    expect(((await handlers['rlm.find_models']({ limit: Number.NaN })).models as unknown[]).length).toBeGreaterThan(0)
+    const badLimit = await requireHandler(handlers, 'rlm.find_models')({ limit: Number.NaN })
+    expect((badLimit.models as unknown[]).length).toBeGreaterThan(0)
 
     ctx.__failListModels()
-    await expect(handlers['rlm.find_models']({})).resolves.toEqual({ models: [] })
+    await expect(requireHandler(handlers, 'rlm.find_models')({})).resolves.toEqual({ models: [] })
   })
 
   it('model.info mirrors the owning agent options and keeps input empty', async () => {
     const starts: StartCapture[] = []
-    const { handlers } = createHostHandlers(makeCtx(fakeParent({ provider: 'p1', model: 'm1' }), starts), 'spawn', 'unused')
-    await expect(handlers['model.info']({})).resolves.toEqual({ id: 'm1', provider: 'p1', input: [] })
+    const mounted = createHostHandlers(makeCtx(fakeParent({ provider: 'p1', model: 'm1' }), starts), 'spawn', 'unused')
+    await expect(requireHandler(mounted.handlers, 'model.info')({})).resolves.toEqual({ id: 'm1', provider: 'p1', input: [] })
 
     const bare = createHostHandlers(makeCtx(undefined, starts), 'spawn', 'unused')
-    await expect(bare.handlers['model.info']({})).resolves.toEqual({ id: null, provider: null, input: [] })
+    await expect(requireHandler(bare.handlers, 'model.info')({})).resolves.toEqual({ id: null, provider: null, input: [] })
   })
 
   it('abortSession disposes every outstanding run of the session exactly once', async () => {
@@ -233,8 +264,8 @@ describe('host.request handler table', () => {
     }))
     const { handlers, abortSession } = createHostHandlers(ctx, 'spawn', 'unused')
 
-    await handlers['rlm.run']({ prompt: 'a' })
-    await handlers['rlm.run']({ prompt: 'b', kwargs: { name: 'b' } })
+    await requireHandler(handlers, 'rlm.run')({ prompt: 'a' })
+    await requireHandler(handlers, 'rlm.run')({ prompt: 'b', kwargs: { name: 'b' } })
     expect(starts).toHaveLength(2)
 
     abortSession('sess-parent')
@@ -251,8 +282,9 @@ describe('host.request handler table', () => {
     const ctx = makeCtx(parent, starts)
     const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
 
-    const spawned = await handlers['rlm.run']({ prompt: 'quick' })
+    const spawned = await requireHandler(handlers, 'rlm.run')({ prompt: 'quick' })
     await new Promise(resolve => setTimeout(resolve, 0))
-    await expect(handlers['rlm.delete_subagent']({ target: spawned.rlm_child_id as string })).rejects.toThrow(/no active rlm child/)
+    await expect(requireHandler(handlers, 'rlm.delete_subagent')({ target: spawned.rlm_child_id as string }))
+      .rejects.toThrow(/no active rlm child/)
   })
 })
