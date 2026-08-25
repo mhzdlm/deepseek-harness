@@ -4,7 +4,7 @@
  * runtime fallback, and the deduplicated callable-skill wrapper section.
  */
 import { describe, expect, it } from 'vitest'
-import { buildRlmBootstrapCode } from '../src/rlm-bootstrap.ts'
+import { buildRlmBootstrapCode, buildSkillImportProbe, parseSkillImportErrors } from '../src/rlm-bootstrap.ts'
 
 describe('rlm bootstrap code', () => {
   it('base code wires the RLM runtime and fails loud when it is missing', () => {
@@ -51,5 +51,17 @@ describe('rlm bootstrap code', () => {
     expect(code).toContain('class _PrimeAgentMessage')
     expect(code).toContain('agent_message = _PrimeAgentMessage()')
     expect(code).toContain('host_request("rlm.message", payload)')
+  })
+
+  it('parses the skill import probe output for the T2.2 verification gate', () => {
+    // Clean venv: empty object parses to no errors.
+    expect(parseSkillImportErrors('{}\n')).toEqual({})
+    // Failures recorded by the bootstrap loop surface verbatim.
+    const stdout = 'some earlier print\n{"weather": "ModuleNotFoundError: no module named weather"}\n'
+    expect(parseSkillImportErrors(stdout)).toMatchObject({ weather: /ModuleNotFoundError/ })
+    // A broken probe (no JSON line) reports null so the gate can warn instead.
+    expect(parseSkillImportErrors('Traceback: something else')).toBeNull()
+    // The probe cell is emitted with the shared global name.
+    expect(buildSkillImportProbe()).toContain('_PRIME_AGENT_SKILL_IMPORT_ERRORS')
   })
 })

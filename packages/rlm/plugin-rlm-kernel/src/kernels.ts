@@ -17,7 +17,7 @@ import type { ExecuteResult } from './vendor/kernel/index.ts'
 import type { KernelPythonSkill } from './vendor/kernel/bootstrap.ts'
 import type { RestoreResult } from './vendor/kernel/state-snapshot.ts'
 import { snapshotPathIn, manifestPathIn } from './vendor/kernel/state-snapshot.ts'
-import { buildRlmBootstrapCode } from './rlm-bootstrap.ts'
+import { buildRlmBootstrapCode, buildSkillImportProbe, parseSkillImportErrors } from './rlm-bootstrap.ts'
 
 /** item-4: default idle timeout before a kernel is reclaimed (10 minutes). */
 export const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60_000
@@ -304,6 +304,26 @@ export class SessionKernelRegistry {
       throw new Error(
         `Failed to initialize rlm runtime: ${bootstrap.error?.traceback?.join('\n') ?? bootstrap.stderr}`,
       )
+    }
+
+    // T2.2: the prompt layer now promises every requested skill as callable.
+    // Verify that promise against ground truth from inside the kernel — a
+    // skill that cannot import fails provisioning here, naming each offender,
+    // instead of surfacing as a runtime stub error on first use. A probe that
+    // itself misbehaves is warned, not fatal: it is our own code, not a skill
+    // mismatch.
+    if (pythonSkills !== undefined && pythonSkills.length > 0) {
+      const probe = await manager.execute(buildSkillImportProbe())
+      const errors = probe.status === 'ok' ? parseSkillImportErrors(probe.stdout) : null
+      if (errors === null) {
+        console.warn('[rlm-kernel] skill import probe returned no parsable output; skipping verification')
+      } else if (Object.keys(errors).length > 0) {
+        const detail = Object.entries(errors)
+          .map(([name, message]) => `  - ${name}: ${message.split('\n')[0]}`)
+          .join('\n')
+        await manager.dispose()
+        throw new Error(`Python skills failed to import in the kernel venv:\n${detail}`)
+      }
     }
 
     return manager

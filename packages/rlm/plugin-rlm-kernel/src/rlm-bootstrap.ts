@@ -178,3 +178,37 @@ for _prime_agent_skill_name in ${JSON.stringify(importNames)}:
         )
 `.trim()
 }
+
+/** Name of the bootstrap global recording per-skill import failures. */
+export const SKILL_IMPORT_ERRORS_GLOBAL = '_PRIME_AGENT_SKILL_IMPORT_ERRORS'
+
+/**
+ * T2.2 verification cell: after the bootstrap ran, dump the recorded import
+ * errors as one JSON line so the host can fail loud on skills the prompt layer
+ * promised but the venv cannot deliver.
+ */
+export function buildSkillImportProbe(): string {
+  return `import json as _prime_agent_probe_json\nprint(_prime_agent_probe_json.dumps(${SKILL_IMPORT_ERRORS_GLOBAL}))`
+}
+
+/**
+ * Parse a {@link buildSkillImportProbe} cell's stdout into its error map.
+ * Returns `null` when no JSON object line is found (probe itself broken) —
+ * callers treat that as an opaque verification failure, not as skill errors.
+ */
+export function parseSkillImportErrors(stdout: string): Record<string, string> | null {
+  const lines = stdout.split('\n').map(line => line.trim()).filter(line => line.length > 0)
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index] as string
+    if (!line.startsWith('{')) continue
+    try {
+      const parsed: unknown = JSON.parse(line)
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, string>
+      }
+    } catch {
+      // Not JSON — keep scanning upwards.
+    }
+  }
+  return null
+}
