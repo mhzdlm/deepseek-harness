@@ -23,6 +23,10 @@ import { buildRlmBootstrapCode, buildSkillImportProbe, parseSkillImportErrors } 
 export const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60_000
 /** item-4: how often the plugin's idle sweep runs. */
 export const IDLE_SWEEP_INTERVAL_MS = 60_000
+/** T3.2 Phase A: default cap on concurrently live (HOT) kernels; `0` disables. */
+export const DEFAULT_MAX_LIVE_KERNELS = 4
+/** T3.2 Phase A: grace before retrying a leased kernel whose snapshot failed at reclaim. */
+export const DEFAULT_RECLAIM_SNAPSHOT_GRACE_MS = 5_000
 
 export interface SessionKernelOptions {
   /** Python interpreter with ipykernel + prime-agent-runtime. Omitted → auto-bootstrapped venv. */
@@ -49,6 +53,18 @@ export interface SessionKernelOptions {
   now?: () => number
   /** item-13: auto-snapshot debounce after a successful cell (ms). Default 1500. */
   snapshotDebounceMs?: number
+  /**
+   * T3.2 Phase A: cap on concurrently live (HOT) kernels; `0` disables. When
+   * exceeded, the oldest kernels WITHOUT a lease are disposed (LRU eviction);
+   * leased and busy kernels are skipped. Defaults to 4.
+   */
+  maxLiveKernels?: number
+  /**
+   * T3.2 Phase A: grace (ms) before retrying a leased kernel whose snapshot
+   * failed at reclaim, so a temporary dill failure never silently loses a
+   * lease-held namespace. Defaults to 5000.
+   */
+  reclaimSnapshotGraceMs?: number
 }
 
 /**
@@ -84,6 +100,16 @@ export class IdleTracker {
       return last === undefined ? false : now - last > this.timeoutMs
     })
   }
+
+  /**
+   * T3.2 Phase A: candidates (excluding `exclude`) ordered least-recently-used
+   * first, for LRU eviction. Unknown ids (never touched) are dropped.
+   */
+  oldest(candidates: readonly string[], exclude: ReadonlySet<string>): string[] {
+    return candidates
+      .filter(id => !exclude.has(id) && this.lastUsed.has(id))
+      .sort((a, b) => (this.lastUsed.get(a) ?? 0) - (this.lastUsed.get(b) ?? 0))
+  }
 }
 
 /**
@@ -104,6 +130,16 @@ export class SessionKernelRegistry {
   private readonly inflight = new Map<string, Promise<KernelManager>>()
   /** Sessions whose kernel is currently executing an ipython cell (item-4). */
   private readonly busy = new Set<string>()
+  /**
+   * T3.2 Phase A: leases per session (reason → count). A leased kernel is
+   * exempt from idle reclamation and LRU eviction; cleared on disposal.
+   */
+  private readonly leases = new Map<string, Map<string, number>>()
+  /**
+   * T3.2 Phase A: sessions whose leased reclaim was skipped because the
+   * snapshot failed; reclaim is retried only after this timestamp.
+   */
+  private readonly reclaimRetryAt = new Map<string, number>()
   private readonly idle: IdleTracker
   private readonly artifactRoot: string
 
@@ -220,23 +256,98 @@ export class SessionKernelRegistry {
   }
 
   /**
-	 * item-4: dispose every kernel that has been idle longer than the timeout.
-	 * State is preserved by the dill snapshot flush inside `KernelManager.dispose`,
-	 * so the next ipython call re-provisions and restores. Returns the disposed
-	 * session ids (for tests/diagnostics).
-	 */
-  disposeIdle(now?: number): string[] {
+   * T3.2 Phase A: hold one lease on a session's kernel so it survives idle
+   * reclamation and LRU eviction until the matching {@link unpin}. Counted
+   * per reason; cleared automatically on `session/disposed`.
+   */
+  pin(sessionId: string, reason: string): void {
+    const reasons = this.leases.get(sessionId) ?? new Map<string, number>()
+    reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
+    this.leases.set(sessionId, reasons)
+  }
+
+  /** T3.2 Phase A: release one lease held by {@link pin}. */
+  unpin(sessionId: string, reason: string): void {
+    const reasons = this.leases.get(sessionId)
+    if (!reasons) return
+    const next = (reasons.get(reason) ?? 0) - 1
+    if (next <= 0) reasons.delete(reason)
+    else reasons.set(reason, next)
+    if (reasons.size === 0) this.leases.delete(sessionId)
+  }
+
+  /** T3.2 Phase A: sessions holding at least one lease. */
+  private pinnedSessions(): Set<string> {
+    return new Set(this.leases.keys())
+  }
+
+  /**
+   * item-4 + T3.2 Phase A: dispose kernels idle past the timeout. Leased and
+   * busy kernels are excluded; a leased kernel whose snapshot cannot flush is
+   * skipped this cycle and retried after the grace window, so a temporary
+   * dill failure never silently loses a lease-held namespace. After the idle
+   * pass the live-kernel cap is enforced (LRU eviction of unleased kernels).
+   * Returns the disposed session ids.
+   */
+  async disposeIdle(now?: number): Promise<string[]> {
+    const nowMs = now ?? this.options.now?.() ?? Date.now()
     const disposed: string[] = []
-    for (const sessionId of this.idle.expired([...this.kernels.keys()], this.busy, now ?? this.options.now?.())) {
+    const pinned = this.pinnedSessions()
+    const exclude = new Set([...this.busy, ...pinned])
+    for (const sessionId of this.idle.expired([...this.kernels.keys()], exclude, nowMs)) {
+      if (pinned.has(sessionId) && !(await this.canReclaimPinned(sessionId, nowMs))) continue
       this.disposeSession(sessionId)
       disposed.push(sessionId)
     }
+    await this.enforceLiveCap(disposed)
     return disposed
+  }
+
+  /**
+   * T3.2 Phase A: whether a leased kernel may be reclaimed this cycle.
+   * Forces a snapshot; on failure schedules a retry after the grace window
+   * and returns false (the kernel stays HOT).
+   */
+  private async canReclaimPinned(sessionId: string, nowMs: number): Promise<boolean> {
+    const retryAt = this.reclaimRetryAt.get(sessionId)
+    if (retryAt !== undefined && retryAt > nowMs) return false
+    const manager = this.kernels.get(sessionId)
+    if (!manager) return true
+    const snapshot = await manager.snapshotState()
+    if (snapshot === null) {
+      this.reclaimRetryAt.set(sessionId, nowMs + (this.options.reclaimSnapshotGraceMs ?? DEFAULT_RECLAIM_SNAPSHOT_GRACE_MS))
+      return false
+    }
+    this.reclaimRetryAt.delete(sessionId)
+    return true
+  }
+
+  /**
+   * T3.2 Phase A: when the live-kernel count exceeds `maxLiveKernels`, dispose
+   * the oldest kernels without a lease or busy flag (LRU). Leased kernels are
+   * never cap-evicted.
+   */
+  private async enforceLiveCap(disposed: string[]): Promise<void> {
+    const cap = this.options.maxLiveKernels
+    if (cap === undefined || cap <= 0) return
+    let excess = this.kernels.size - cap
+    if (excess <= 0) return
+    const exclude = new Set([...this.busy, ...this.pinnedSessions()])
+    for (const sessionId of this.idle.oldest([...this.kernels.keys()], exclude)) {
+      if (excess <= 0) break
+      this.disposeSession(sessionId)
+      disposed.push(sessionId)
+      excess -= 1
+    }
   }
 
   disposeSession(sessionId: string): void {
     this.idle.remove(sessionId)
     this.busy.delete(sessionId)
+    // T3.2 Phase A: disposal is the terminal event — leases and reclaim
+    // retries no longer mean anything for a gone session.
+    this.leases.delete(sessionId)
+    this.reclaimRetryAt.delete(sessionId)
     const manager = this.kernels.get(sessionId)
     if (manager) {
       this.kernels.delete(sessionId)

@@ -49,6 +49,13 @@ export interface Config {
    * Defaults to off (each session pays a kernel process until idle reclamation).
    */
   warmupOnSessionCreate?: boolean
+  /**
+   * T3.2 Phase A: cap on concurrently live kernels (0 = unlimited). When
+   * exceeded, the oldest kernels without a lease are disposed (LRU). Defaults to 4.
+   */
+  maxLiveKernels?: number
+  /** T3.2 Phase A: grace (ms) before retrying a leased kernel whose snapshot failed at reclaim. Defaults to 5000. */
+  reclaimSnapshotGraceMs?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -59,6 +66,8 @@ export const Config: z<Config> = z.object({
   maxOutputChars: z.natural(),
   snapshotDebounceMs: z.natural(),
   warmupOnSessionCreate: z.boolean(),
+  maxLiveKernels: z.natural(),
+  reclaimSnapshotGraceMs: z.natural(),
 })
 
 export function apply(ctx: Context, config: Config): void {
@@ -82,6 +91,10 @@ export function apply(ctx: Context, config: Config): void {
     },
     ...(config.idleTimeoutMs !== undefined ? { idleTimeoutMs: config.idleTimeoutMs } : {}),
     ...(config.snapshotDebounceMs !== undefined ? { snapshotDebounceMs: config.snapshotDebounceMs } : {}),
+    // T3.2 Phase A: live-kernel cap and reclaim-snapshot grace (defaults live
+    // in kernels.ts and apply when the config keys are absent).
+    ...(config.maxLiveKernels !== undefined ? { maxLiveKernels: config.maxLiveKernels } : {}),
+    ...(config.reclaimSnapshotGraceMs !== undefined ? { reclaimSnapshotGraceMs: config.reclaimSnapshotGraceMs } : {}),
   })
 
   ctx.on('session/disposed', (session) => {

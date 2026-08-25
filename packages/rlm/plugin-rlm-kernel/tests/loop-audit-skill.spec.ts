@@ -28,7 +28,9 @@ const BAD_REPORT = [
   'prose without a proper header',
 ].join('\n')
 
-const SKILL_SOURCE_DIR = path.resolve('packages/rlm/plugin-rlm-loop/skills/loop-audit')
+// Resolve against this spec's own location so the suite passes under any
+// working directory (repo root or the package dir, e.g. pnpm --filter runs).
+const SKILL_SOURCE_DIR = path.resolve(import.meta.dirname, '../../plugin-rlm-loop/skills/loop-audit')
 
 function hasUv(): boolean {
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {

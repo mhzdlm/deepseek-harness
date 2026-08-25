@@ -40,7 +40,7 @@ describe('idle kernel reclamation (real kernel)', () => {
 
     // Advance the clock past the idle timeout; the sweep must reclaim the kernel.
     now += 5_000
-    const disposed = kernels.disposeIdle()
+    const disposed = await kernels.disposeIdle()
     expect(disposed).toContain('idle-session')
 
     // Next use re-provisions from the snapshot: the variable survives and a
