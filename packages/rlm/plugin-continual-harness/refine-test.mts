@@ -21,6 +21,7 @@ import {
 	readHarnessStateSync,
 	splitHarnessStateByScope,
 	writeHarnessState,
+	writeHarnessStates,
 	type HarnessEntry,
 	type HarnessKind,
 	type HarnessStateFile,
@@ -457,6 +458,10 @@ console.log('== writeHarnessState CAS conflict (FIX-7) ==')
 	const { mtimeMs } = await readHarnessStateDetailed(statePath)
 
 	// Simulate a kernel-side write landing between our read and our write.
+	// The pause keeps the two writes in distinct mtime ticks — back-to-back
+	// renames can land on the same timestamp on coarse-granularity filesystems,
+	// which would make the stale expectation accidentally match.
+	await new Promise((resolve) => setTimeout(resolve, 20))
 	const concurrent: HarnessStateFile = { schema: 1, entries: { memory: { x: makeEntry('memory', 'x', 'other') } }, refinements: [] }
 	await writeHarnessState(statePath, concurrent)
 
@@ -469,6 +474,90 @@ console.log('== writeHarnessState CAS conflict (FIX-7) ==')
 	check('stale-mtime write throws HarnessConflictError', conflicted)
 	const after = await readHarnessState(statePath)
 	check('concurrent write preserved', after.entries.memory?.['x']?.title === 'other')
+}
+
+console.log('== writeHarnessStates global-failure rollback (P1-fix) ==')
+{
+	const rollbackDir = mkdtempSync(path.join(os.tmpdir(), 'dsh-rlm-rollback-test-'))
+	const sid = 'rollback-session'
+	const localPath = harnessStatePath(rollbackDir, sid)
+
+	// Seed both files so the composite CAS has real expectations to hold.
+	const localBase: HarnessStateFile = { schema: 1, entries: { memory: { l1: makeEntry('memory', 'l1', 'local-base') } }, refinements: [] }
+	const globalBase: HarnessStateFile = { schema: 1, entries: { memory: { g1: makeEntry('memory', 'g1', 'global-base') } }, refinements: [] }
+	await writeHarnessState(localPath, localBase)
+	await writeHarnessState(globalHarnessStatePath(rollbackDir), globalBase)
+
+	// A kernel-side global write lands between our observation and our call,
+	// so the composite call's global half must conflict. Same mtime-tick guard
+	// as the FIX-7 section above.
+	const localMeta = await readHarnessStateDetailed(localPath)
+	const globalMeta = await readHarnessStateDetailed(globalHarnessStatePath(rollbackDir))
+	await new Promise((resolve) => setTimeout(resolve, 20))
+	await writeHarnessState(globalHarnessStatePath(rollbackDir), { schema: 1, entries: { memory: { g2: makeEntry('memory', 'g2', 'kernel-won') } }, refinements: [] })
+
+	const nextLocal: HarnessStateFile = { schema: 1, entries: { memory: { l1: makeEntry('memory', 'l1', 'local-new') } }, refinements: [] }
+	let threw = false
+	try {
+		await writeHarnessStates(rollbackDir, sid, { schema: 1, entries: {}, refinements: [] }, nextLocal, { global: globalMeta.mtimeMs, local: localMeta.mtimeMs })
+	} catch (error) {
+		threw = error instanceof HarnessConflictError
+	}
+	check('composite write throws when the global half conflicts', threw)
+
+	// The compensating write restores the pre-call local content; without it
+	// the next prompt render would see local-new + kernel-global as a torn pair.
+	const localAfter = await readHarnessState(localPath)
+	check('local rolled back after global failure', localAfter.entries.memory?.['l1']?.title === 'local-base', localAfter.entries.memory?.['l1']?.title ?? '(missing)')
+	check('conflicting global winner untouched by rollback', (await readHarnessState(globalHarnessStatePath(rollbackDir))).entries.memory?.['g2']?.title === 'kernel-won')
+
+	// Consistent expectations commit both halves in one call.
+	const freshLocalMeta = await readHarnessStateDetailed(localPath)
+	const freshGlobalMeta = await readHarnessStateDetailed(globalHarnessStatePath(rollbackDir))
+	await writeHarnessStates(rollbackDir, sid, { schema: 1, entries: { memory: { g3: makeEntry('memory', 'g3', 'both-new') } }, refinements: [] }, nextLocal, { global: freshGlobalMeta.mtimeMs, local: freshLocalMeta.mtimeMs })
+	const localHappy = await readHarnessState(localPath)
+	const globalHappy = await readHarnessState(globalHarnessStatePath(rollbackDir))
+	check('consistent composite write lands both files', localHappy.entries.memory?.['l1']?.title === 'local-new' && globalHappy.entries.memory?.['g3']?.title === 'both-new')
+}
+
+console.log('== applyProposalsAndPersist conflict retry converges (FIX-7) ==')
+{
+	const retryDir = mkdtempSync(path.join(os.tmpdir(), 'dsh-rlm-retry-test-'))
+	const sid = 'retry-session'
+	const snapshotDir = path.join(path.dirname(harnessStatePath(retryDir, sid)), 'refinements')
+
+	// Interference: unconditionally rewrite both files (read-modify-write of
+	// the current content) so any in-flight attempt's observed mtimes go stale.
+	// Scheduled at 5/35/80ms to bracket fast machines without delaying the
+	// happy path meaningfully.
+	async function bump(): Promise<void> {
+		const lp = harnessStatePath(retryDir, sid)
+		const gp = globalHarnessStatePath(retryDir)
+		for (const p of [lp, gp]) {
+			try {
+				const cur = await readHarnessState(p)
+				await writeHarnessState(p, cur)
+			} catch {
+				// Missing file: nothing to bump yet.
+			}
+		}
+	}
+	const timers = [5, 35, 80].map((ms) => setTimeout(() => { void bump().catch(() => undefined) }, ms))
+
+	const persisted = await applyProposalsAndPersist(
+		retryDir,
+		sid,
+		[{ action: 'upsert', kind: 'memory', title: 'retry-entry', content: 'landed despite conflict', evidence: 'ev' }] as Parameters<typeof applyProposalsAndPersist>[2],
+		snapshotDir,
+		100,
+		'/refine',
+	).finally(() => timers.forEach(clearTimeout))
+
+	check('conflicted refine retries once and lands the proposal', persisted.applied === true && persisted.eventId.length > 0, `eventId='${persisted.eventId}'`)
+	const landed = await readHarnessState(harnessStatePath(retryDir, sid))
+	const entry = Object.values(landed.entries.memory ?? {}).find((entry) => entry.title === 'retry-entry')
+	check('retried proposal content is durable', entry?.content === 'landed despite conflict')
+	check('exactly one refinement event recorded', landed.refinements.length === 1, `len=${landed.refinements.length}`)
 }
 
 console.log('== corrupt state backup (FIX-11) ==')

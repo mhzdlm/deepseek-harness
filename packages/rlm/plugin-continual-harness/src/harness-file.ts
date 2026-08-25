@@ -201,7 +201,10 @@ export async function readHarnessStatesDetailed(
  *
  * P1-fix: global-write failure rolls back the local write (restores the previous
  * local state) so the two files stay consistent — otherwise the next system-prompt
- * render sees a local-new + global-old torn view.
+ * render sees a local-new + global-old torn view. The pre-write snapshot is taken
+ * BEFORE the local half lands, and the compensating write CASes against the mtime
+ * that write produced, so the restore actually applies instead of conflicting
+ * with itself.
  */
 export async function writeHarnessStates(
   baseDir: string,
@@ -211,19 +214,23 @@ export async function writeHarnessStates(
   expected: { global: number | null; local: number | null },
 ): Promise<void> {
   const localPath = harnessStatePath(baseDir, sessionId)
+  // Snapshot the caller-visible local state first: this is what a failed
+  // global half must restore.
+  const localPrev = await readHarnessStateDetailed(localPath)
   // Local first: the session's refine event log lives there, so a global-file
   // conflict is safer to fail after the session's own record is durable.
   await writeHarnessState(localPath, local, expected.local)
-  // P1-fix: snapshot pre-write local state for rollback on global failure.
-  const localPrev = await readHarnessStateDetailed(localPath)
   try {
     await writeHarnessState(globalHarnessStatePath(baseDir), global, expected.global)
   } catch (globalError) {
-    // P1-fix: global write failed — roll back local to its pre-write value
+    // Global write failed — roll local back to its pre-write value
     // (best-effort; if rollback also fails the two files are still torn).
     if (localPrev.mtimeMs !== null) {
       try {
-        await writeHarnessState(localPath, localPrev.state, expected.local)
+        const written = await readHarnessStateDetailed(localPath)
+        if (written.mtimeMs !== null) {
+          await writeHarnessState(localPath, localPrev.state, written.mtimeMs)
+        }
       } catch {
         // Rollback failed — surface the original global error; torn state
         // is logged by the caller's catch.
