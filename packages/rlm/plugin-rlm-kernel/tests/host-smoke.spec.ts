@@ -166,4 +166,26 @@ describe('rlm plugin host mount', () => {
     dispose()
     expect(created).toContain(String(agent.session.id))
   })
+
+  it('disposes the session kernel when the session is disposed (FIX-6 wiring)', async () => {
+    const { ctx } = await setup()
+    const kernels = ctx.get('rlm.kernels')
+    expect(kernels).toBeDefined()
+
+    // Record which sessions the disposal sweep reclaims. The abort half of the
+    // same listener (outstanding rlm.run children) is pinned behaviorally in
+    // host-handlers.spec.ts; here we prove the plugin forwards the event to
+    // both halves by observing the kernel-teardown side on the live registry.
+    const disposed: string[] = []
+    const registry = kernels as unknown as { disposeSession: (sid: string) => void }
+    const original = registry.disposeSession.bind(registry)
+    registry.disposeSession = (sid: string) => {
+      disposed.push(sid)
+      original(sid)
+    }
+
+    const agent = ctx.agentLoop.create(SessionId('dispose-probe'), { provider: 'probe', model: 'probe' })
+    ctx.emit('session/disposed', agent.session)
+    expect(disposed).toEqual([String(agent.session.id)])
+  })
 })

@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
+import { Context } from '@deepseek-ai/cordis'
+import * as PluginRlmVerifier from '@deepseek-ai/dsh-plugin-rlm-verifier'
 import { createVerifyTool } from '../src/verify-tool.ts'
 import type { VerifyCallModel, VerifyToolOptions } from '../src/verify-tool.ts'
 
@@ -167,5 +169,119 @@ describe('verify seam engine', () => {
     expect(started).toEqual(['verify-child-1', 'verify-child-2'])
     expect(prompts.join('\n')).toContain('child answer verify-child-1')
     expect(prompts.join('\n')).toContain('child answer verify-child-2')
+  })
+
+  it('truncates each auto_spawn child result to maxChildChars', async () => {
+    const longAnswer = `${'A'.repeat(20)}MARKER-BEYOND-LIMIT`
+    const subagents = {
+      start: async () => ({
+        result: Promise.resolve({ output: [{ type: 'text' as const, text: longAnswer }] }),
+      }),
+    }
+    const prompts: string[] = []
+    const tool = createVerifyTool(baseOptions({
+      subagents: subagents as never,
+      maxChildChars: 20,
+      callModel: async (request) => {
+        prompts.push(request.userText)
+        return { text: TAGS[0], logprobs: [{ token: 'A', logprob: -0.01 }] }
+      },
+    }))
+    await tool.execute(
+      { problem: 'p', candidates: [], auto_spawn: 2 },
+      { signal: new AbortController().signal, agent: { session: { id: 'sess-trunc' } } } as never,
+    )
+    const joined = prompts.join('\n')
+    expect(joined).toContain('A'.repeat(20))
+    expect(joined).not.toContain('MARKER-BEYOND-LIMIT')
+  })
+
+  it('full privacy mode masks keys in event digests but not in scoring prompts', async () => {
+    const appended: Array<{ name: string; payload: Record<string, unknown> }> = []
+    const session = {
+      id: 'sess-redact',
+      append: (name: string, payload: unknown) => { appended.push({ name, payload: payload as Record<string, unknown> }) },
+    }
+    const secret = 'sk-abcd1234567890xyz'
+    const prompts: string[] = []
+    const tool = createVerifyTool(baseOptions({
+      privacyFilter: 'full',
+      callModel: async (request) => {
+        prompts.push(request.userText)
+        return { text: TAGS[0], logprobs: [{ token: 'A', logprob: -0.01 }] }
+      },
+    }))
+    await tool.execute(
+      { problem: 'p', candidates: [`candidate with ${secret} embedded`, 'plain candidate'] },
+      { signal: new AbortController().signal, agent: { session } } as never,
+    )
+
+    const requestEvent = appended.find(a => a.name === 'session/verify-request')?.payload as
+      | { candidatesDigest?: string[] }
+      | undefined
+    expect(requestEvent?.candidatesDigest?.join('\n')).toContain('[redacted key]')
+    expect(requestEvent?.candidatesDigest?.join('\n')).not.toContain(secret)
+    // The scoring prompt itself intentionally keeps the raw text (STATUS: full 档只脱敏事件面).
+    expect(prompts.join('\n')).toContain(secret)
+  })
+
+  it('display privacy mode annotates judge provenance in the rendered output', async () => {
+    const callModel: VerifyCallModel = async () => ({
+      text: TAGS[0],
+      logprobs: [{ token: 'A', logprob: -0.01 }],
+    })
+    const tool = createVerifyTool(baseOptions({
+      privacyFilter: 'display',
+      callModel,
+      judgeProfiles: { 'judge-a': { model: 'model-a' } },
+    }))
+    const value = (await tool.execute(
+      { problem: 'p', candidates: ['c1', 'c2'], judges: ['judge-a'] },
+      execStub,
+    )) as { judges: Array<{ model: string; status: string }> }
+
+    const definition = tool as unknown as {
+      output: { render: (args: unknown, value: unknown) => Array<{ type: string; text: string }> }
+    }
+    const blocks = definition.output.render({}, value)
+    const text = blocks.map(b => b.text).join('\n')
+    expect(text).toContain('verify panel (1 judges)')
+    expect(text).toMatch(/✓ model-a/)
+  })
+
+  it('session/disposed aborts an in-flight auto_spawn child (AUDIT P1-1 regression)', async () => {
+    const signals: AbortSignal[] = []
+    const subagents = {
+      start: async (_provider: string, request: { signal: AbortSignal }) => {
+        signals.push(request.signal)
+        const result = new Promise((_resolve, reject) => {
+          request.signal.addEventListener('abort', () => reject(new Error('child cancelled by disposal')))
+        })
+        return { result }
+      },
+    }
+
+    // Mount the real plugin apply() with minimal service stubs so the
+    // trackController + session/disposed wiring under test is shipped code.
+    let registeredTool: { execute: (args: Record<string, unknown>, exec: unknown) => Promise<unknown> } | undefined
+    const ctx = new Context()
+    ctx.provide('tools', {
+      register: (definition: typeof registeredTool) => {
+        registeredTool = definition
+        return () => undefined
+      },
+    })
+    ctx.provide('llm', {})
+    ctx.provide('subagents', subagents)
+    await ctx.plugin(PluginRlmVerifier, {})
+    expect(registeredTool).toBeDefined()
+
+    const exec = { signal: new AbortController().signal, agent: { session: { id: 'sess-dispose-v' } } }
+    const pending = registeredTool?.execute({ problem: 'p', candidates: [], auto_spawn: 1 }, exec)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    ctx.emit('session/disposed', { id: 'sess-dispose-v' } as never)
+    await expect(pending).rejects.toThrow(/child cancelled by disposal/)
+    expect(signals[0]?.aborted).toBe(true)
   })
 })

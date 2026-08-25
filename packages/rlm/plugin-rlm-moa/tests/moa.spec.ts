@@ -5,7 +5,7 @@
  * per-slot timeouts, preset resolution, tracing, and the render projection.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createMoaTool, type MoaCallModel, type MoaModelRequest } from '../src/moa-tool.ts'
@@ -421,5 +421,36 @@ describe('preset normalization', () => {
     const preset = presets.get('p')!
     expect(preset.references[0]).toMatchObject({ provider: 'deepseek-official', label: 'm1@deepseek-official' })
     expect(preset.aggregator.label).toBe('a1@custom-route')
+  })
+
+  it('propagates an aggregator failure after healthy references, leaving no trace', async () => {
+    const traceDir = tmpRoot()
+    let referenceCalls = 0
+    const callModel: MoaCallModel = async (slot) => {
+      if (slot.label === 'agg@p-agg') throw new Error('agg route down')
+      referenceCalls += 1
+      return { text: `advice-${referenceCalls}` }
+    }
+
+    await expect(runTool(
+      { ...singlePreset(twoSlotPreset()), privacyFilter: '', callModel, traceDir },
+      { problem: 'derive x' },
+    )).rejects.toThrow(/agg route down/)
+
+    // Both references were spent before the failure — the error must not
+    // silently retry or synthesize over a subset.
+    expect(referenceCalls).toBe(2)
+    // Trace is a success-path artifact: a failed run leaves no JSONL behind.
+    expect(readdirSync(traceDir)).toEqual([])
+  })
+
+  it('rejects when the aggregator returns blank content instead of synthesizing emptiness', async () => {
+    const callModel: MoaCallModel = async slot =>
+      slot.label === 'agg@p-agg' ? { text: '   \n  ' } : { text: 'advice' }
+
+    await expect(runTool(
+      { ...singlePreset(twoSlotPreset()), privacyFilter: '', callModel },
+      { problem: 'derive x' },
+    )).rejects.toThrow(/aggregator produced no content/)
   })
 })
