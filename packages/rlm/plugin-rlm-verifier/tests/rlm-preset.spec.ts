@@ -33,6 +33,32 @@ async function setup() {
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(HARNESS_ROOT).href + '/'
   await ctx.plugin(Loader)
+  // The rlm recipe's bare `@deepseek-ai/dsh-*` rows resolve through the
+  // PresetTree's recorded base via the native module loader. Workspace links
+  // for these plugins are NOT hoisted to the root node_modules, so on layouts
+  // where no upward walk reaches them (the macOS CI runner) that native
+  // resolution fails even though the deployment closure would provide them.
+  // Wrap the loader with a test-only fallback: after a native failure, retry
+  // inside this module's own resolver (vite tsconfig paths), which is exactly
+  // how every other workspace specifier in this suite resolves.
+  const internal = ctx.loader.internal
+  if (internal) {
+    // Native loader present (Linux/macOS CI with the builtin addon): wrap it
+    // so a failed native resolution of an unhisted workspace specifier falls
+    // back to this suite's own resolver instead of failing the mount.
+    const wrapped = Object.create(internal) as typeof internal
+    wrapped.import = async (specifier: string, base: string) => {
+      if (specifier.startsWith('@deepseek-ai/')) {
+        try {
+          return await internal.import(specifier, base, {})
+        } catch {
+          return import(/* @vite-ignore */ specifier)
+        }
+      }
+      return internal.import(specifier, base, {})
+    }
+    ctx.loader.internal = wrapped
+  }
   ctx.loader.builtins.include = Include
   ctx.loader.builtins.group = Group
   await ctx.plugin(LlmRuntime)
@@ -65,7 +91,13 @@ describe('rlm preset', () => {
     const { ctx } = await setup()
     const handle = await ctx.agents.create({
       sessionId: SessionId('sess-rlm'),
-      setup: async (agentCtx: Context) => void await ctx.agentPresets.mount(agentCtx, 'rlm'),
+      // The mount records the context's baseUrl as the resolution anchor for
+      // bare `@deepseek-ai/dsh-*` rows (Include rewrites the tree's own base
+      // to the composition directory). Pinning it here keeps the anchor on the
+      // harness root regardless of what a derived agent scope inherits.
+      setup: async (agentCtx: Context) => {
+        await ctx.agentPresets.mount(agentCtx, 'rlm')
+      },
     })
     const schemas = ctx.tools.schemas(handle.agent).map(s => s.name).sort()
     expect(schemas).toContain('ipython')
