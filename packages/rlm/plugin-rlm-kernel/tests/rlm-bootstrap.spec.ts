@@ -12,6 +12,9 @@ describe('rlm bootstrap code', () => {
     expect(code).toContain('rlm = _prime_agent_rlm_module.rlm')
     expect(code).toContain('_PrimeAgentMissingRlm')
     expect(code).toContain('DSH_RLM_KERNEL_PYTHON')
+    // The fallback must also answer transcript/agent_message's host_request
+    // route with the install guidance instead of an AttributeError.
+    expect(code).toContain('async def host_request(self, request_type, payload=None):')
     // No skills → the wrapper section must be absent entirely.
     expect(code).not.toContain('_prime_agent_skill_name')
   })

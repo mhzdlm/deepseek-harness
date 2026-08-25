@@ -25,7 +25,9 @@
  * `session.query` gives the kernel programmatic read access to the owning
  * session's own transcript (`transcript.tail` / `transcript.grep` in the
  * injected bootstrap): the prompt-as-a-variable half of the RLM model.
- * Read-only and hard-capped; writes still never leave the host.
+ * Read-only and hard-capped; writes still never leave the host. `rlm.message`
+ * delivers follow-up turns to retained children via the subagent followup
+ * bridge; delivery-only acknowledgement, answers ride the settlement path.
  * @module @deepseek-ai/dsh-plugin-rlm-kernel
  */
 
@@ -81,6 +83,7 @@ function subagentDescriptor(
   id: string,
   label: string | undefined,
   activity: 'running' | 'inactive',
+  retained = false,
 ): Record<string, unknown> {
   return {
     rlm_child_id: id,
@@ -89,6 +92,7 @@ function subagentDescriptor(
     session_name: label ?? id,
     session_dir: path.join(dataDir, 'session-artifacts', id),
     status: activity === 'running' ? 'running' : 'completed',
+    retained,
   }
 }
 
@@ -248,12 +252,15 @@ export function createHostHandlers(
       const parent = ctx.agents.currentInitiator()
       if (!parent) return { subagents: [] }
       const children = await ctx.subagents.listChildren(parent.session.id)
+      // Both modes project: retained (continuable) children are exactly the
+      // ones rlm.message can address, so hiding them would make follow-ups
+      // undiscoverable from the kernel.
       const subagents = children
         .filter(
-          (entry): entry is SubagentListEntry & { kind: 'child'; mode: 'one-shot' } =>
-            entry.kind === 'child' && entry.mode === 'one-shot',
+          (entry): entry is SubagentListEntry & { kind: 'child'; mode: 'one-shot' | 'continuable' } =>
+            entry.kind === 'child',
         )
-        .map(entry => subagentDescriptor(dataDir, String(entry.id), entry.label, entry.activity))
+        .map(entry => subagentDescriptor(dataDir, String(entry.id), entry.label, entry.activity, entry.mode === 'continuable'))
       return { subagents }
     },
 

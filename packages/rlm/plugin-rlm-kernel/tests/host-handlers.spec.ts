@@ -194,8 +194,8 @@ describe('host.request handler table', () => {
     const ctx = makeCtx(parent, starts)
     const dataDir = newDataDir()
     const { handlers } = createHostHandlers(ctx, 'spawn', dataDir)
-    // Only the one-shot child passes the projection filter; the continuable
-    // sibling and non-child rows must not appear.
+    // Both child modes project (retained rows carry retained=true so the
+    // kernel can tell follow-up-able children apart); diagnostic rows never do.
     ctx.__children.push(
       {
         kind: 'child',
@@ -219,12 +219,16 @@ describe('host.request handler table', () => {
     const result = await requireHandler(handlers, 'rlm.list_subagents')({})
     const subagents = result.subagents as Array<Record<string, unknown>>
 
-    expect(subagents).toHaveLength(1)
+    expect(subagents).toHaveLength(2)
     expect(subagents[0]!.rlm_child_id).toBe('child-a')
     expect(subagents[0]!.session_name).toBe('Auditor')
     expect(subagents[0]!.status).toBe('running')
     expect(subagents[0]!.active_session_id).toBe('child-a')
     expect(subagents[0]!.session_dir).toBe(join(dataDir, 'session-artifacts', 'child-a'))
+    expect(subagents[0]!.retained).toBe(false)
+    expect(subagents[1]!.rlm_child_id).toBe('child-cont')
+    expect(subagents[1]!.retained).toBe(true)
+    expect(subagents[1]!.status).toBe('completed')
   })
 
   it('rlm.delete_subagent aborts and disposes the named active child once', async () => {

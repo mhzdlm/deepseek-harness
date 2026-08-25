@@ -35,6 +35,12 @@ except Exception as _prime_agent_rlm_error:
                 f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
             )
 
+        async def host_request(self, request_type, payload=None):
+            # transcript/agent_message route through rlm.host_request; without
+            # the runtime they must surface this install guidance rather than
+            # an AttributeError about a missing attribute.
+            self._raise_missing()
+
         async def run(self, prompt, **kwargs):
             self._raise_missing()
 
