@@ -32,6 +32,14 @@ export interface SessionKernelOptions {
   hostHandlers: HostRequestHandlers
   pythonSkills?: readonly KernelPythonSkill[]
   /**
+   * T2.1: lazy per-provision skill collection. Called on every kernel
+   * provision so a changed harness skill set (or an edited pyproject) flows
+   * into the vendored `.bootstrap-version` comparison and triggers the
+   * incremental venv reinstall on the next provision. Takes precedence over
+   * the static `pythonSkills` list when present.
+   */
+  pythonSkillsProvider?: () => Promise<readonly KernelPythonSkill[]>
+  /**
 	 * item-4: idle timeout for kernel reclamation. A kernel unused for this
 	 * long is disposed (dill snapshot flushes first, so a later ipython call
 	 * re-provisions from the snapshot). `0` disables reclamation.
@@ -253,6 +261,12 @@ export class SessionKernelRegistry {
     const artifactDir = path.join(this.artifactRoot, sessionId)
     await mkdir(artifactDir, { recursive: true })
 
+    // T2.1: resolve the skill set at provision time so harness-driven skill
+    // changes are picked up without a restart.
+    const pythonSkills = this.options.pythonSkillsProvider
+      ? await this.options.pythonSkillsProvider()
+      : this.options.pythonSkills
+
     const manager = new KernelManager({
       // exactOptionalPropertyTypes: spread undefined fields away.
       ...(this.options.python !== undefined ? { python: this.options.python } : {}),
@@ -267,7 +281,7 @@ export class SessionKernelRegistry {
       },
       sessionId,
       hostHandlers: this.options.hostHandlers,
-      ...(this.options.pythonSkills !== undefined ? { pythonSkills: this.options.pythonSkills } : {}),
+      ...(pythonSkills !== undefined ? { pythonSkills } : {}),
       // item-13: expose the vendored auto-snapshot debounce window.
       ...(this.options.snapshotDebounceMs !== undefined ? { debounceMs: this.options.snapshotDebounceMs } : {}),
       snapshot: {
@@ -284,7 +298,7 @@ export class SessionKernelRegistry {
     const restore = await manager.restoreState()
     if (restore) this.pendingRestore.set(sessionId, restore)
 
-    const bootstrap = await manager.execute(buildRlmBootstrapCode(this.options.pythonSkills))
+    const bootstrap = await manager.execute(buildRlmBootstrapCode(pythonSkills))
     if (bootstrap.status !== 'ok') {
       await manager.dispose()
       throw new Error(

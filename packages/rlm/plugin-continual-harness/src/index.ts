@@ -23,8 +23,9 @@ import { globalHarnessStatePath, harnessStatePath, mergeHarnessStates, readHarne
 
 // Re-exported so the loop plugin can consume the CAS write path through this
 // package's compiled entry instead of a cross-package src/*.ts specifier,
-// which plain Node cannot load from node_modules.
-export { HarnessConflictError, readHarnessStatesDetailed, writeHarnessStates } from './harness-file.ts'
+// which plain Node cannot load from node_modules. `globalHarnessStatePath` /
+// `readHarnessStateDetailed` serve the kernel package's skill collector (T2.1).
+export { HarnessConflictError, globalHarnessStatePath, readHarnessStateDetailed, readHarnessStatesDetailed, writeHarnessStates } from './harness-file.ts'
 export type { HarnessEntry, HarnessStateFile } from './harness-file.ts'
 import { deleteHarnessEntry, listHarness, showHarnessEntry } from './harness-cmd.ts'
 import { createHarnessOverviewCache } from './prompt-cache.ts'

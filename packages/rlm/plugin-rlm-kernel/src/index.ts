@@ -15,6 +15,7 @@ import z from '@deepseek-ai/schemastery'
 import { createHostHandlers } from './host-handlers.ts'
 import { createIpythonTool } from './ipython-tool.ts'
 import { DEFAULT_IDLE_TIMEOUT_MS, IDLE_SWEEP_INTERVAL_MS, SessionKernelRegistry, warmUpSession } from './kernels.ts'
+import { collectPythonSkills } from './skill-source.ts'
 
 // Re-exported so sibling judgment plugins can consume the shared redaction
 // through this package's compiled entry instead of a cross-package src/*.ts
@@ -67,6 +68,17 @@ export function apply(ctx: Context, config: Config): void {
     ...(config.python !== undefined ? { python: config.python } : {}),
     dataDir,
     hostHandlers: hostHandlers.handlers,
+    // T2.1: harness skill entries drive the kernel venv's python-skill
+    // installs; collected per provision so edits flow without a restart.
+    pythonSkillsProvider: async () => {
+      const collected = await collectPythonSkills(dataDir)
+      for (const id of collected.missing) {
+        console.warn(
+          `[rlm-kernel] python skill "${id}" has no package at ${path.join(dataDir, 'skills', id, 'pyproject.toml')}; skipped`,
+        )
+      }
+      return collected.skills
+    },
     ...(config.idleTimeoutMs !== undefined ? { idleTimeoutMs: config.idleTimeoutMs } : {}),
     ...(config.snapshotDebounceMs !== undefined ? { snapshotDebounceMs: config.snapshotDebounceMs } : {}),
   })

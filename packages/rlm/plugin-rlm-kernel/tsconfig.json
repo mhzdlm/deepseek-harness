@@ -37,6 +37,9 @@
     },
     {
       "path": "../../runtime-diagnostics/invariants"
+    },
+    {
+      "path": "../plugin-continual-harness"
     }
   ]
 }
