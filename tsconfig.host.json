@@ -294,6 +294,7 @@
     { "path": "./packages/rlm/plugin-continual-harness" },
     { "path": "./packages/rlm/plugin-rlm-verifier" },
     { "path": "./packages/rlm/plugin-rlm-moa" },
+    { "path": "./packages/rlm/plugin-rlm-loop" },
     { "path": "./packages/hooks/hook-protocol" },
     { "path": "./packages/hooks/hooks-claude-code" },
     { "path": "./packages/hooks/hooks-codex" },

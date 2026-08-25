@@ -5984,6 +5984,25 @@ importers:
         specifier: workspace:^
         version: link:../../core/tools
 
+  packages/rlm/plugin-rlm-loop:
+    dependencies:
+      '@deepseek-ai/dsh-plugin-continual-harness':
+        specifier: workspace:^
+        version: link:../plugin-continual-harness
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+      '@deepseek-ai/dsh-tools':
+        specifier: workspace:^
+        version: link:../../core/tools
+
   packages/rlm/plugin-rlm-moa:
     dependencies:
       '@deepseek-ai/schemastery':
