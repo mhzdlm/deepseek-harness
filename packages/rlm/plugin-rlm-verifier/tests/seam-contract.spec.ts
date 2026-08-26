@@ -93,7 +93,7 @@ describe('mounted verify tool over a realistic seam stream', () => {
     expect(result.index).toBe(0)
     expect(result.ranking[0]).toBe(0)
     expect(result.scores).toHaveLength(2)
-    expect(result.scores[0]).toBeGreaterThan(result.scores[1])
+    expect(result.scores[0]).toBeGreaterThan(result.scores[1] ?? Number.NEGATIVE_INFINITY)
     expect(result.nComparisons).toBeGreaterThan(0)
   })
 
@@ -112,7 +112,7 @@ describe('mounted verify tool over a realistic seam stream', () => {
     const { tool } = mountSeam('sol-b', -0.05)
     const result = await tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, {})
     expect(result.index).toBe(1)
-    expect(result.scores[1]).toBeGreaterThan(result.scores[0])
+    expect(result.scores[1]).toBeGreaterThan(result.scores[0] ?? Number.NEGATIVE_INFINITY)
   })
 
   it('keeps scores identical under wildly different verdict logprobs (v1 single-alternative degeneration)', async () => {
