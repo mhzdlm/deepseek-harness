@@ -64,12 +64,13 @@ export function createHarnessOverviewCache(options: HarnessOverviewCacheOptions)
         hit.lMtime === l.mtime &&
         hit.lSize === l.size
       ) {
+        // Refresh insertion order on hit so eviction is truly least-recently-used.
+        cache.delete(key)
+        cache.set(key, hit)
         return hit.rendered
       }
 
       const rendered = render(readMerged(baseDir, sessionId))
-      // Refresh insertion order so the eviction policy is least-recently-rendered.
-      cache.delete(key)
       cache.set(key, { gMtime: g.mtime, gSize: g.size, lMtime: l.mtime, lSize: l.size, rendered })
       if (cache.size > maxEntries) {
         const oldest = cache.keys().next().value

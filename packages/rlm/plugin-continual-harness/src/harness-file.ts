@@ -23,6 +23,7 @@
 
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { copyFileSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 
 /** How many `.corrupt-*` backups to keep before pruning (FIX-11). */
@@ -97,13 +98,20 @@ export function globalHarnessStatePath(baseDir: string): string {
 }
 
 /**
- * FIX-11: copy a corrupt state file aside before the read path treats it as
- * empty. Backup failure never blocks the read path. Old backups are pruned to
+ * FIX-11: copy an unsalvageable state file aside before the read path treats it
+ * as empty. "Unsalvageable" covers both unparseable JSON and JSON of the wrong
+ * shape (an array, a number, `{entries: 5}`) — both silently discard content,
+ * so both get a salvage copy. A per-call random suffix keeps same-millisecond
+ * backups from overwriting each other. Old backups are pruned to
  * `CORRUPT_BACKUP_KEEP` entries.
  */
+function corruptBackupPath(filePath: string): string {
+  return `${filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`
+}
+
 async function backupCorrupt(filePath: string): Promise<void> {
   try {
-    const backup = `${filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    const backup = corruptBackupPath(filePath)
     await copyFile(filePath, backup)
     const dir = path.dirname(filePath)
     const base = path.basename(filePath)
@@ -130,7 +138,12 @@ export async function readHarnessStateDetailed(filePath: string): Promise<Harnes
   }
   try {
     const data: unknown = JSON.parse(await readFile(filePath, 'utf8'))
-    if (!isRecord(data)) return { state: emptyHarnessState(), mtimeMs }
+    if (!isRecord(data)) {
+      // Valid JSON of the wrong shape discards content just like a parse
+      // error — salvage it before treating it as empty.
+      await backupCorrupt(filePath)
+      return { state: emptyHarnessState(), mtimeMs }
+    }
     return {
       state: {
         schema: typeof data.schema === 'number' ? data.schema : 1,
@@ -306,7 +319,11 @@ export function splitHarnessStateByScope(
 export function readHarnessStateSync(filePath: string): HarnessStateFile {
   try {
     const data: unknown = JSON.parse(readFileSync(filePath, 'utf8'))
-    if (!isRecord(data)) return emptyHarnessState()
+    if (!isRecord(data)) {
+      backupCorruptSync(filePath)
+      pruneCorruptBackupsSync(filePath)
+      return emptyHarnessState()
+    }
     return {
       schema: typeof data.schema === 'number' ? data.schema : 1,
       entries: isRecord(data.entries) ? data.entries : {},
@@ -341,7 +358,7 @@ function pruneCorruptBackupsSync(filePath: string): void {
 function backupCorruptSync(filePath: string): void {
   try {
     statSync(filePath) // ensure it exists (a missing file is not corrupt)
-    copyFileSync(filePath, `${filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`)
+    copyFileSync(filePath, corruptBackupPath(filePath))
   } catch (error) {
     // A missing file is not corrupt — no backup needed, silently proceed.
     const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined
