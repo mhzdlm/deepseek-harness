@@ -84,6 +84,28 @@ const venvReadyBootstrapSpec = existsSync(venvPythonPath(getKernelVenvDir()))
 const dIt = venvReadyBootstrapSpec ? it : it.skip
 
 /**
+ * Retry wrapper for child `python -c` spawns: during the full suite, worker
+ * threads booting REAL kernels create a short resource-storm window in which
+ * CreateProcess can fail transiently (observed as an instant nonzero exit long
+ * before our harness logic could matter). Assertion semantics stay strict —
+ * only transport-level failures are retried; assertion mismatches throw.
+ */
+async function execPythonHarness(args: string[], attempts = 3): Promise<string> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const { stdout } = await execFileAsync(venvPythonPath(getKernelVenvDir()), args, { timeout: 120_000 })
+      return stdout
+    } catch (err) {
+      lastError = err
+      await new Promise(resolve => setTimeout(resolve, 1_000 * (attempt + 1)))
+    }
+  }
+  const detail = lastError instanceof Error ? `${lastError.message}\n${String((lastError as { stderr?: string }).stderr ?? '')}` : String(lastError)
+  throw new Error(`python harness failed after ${attempts} attempts:\n${detail}`)
+}
+
+/**
  * Python harness: installs get_ipython (+ an rlm module stub on the healthy
  * path; None-in-sys.modules forces ImportError on the fallback path), execs
  * the generated bootstrap, then reports namespace bindings and how the two
@@ -130,11 +152,7 @@ function buildExecHarness(opts: { healthyStub: boolean }): string {
 describe('generated bootstrap execution (binding regression)', () => {
   dIt('healthy path binds rlm/transcript/agent_message and routes both bridges', async () => {
     const code = buildRlmBootstrapCode()
-    const { stdout } = await execFileAsync(
-      venvPythonPath(getKernelVenvDir()),
-      ['-c', buildExecHarness({ healthyStub: true }), JSON.stringify(code)],
-      { timeout: 120_000 },
-    )
+    const stdout = await execPythonHarness(['-c', buildExecHarness({ healthyStub: true }), JSON.stringify(code)])
     const [info, tail, send] = stdout.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
     expect(info).toMatchObject({ rlmClass: '_FakeRlm' })
     expect(info.names).toEqual(expect.arrayContaining(['rlm', 'transcript', 'agent_message']))
@@ -144,11 +162,7 @@ describe('generated bootstrap execution (binding regression)', () => {
 
   dIt('missing-runtime path still binds the objects and fails with install guidance', async () => {
     const code = buildRlmBootstrapCode()
-    const { stdout } = await execFileAsync(
-      venvPythonPath(getKernelVenvDir()),
-      ['-c', buildExecHarness({ healthyStub: false }), JSON.stringify(code)],
-      { timeout: 120_000 },
-    )
+    const stdout = await execPythonHarness(['-c', buildExecHarness({ healthyStub: false }), JSON.stringify(code)])
     const [info, tail] = stdout.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
     expect(info).toMatchObject({ rlmClass: '_PrimeAgentMissingRlm' })
     expect(info.names).toEqual(expect.arrayContaining(['transcript', 'agent_message']))
