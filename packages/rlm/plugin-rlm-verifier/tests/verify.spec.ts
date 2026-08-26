@@ -5,13 +5,14 @@
  * counts, slot-swap bias cancellation, on-error ties, auto_spawn truncation,
  * and the process-event sequence through a recording session.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
 import * as PluginRlmVerifier from '@deepseek-ai/dsh-plugin-rlm-verifier'
+import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel'
 import { createVerifyTool } from '../src/verify-tool.ts'
 import type { VerifyCallModel, VerifyToolOptions } from '../src/verify-tool.ts'
 
@@ -281,7 +282,7 @@ describe('verify seam engine', () => {
     expect(registeredTool).toBeDefined()
 
     const exec = { signal: new AbortController().signal, agent: { session: { id: 'sess-dispose-v' } } }
-    const pending = registeredTool?.execute({ problem: 'p', candidates: [], auto_spawn: 1 }, exec)
+    const pending = registeredTool?.execute({ problem: 'p', candidates: [], auto_spawn: 2 }, exec)
     await new Promise(resolve => setTimeout(resolve, 0))
 
     ctx.emit('session/disposed', { id: 'sess-dispose-v' } as never)
@@ -301,19 +302,34 @@ describe('verify seam engine', () => {
       id: 'sess-detail',
       append: (name: string, payload: unknown) => { appended.push({ name, payload: payload as Record<string, unknown> }) },
     }
+    // Planted material spanning the shared redactor's spectrum: provider key,
+    // JWT triple, and an email address.
+    const secretKey = 'sk-secret123456789012'
+    const secretJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'
+    const secretEmail = 'dev@example.com'
     const subagents = {
       start: async (_provider: string, request: { label?: string }) => ({
         id: `child-${request.label}`,
         result: Promise.resolve({
-          output: [{ type: 'text' as const, text: `answer for ${request.label} holding sk-secret123456789012` }],
+          output: [{
+            type: 'text' as const,
+            text: `answer for ${request.label} holding ${secretKey} / ${secretJwt} / mailto:${secretEmail}`,
+          }],
         }),
       }),
     }
+    // The transport must see the VERBATIM prompt (masking is archive-only by
+    // design), so capture what actually went out over the seam.
+    const livePrompts: string[] = []
     const tool = createVerifyTool(baseOptions({
-      callModel: async () => ({ text: 'x', logprobs: [{ token: 'x', logprob: -0.5 }] }),
+      callModel: async (request) => {
+        livePrompts.push(request.userText)
+        return { text: 'x', logprobs: [{ token: 'x', logprob: -0.5 }] }
+      },
       subagents: subagents as never,
       maxChildChars: 5000,
       privacyFilter: 'full',
+      redactReference: redactReferenceText,
       artifactRoot,
     }))
     const execWithAgent = { signal: new AbortController().signal, agent: { session } }
@@ -330,11 +346,54 @@ describe('verify seam engine', () => {
     expect(existsSync(payload.detailPath!)).toBe(true)
 
     const detail = JSON.parse(readFileSync(payload.detailPath!, 'utf8')) as {
-      candidates: unknown
-      calls: Array<{ rawText: string }>
+      candidates: string[]
+      calls: Array<{ userText: string; rawText: string }>
     }
-    // privacy 'full': credential material masked in archived candidates
-    expect(JSON.stringify(detail.candidates)).not.toContain('sk-secret123456789012')
-    expect((detail.calls ?? []).length).toBeGreaterThan(0)
+    // privacy 'full': NOTHING durable may carry the planted material — neither
+    // the archived candidates nor the archived per-call scoring prompts.
+    const archived = JSON.stringify({ c: detail.candidates, u: detail.calls.map(c => c.userText) })
+    expect(archived).not.toContain(secretKey)
+    expect(archived).not.toContain(secretJwt)
+    expect(archived).not.toContain(secretEmail)
+    expect(detail.calls.length).toBeGreaterThan(0)
+    // ...while the LIVE scoring prompts stayed verbatim (mask ≠ transport).
+    expect(livePrompts.some(p => p.includes(secretKey))).toBe(true)
+  })
+
+  it('without full privacy the archive keeps raw prompts (tier semantics control)', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'dsh-rlm-vraw-'))
+    try {
+      const artifactRoot = path.join(root, 'session-artifacts')
+      const session = {
+        id: 'sess-raw',
+        append: () => undefined,
+      }
+      const subagents = {
+        start: async (_provider: string, request: { label?: string }) => ({
+          id: `child-${request.label}`,
+          result: Promise.resolve({
+            output: [{ type: 'text' as const, text: 'answer holding sk-secret123456789012' }],
+          }),
+        }),
+      }
+      const tool = createVerifyTool(baseOptions({
+        callModel: async () => ({ text: 'x', logprobs: [{ token: 'x', logprob: -0.5 }] }),
+        subagents: subagents as never,
+        maxChildChars: 5000,
+        artifactRoot,
+      }))
+      await tool.execute(
+        { problem: 'p', candidates: [], auto_spawn: 2 },
+        { signal: new AbortController().signal, agent: { session } } as never,
+      )
+      const detailPath = (path.join(artifactRoot, 'sess-raw', 'verify'))
+      const files = readdirSync(detailPath)
+      const detail = JSON.parse(readFileSync(path.join(detailPath, files[0]!), 'utf8')) as {
+        calls: Array<{ userText: string }>
+      }
+      expect(detail.calls[0]?.userText).toContain('sk-secret123456789012')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

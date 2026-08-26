@@ -77,6 +77,15 @@ export interface VerifyToolOptions {
    * file, never the verification.
    */
   artifactRoot?: string
+  /**
+   * Full-privacy archiver (T2.6 fix): masks credential/PII material in the
+   * DETAIL ARCHIVE ONLY — `calls[].userText` and candidate copies under
+   * `<artifactRoot>/<sessionId>/verify/`. Scoring prompts themselves stay
+   * verbatim by design ("masks digests, not scoring prompts"). Injected from
+   * the shared kernel-package redactor when `privacyFilter === 'full'`;
+   * absent, archives fall back to the legacy key-shaped pattern.
+   */
+  redactReference?: (text: string) => string
   /** Named judge profiles addressable via the `judges` argument. */
   judgeProfiles?: Record<string, { model: string; provider?: string }>
   /** Max output tokens per scoring call (reference default 4096). */
@@ -118,6 +127,12 @@ function resolveCriteria(raw: unknown): Array<JudgeCriterion> {
 /** Build the `verify` tool around the injected transport. */
 export function createVerifyTool(options: VerifyToolOptions) {
   const maxCallTokens = options.maxTokens ?? 4_096
+  // T2.6 fix: one masking policy for every DURABLE byte of a run (detail-file
+  // candidates, per-call prompts). Transport requests are forwarded verbatim.
+  const maskForArchive = (text: string): string =>
+    options.privacyFilter === 'full'
+      ? (options.redactReference ?? ((raw: string) => maskCandidateText(raw, 'full')))(text)
+      : text
   return defineTool({
     name: 'verify',
     description:
@@ -275,7 +290,8 @@ export function createVerifyTool(options: VerifyToolOptions) {
         const out = await options.callModel(request)
         calls.push({
           model: request.route.model,
-          userText: request.userText,
+          // Archive copy only — the live scoring request above stays verbatim.
+          userText: maskForArchive(request.userText),
           rawText: out.text,
           chosenLogprobs: out.logprobs,
         })
@@ -287,7 +303,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
           ts: new Date(startedAt).toISOString(),
           problem,
           criteria,
-          candidates: candidates.map(text => maskCandidateText(text, options.privacyFilter)),
+          candidates: candidates.map(maskForArchive),
           ...extra,
           calls,
         })
@@ -315,7 +331,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
           models: selected.map(s => s.profile.model),
           criteria: Object.fromEntries(criteria.map(c => [c.id, c.description])),
           candidateCount: candidates.length,
-          candidatesDigest: digestCandidates(candidates, options.privacyFilter),
+          candidatesDigest: digestCandidates(candidates, options.privacyFilter, options.redactReference),
           judgeProfiles: judgeNames,
         })
 
@@ -382,7 +398,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
         models: [model],
         criteria: Object.fromEntries(criteria.map(c => [c.id, c.description])),
         candidateCount: candidates.length,
-        candidatesDigest: digestCandidates(candidates, options.privacyFilter),
+        candidatesDigest: digestCandidates(candidates, options.privacyFilter, options.redactReference),
       })
       const startedSingle = Date.now()
       const tournament = await runTournament(candidates.length, seed, Math.min(pivotsArg, candidates.length), async (a, b) =>
@@ -466,11 +482,20 @@ function rankByMean(meanPreference: readonly number[]): number[] {
     .map(entry => entry.index)
 }
 
-function digestCandidates(candidates: readonly string[], privacyFilter: string | undefined): string[] {
-  return candidates.map(text => maskCandidateText(text, privacyFilter).slice(0, 120))
+function digestCandidates(
+  candidates: readonly string[],
+  privacyFilter: string | undefined,
+  redactReference?: (text: string) => string,
+): string[] {
+  return candidates.map((text) => {
+    const masked = privacyFilter === 'full'
+      ? (redactReference ?? ((raw: string) => maskCandidateText(raw, 'full')))(text)
+      : text
+    return masked.slice(0, 120)
+  })
 }
 
-/** T2.6: confidentiality masking for full-text persistence (mask ≠ truncate). */
+/** Legacy fallback pattern when no shared redactor is injected (mask ≠ truncate). */
 function maskCandidateText(text: string, privacyFilter: string | undefined): string {
   return privacyFilter === 'full' ? text.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}\b/g, '[redacted key]') : text
 }

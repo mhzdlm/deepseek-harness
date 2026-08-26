@@ -147,6 +147,9 @@ export function apply(ctx: Context, config: Config): void {
     ...(config.subagentProvider !== undefined ? { subagentProvider: config.subagentProvider } : {}),
     ...(config.maxChildChars !== undefined ? { maxChildChars: config.maxChildChars } : {}),
     privacyFilter,
+    // T2.6 fix: full-spectrum credential/PII masking for the durable detail
+    // archive under `full` privacy (shared kernel-package redactor).
+    ...(privacyFilter === 'full' ? { redactReference: redactReferenceText } : {}),
     trackController,
     ...(Object.keys(judgeProfiles).length > 0 ? { judgeProfiles } : {}),
     maxTokens: 4_096,
