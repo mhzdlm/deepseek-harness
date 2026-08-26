@@ -44,7 +44,9 @@ async function setup() {
   await ctx.plugin(SubagentRuntime)
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(CommandRuntime)
-  await ctx.plugin(LlmDeepSeek)
+  // Deployment default effort is `high`; these loops exercise tool plumbing,
+  // not reasoning depth — `low` keeps the nightly token bill small.
+  await ctx.plugin(LlmDeepSeek, { reasoningEffort: 'low' })
   await ctx.plugin(PluginRlmKernel, { dataDir: root })
   await ctx.plugin(PluginContinualHarness, { dataDir: root })
   return { ctx, root }
