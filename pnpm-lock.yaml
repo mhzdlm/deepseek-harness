@@ -6008,6 +6008,9 @@ importers:
 
   packages/rlm/plugin-rlm-moa:
     dependencies:
+      '@deepseek-ai/dsh-plugin-rlm-kernel':
+        specifier: workspace:^
+        version: link:../plugin-rlm-kernel
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
@@ -6027,9 +6030,6 @@ importers:
       '@deepseek-ai/dsh-llm':
         specifier: workspace:^
         version: link:../../llm/llm
-      '@deepseek-ai/dsh-plugin-rlm-kernel':
-        specifier: workspace:^
-        version: link:../plugin-rlm-kernel
       '@deepseek-ai/dsh-session':
         specifier: workspace:^
         version: link:../../core/session
