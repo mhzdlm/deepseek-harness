@@ -118,12 +118,12 @@ describe('ipython tool shell', () => {
     expect(value.text.startsWith('[kernel restored: df] [lost: rlm]\n\nafter-restore')).toBe(true)
   })
 
-  it('prefixes the interrupt-retry warning so the model sees double-run risk', async () => {
+  it('prefixes the interrupt-retry warning so the model sees double-run and rollback risk', async () => {
     const { registry } = makeRegistry({ stdout: 'rerun-output', retried: true })
     const tool = createIpythonTool(registry)
     const value = (await tool.execute({ code: 'side_effect()' }, exec())) as { text: string }
 
-    expect(value.text.startsWith('[⚠️ cell retried after interrupt — side effects may have executed twice]\n\nrerun-output')).toBe(true)
+    expect(value.text.startsWith('[⚠️ cell retried after interrupt — it may have executed twice, and the namespace was restored from the last snapshot, so changes made by the interrupted attempt may be absent]\n\nrerun-output')).toBe(true)
   })
 
   it('refuses cells without an owning agent session', async () => {

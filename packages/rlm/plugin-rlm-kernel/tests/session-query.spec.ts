@@ -92,6 +92,29 @@ describe('session.query bridge', () => {
     await expect(query({ op: 'grep', pattern: '   ' })).rejects.toThrow(/non-empty pattern/)
   })
 
+  it('rejects over-long patterns outright', async () => {
+    await expect(query({ op: 'grep', pattern: 'a'.repeat(201) })).rejects.toThrow(/pattern exceeds 200 characters/)
+    await expect(query({ op: 'grep', pattern: 'a'.repeat(200) })).resolves.toBeDefined()
+  })
+
+  it('marks grep truncated when the scan budget is exhausted', async () => {
+    // Budget is 400k rendered characters; 50 messages of ~10k (the per-message
+    // cap) total ~500k, so the budget cuts the scan before every message runs
+    // under the regex.
+    const big = 'z'.repeat(10_000)
+    const messages: FakeMessage[] = Array.from({ length: 50 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: [{ type: 'text', text: `hit-${i} ${big}` }],
+    }))
+    const result = await query(
+      { op: 'grep', pattern: 'hit-(1|2)?\\d', limit: 100, maxChars: 10_000 },
+      messages,
+    )
+    expect(result.truncated).toBe(true)
+    expect(result.messages.length).toBeGreaterThan(0)
+    expect(result.messages.length).toBeLessThan(50)
+  })
+
   it('requires an owning agent session', async () => {
     const { handlers } = createHostHandlers({ agents: { currentInitiator: () => undefined } } as unknown as Context, 'spawn', 'unused')
     await expect(handlers['session.query']!({ op: 'tail' })).rejects.toThrow(/owning agent/)

@@ -14,7 +14,8 @@ import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { HarnessEntry } from '@deepseek-ai/dsh-plugin-continual-harness'
 
-const SLUG_PATTERN = /^[a-z][a-z0-9-]*$/
+/** Entry/package-name rule: lowercase slug (`^[a-z][a-z0-9-]*$`). Shared with the collector's path-safety check. */
+export const SLUG_PATTERN = /^[a-z][a-z0-9-]*$/
 const IMPORT_PATTERN = /^[a-z_][a-z0-9_]*$/
 
 /** The CAS upsert the host assembly injects; owned by continual-harness. */

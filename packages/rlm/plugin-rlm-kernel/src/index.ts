@@ -58,6 +58,17 @@ export interface Config {
   maxLiveKernels?: number
   /** T3.2 (C semantics): grace (ms) before a leased over-cap kernel retries its forced eviction snapshot. Defaults to 5000. */
   reclaimSnapshotGraceMs?: number
+  /**
+   * Outstanding one-shot `rlm.run` children allowed per parent session before
+   * further spawns fail loud (retained children are exempt — they idle cheaply
+   * until messaged). Bounds the fan-out a looping model can create. Defaults to 8.
+   */
+  maxChildrenPerSession?: number
+  /**
+   * Character cap on a single `rlm.run` prompt; larger prompts fail loud with
+   * actionable text instead of silently inflating a child's context. Defaults to 24000.
+   */
+  maxRunPromptChars?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -70,11 +81,16 @@ export const Config: z<Config> = z.object({
   warmupOnSessionCreate: z.boolean(),
   maxLiveKernels: z.natural(),
   reclaimSnapshotGraceMs: z.natural(),
+  maxChildrenPerSession: z.natural(),
+  maxRunPromptChars: z.natural(),
 })
 
 export function apply(ctx: Context, config: Config): void {
   const dataDir = config.dataDir ?? path.join(homedir(), '.dsh', 'rlm')
-  const hostHandlers = createHostHandlers(ctx, config.subagentProvider ?? 'spawn', dataDir)
+  const hostHandlers = createHostHandlers(ctx, config.subagentProvider ?? 'spawn', dataDir, {
+    ...(config.maxChildrenPerSession !== undefined ? { maxChildrenPerSession: config.maxChildrenPerSession } : {}),
+    ...(config.maxRunPromptChars !== undefined ? { maxRunPromptChars: config.maxRunPromptChars } : {}),
+  })
   const kernels = new SessionKernelRegistry({
     // exactOptionalPropertyTypes: spread undefined fields away.
     ...(config.python !== undefined ? { python: config.python } : {}),
@@ -84,6 +100,12 @@ export function apply(ctx: Context, config: Config): void {
     // installs; collected per provision so edits flow without a restart.
     pythonSkillsProvider: async () => {
       const collected = await collectPythonSkills(dataDir)
+      for (const id of collected.invalid) {
+        console.warn(
+          `[rlm-kernel] python skill "${id}" has a non-slug id; skipped `
+          + '(ids must be lowercase slugs so they can never escape <dataDir>/skills/)',
+        )
+      }
       for (const id of collected.missing) {
         console.warn(
           `[rlm-kernel] python skill "${id}" has no package at ${path.join(dataDir, 'skills', id, 'pyproject.toml')}; skipped`,
@@ -126,12 +148,16 @@ export function apply(ctx: Context, config: Config): void {
   )
 
   // item-4: periodic idle sweep. Unref'd so a long-lived desktop host with no
-  // other work is not kept alive by the timer alone.
+  // other work is not kept alive by the timer alone. A failed cycle (a snapshot
+  // throwing instead of returning null) must not become a recurring unhandled
+  // rejection — warn once per failure and let the next sweep retry.
   // P2-fix: only create the timer when idleTimeoutMs > 0 (0 disables reclamation).
   const idleTimeoutMs = config.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   const sweepTimer = idleTimeoutMs > 0
     ? setInterval(() => {
-      void kernels.disposeIdle()
+      kernels.disposeIdle().catch((error) => {
+        console.warn('[rlm-kernel] idle sweep failed:', error)
+      })
     }, IDLE_SWEEP_INTERVAL_MS)
     : undefined
   if (sweepTimer && typeof sweepTimer.unref === 'function') sweepTimer.unref()

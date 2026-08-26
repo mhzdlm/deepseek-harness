@@ -39,10 +39,17 @@ export function killSignalSafe(pid: number, signal: NodeJS.Signals = 'SIGTERM'):
   try {
     if (process.platform === 'win32') {
       // `signal` parameter is meaningless on Windows — force-kill the tree.
-      spawnSync('taskkill', ['/F', '/PID', String(pid), '/T'], {
+      const result = spawnSync('taskkill', ['/F', '/PID', String(pid), '/T'], {
         stdio: 'ignore',
         windowsHide: true,
       })
+      if (result.status !== 0) {
+        console.warn(
+          `[rlm-kernel] taskkill /PID ${pid} exited ${result.status ?? 'unknown'}; `
+          + 'the process may already be gone or refuse the handle',
+        )
+        return false
+      }
       return true
     }
     process.kill(pid, signal)

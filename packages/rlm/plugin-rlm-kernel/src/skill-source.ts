@@ -27,6 +27,7 @@ import {
   type HarnessEntry,
 } from '@deepseek-ai/dsh-plugin-continual-harness'
 import type { PythonSkillRuntimeInfo } from './vendor/kernel/bootstrap.ts'
+import { SLUG_PATTERN } from './skill-create.ts'
 
 export interface CollectedPythonSkills {
   /** Installable python-backed skills, in harness entry order. */
@@ -37,6 +38,13 @@ export interface CollectedPythonSkills {
    * must not take down kernel provisioning.
    */
   missing: string[]
+  /**
+   * Entry ids that fail the slug rule and therefore never reach a filesystem
+   * path. The harness state file is hand-editable, so an id like `../../victim`
+   * is untrusted input to `path.join`; such entries are reported here instead
+   * of being passed to `uv pip install`.
+   */
+  invalid: string[]
 }
 
 function isPythonReference(entry: HarnessEntry): entry is HarnessEntry & { reference: { type: 'python'; import: string } } {
@@ -59,8 +67,15 @@ export async function collectPythonSkills(dataDir: string): Promise<CollectedPyt
   const { state } = await readHarnessStateDetailed(globalHarnessStatePath(dataDir))
   const skills: PythonSkillRuntimeInfo[] = []
   const missing: string[] = []
+  const invalid: string[] = []
   for (const entry of Object.values(state.entries.skill ?? {})) {
     if (!isPythonReference(entry)) continue
+    // Path safety: the id is untrusted input (the state file is hand-editable),
+    // so only slug-form ids may join a filesystem path below.
+    if (!SLUG_PATTERN.test(entry.id)) {
+      invalid.push(entry.id)
+      continue
+    }
     const packagePath = path.join(dataDir, 'skills', entry.id)
     const pyprojectPath = path.join(packagePath, 'pyproject.toml')
     if (!existsSync(pyprojectPath)) {
@@ -69,7 +84,7 @@ export async function collectPythonSkills(dataDir: string): Promise<CollectedPyt
     }
     skills.push({ name: entry.id, importName: entry.reference.import, packagePath, pyprojectPath })
   }
-  return { skills, missing }
+  return { skills, missing, invalid }
 }
 
 /** One python-backed skill registration request for {@link upsertPythonSkillEntry}. */

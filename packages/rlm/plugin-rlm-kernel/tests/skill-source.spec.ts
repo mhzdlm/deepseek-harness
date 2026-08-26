@@ -105,4 +105,21 @@ describe('collectPythonSkills', () => {
     expect(skills).toEqual([])
     expect(missing).toEqual([])
   })
+
+  it('rejects non-slug entry ids instead of joining them into package paths', async () => {
+    const dir = makeDataDir()
+    writeSkillPackage(dir, 'good-skill', 'good_skill')
+    writeGlobalState(dir, [
+      entry('good-skill', { type: 'python', import: 'good_skill', callable: 'run' }),
+      // Hand-edited state controls these ids; traversal and non-slug shapes
+      // must never become filesystem paths handed to uv pip install.
+      entry('../escape', { type: 'python', import: 'escape', callable: 'run' }),
+      entry('Bad_Uppercase', { type: 'python', import: 'bad_uppercase', callable: 'run' }),
+    ])
+
+    const { skills, missing, invalid } = await collectPythonSkills(dir)
+    expect(skills.map(skill => skill.name)).toEqual(['good-skill'])
+    expect(missing).toEqual([])
+    expect(new Set(invalid)).toEqual(new Set(['../escape', 'Bad_Uppercase']))
+  })
 })

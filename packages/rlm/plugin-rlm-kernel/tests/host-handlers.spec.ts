@@ -86,6 +86,15 @@ function makeCtx(
   const children: SubagentListEntry[] = []
   const continuables: ContinuableCapture[] = []
   const followups: FollowupCapture[] = []
+  const llm = {
+    listModels: async () => {
+      if (failListModels) throw new Error('catalog unavailable')
+      return [
+        { id: 'deepseek-v4-flash', name: 'DeepSeek v4 Flash' },
+        { id: 'deepseek-v4-pro', name: 'DeepSeek v4 Pro' },
+      ]
+    },
+  }
 
   async function start(provider: string, request: SubagentStartRequest): Promise<SubagentRun> {
     starts.push({ provider, request })
@@ -113,15 +122,10 @@ function makeCtx(
   const ctx = {
     agents: { currentInitiator: () => parent },
     subagents: { start, listChildren: async (): Promise<SubagentListEntry[]> => children, startContinuable, followup },
-    llm: {
-      listModels: async () => {
-        if (failListModels) throw new Error('catalog unavailable')
-        return [
-          { id: 'deepseek-v4-flash', name: 'DeepSeek v4 Flash' },
-          { id: 'deepseek-v4-pro', name: 'DeepSeek v4 Pro' },
-        ]
-      },
-    },
+    // Optional services resolve through ctx.get (topology-safe), matching the
+    // handler's production read path.
+    get: (name: string) => (name === 'llm' ? llm : undefined),
+    llm,
     __children: children,
     __failListModels: () => {
       failListModels = true
@@ -339,7 +343,45 @@ describe('host.request handler table', () => {
     expect(defaulted.child_id).toBe('cont-2')
 
     await expect(requireHandler(handlers, 'rlm.message')({ message: 'x', target: 'ghost' }))
-      .rejects.toThrow(/no child matching/)
+      .rejects.toThrow(/no retained child matching/)
+  })
+
+  it('rlm.message refuses one-shot children surfaced by the service listing', async () => {
+    const parent = fakeParent()
+    const starts: StartCapture[] = []
+    const ctx = makeCtx(parent, starts)
+    // A child from an earlier host process: the service lists it, but only
+    // continuable rows are follow-up targets.
+    ctx.__children.push({
+      kind: 'child',
+      mode: 'one-shot',
+      id: 'run-old',
+      label: 'old-runner',
+    } as unknown as SubagentListEntry)
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
+
+    await expect(requireHandler(handlers, 'rlm.message')({ message: 'hi', target: 'run-old' }))
+      .rejects.toThrow(/no retained child matching/)
+    await expect(requireHandler(handlers, 'rlm.message')({ message: 'hi', target: 'old-runner' }))
+      .rejects.toThrow(/no retained child matching/)
+  })
+
+  it('rlm.run enforces prompt-size and outstanding-children governors', async () => {
+    const parent = fakeParent()
+    const starts: StartCapture[] = []
+    const ctx = makeCtx(parent, starts)
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxRunPromptChars: 10, maxChildrenPerSession: 1 })
+
+    await expect(requireHandler(handlers, 'rlm.run')({ prompt: '0123456789012' }))
+      .rejects.toThrow(/over the 10-character cap/)
+
+    await requireHandler(handlers, 'rlm.run')({ prompt: 'short' })
+    await expect(requireHandler(handlers, 'rlm.run')({ prompt: 'another' }))
+      .rejects.toThrow(/maxChildrenPerSession=1/)
+
+    // Retained children are exempt from the outstanding cap.
+    await expect(requireHandler(handlers, 'rlm.run')({ prompt: 'keep', kwargs: { retained: true } }))
+      .resolves.toBeDefined()
   })
 
   it('abortSession disposes every outstanding run of the session exactly once', async () => {

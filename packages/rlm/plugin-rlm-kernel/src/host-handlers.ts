@@ -61,10 +61,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Model-supplied grep patterns above this length are rejected outright. */
+const MAX_PATTERN_CHARS = 200
+/**
+ * Character budget for one grep's regex evaluation over rendered messages. V8
+ * cannot time out a backtracking regex, so the bound that actually holds is
+ * input volume: past the budget the call marks itself truncated instead of
+ * stalling the host on a pathological pattern.
+ */
+const GREP_SCAN_BUDGET_CHARS = 400_000
+
 export interface HostHandlersBundle {
   handlers: HostRequestHandlers
   /** Abort every outstanding `rlm.run` child owned by the given session. */
   abortSession(sessionId: string): void
+}
+
+/** Resource governors for model-driven `rlm.run` fan-out. */
+export interface HostHandlerLimits {
+  /** Outstanding one-shot children allowed per parent session (retained exempt). */
+  maxChildrenPerSession: number
+  /** Character cap on one `rlm.run` prompt. */
+  maxRunPromptChars: number
+}
+
+const DEFAULT_HANDLER_LIMITS: HostHandlerLimits = {
+  maxChildrenPerSession: 8,
+  maxRunPromptChars: 24_000,
 }
 
 interface ChildRecord {
@@ -107,7 +130,9 @@ export function createHostHandlers(
   ctx: Context,
   subagentProvider: string,
   dataDir: string,
+  limitOverrides: Partial<HostHandlerLimits> = {},
 ): HostHandlersBundle {
+  const limits: HostHandlerLimits = { ...DEFAULT_HANDLER_LIMITS, ...limitOverrides }
   // Per-session outstanding rlm.run controllers (registered BEFORE start so a
   // disposal during startup still aborts the pending spawn). Aborted on session
   // disposal so an orphaned child cannot keep running past its parent.
@@ -150,6 +175,24 @@ export function createHostHandlers(
         throw new Error('rlm.run requires an owning agent session')
       }
       const sid = String(parent.session.id)
+
+      // Resource governors: an unbounded prompt inflates a child's context
+      // silently, and an unchecked fan-out lets a looping model create
+      // unlimited concurrent LLM-burning children. Both fail loud with
+      // actionable text instead of degrading.
+      if (prompt.length > limits.maxRunPromptChars) {
+        throw new Error(
+          `rlm.run prompt is ${prompt.length} characters, over the ${limits.maxRunPromptChars}-character cap `
+          + '(maxRunPromptChars). Summarize the task or split it across calls.',
+        )
+      }
+      const outstanding = [...(sessionRuns.get(sid)?.values() ?? [])].filter(record => !record.retained).length
+      if (outstanding >= limits.maxChildrenPerSession) {
+        throw new Error(
+          `rlm.run: ${outstanding} one-shot children already outstanding `
+          + `(maxChildrenPerSession=${limits.maxChildrenPerSession}). Await their results or use rlm.delete_subagent first.`,
+        )
+      }
 
       // FIX-6 + NEW-4: a real, tracked controller — registered before start so
       // the child can be cancelled even if the parent session is disposed while
@@ -322,15 +365,19 @@ export function createHostHandlers(
         childId = byLabel?.childId
       }
       if (!childId) {
+        // The service listing knows children from earlier host processes too,
+        // but only continuable rows are follow-up targets — a one-shot run has
+        // no live turn queue, so addressing one would fail downstream anyway.
         const children = await ctx.subagents.listChildren(parent.session.id)
         const entry = children.find(
-          candidate => String(candidate.id) === target
-            || ('label' in candidate && candidate.label === target),
+          (candidate): candidate is SubagentListEntry & { kind: 'child'; mode: 'continuable' } =>
+            candidate.kind === 'child' && candidate.mode === 'continuable'
+            && (String(candidate.id) === target || ('label' in candidate && candidate.label === target)),
         )
         childId = entry ? String(entry.id) : undefined
       }
       if (!childId) {
-        throw new Error(`rlm.message: no child matching "${target}" in this session`)
+        throw new Error(`rlm.message: no retained child matching "${target}" in this session`)
       }
 
       // Delivery is a short host-side operation with no kernel-facing cancel
@@ -355,7 +402,11 @@ export function createHostHandlers(
       const limit = Math.max(1, rawLimit)
       const agent = ctx.agents.currentInitiator()
       const provider = agent?.options.provider
-      const llm = ctx.llm
+      // Optional service read through ctx.get (topology-safe); the property
+      // proxy would silently return undefined for an undeclared injection.
+      const llm = (ctx as unknown as { get(name: string): unknown }).get('llm') as
+        | { listModels(provider: string): Promise<LlmModelInfo[]> }
+        | undefined
       const models: (LlmModelInfo & { selector: string })[] = []
       if (provider && llm) {
         try {
@@ -412,6 +463,9 @@ export function createHostHandlers(
       if (op === 'grep' || op === 'search') {
         const source = typeof payload.pattern === 'string' ? payload.pattern : ''
         if (!source.trim()) throw new Error(`session.query ${op} requires a non-empty pattern`)
+        if (source.length > MAX_PATTERN_CHARS) {
+          throw new Error(`session.query: pattern exceeds ${MAX_PATTERN_CHARS} characters`)
+        }
         if (op === 'grep') {
           try {
             pattern = new RegExp(source, 'i')
@@ -465,8 +519,17 @@ export function createHostHandlers(
         selected = selected.slice(-Math.min(Math.max(n, 1), 200))
       } else {
         if (pattern === undefined) throw new Error('session.query: pattern missing for grep')
-        const matched = selected.filter(item => pattern.test(item.text))
-        truncated = matched.length > limit
+        // Bounded evaluation: chronological scan up to a character budget; a
+        // pathological model-supplied pattern degrades to `truncated` instead
+        // of stalling the single-threaded host.
+        const matched: typeof selected = []
+        let scanned = 0
+        for (const item of selected) {
+          if (scanned >= GREP_SCAN_BUDGET_CHARS) { truncated = true; break }
+          scanned += item.text.length
+          if (pattern.test(item.text)) matched.push(item)
+        }
+        truncated = truncated || matched.length > limit
         selected = matched.slice(0, limit)
       }
       let used = 0
