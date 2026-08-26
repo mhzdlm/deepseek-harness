@@ -16,7 +16,7 @@ import {
   type HarnessKind,
   type HarnessStateFile,
 } from './harness-file.ts'
-import { applyProposalsAndPersist, DEFAULT_MAX_REFINEMENT_EVENTS, validateProposals, type RefineProposal } from './refine.ts'
+import { applyProposalsAndPersist, collectKnownEntryIdSet, DEFAULT_MAX_REFINEMENT_EVENTS, validateProposals, type RefineProposal } from './refine.ts'
 
 const KINDS: readonly HarnessKind[] = ['prompt', 'memory', 'skill', 'subagent']
 const KIND_SET: ReadonlySet<string> = new Set(KINDS)
@@ -101,7 +101,8 @@ export async function deleteHarnessEntry(
   selector: string,
   maxRefinementEvents = DEFAULT_MAX_REFINEMENT_EVENTS,
 ): Promise<string> {
-  const resolved = resolveEntry(readMergedSync(baseDir, sessionId), selector)
+  const mergedView = readMergedSync(baseDir, sessionId)
+  const resolved = resolveEntry(mergedView, selector)
   if (typeof resolved === 'string') return resolved
 
   const proposal: RefineProposal = {
@@ -112,7 +113,11 @@ export async function deleteHarnessEntry(
     content: '',
     evidence: 'manual delete via /harness',
   }
-  const { valid, rejected } = validateProposals([proposal])
+  // Existence-first: the entry was just resolved against this very view, so
+  // its slug-shaped id (loop runs, python skills) validates cleanly.
+  const { valid, rejected } = validateProposals([proposal], {
+    knownIds: collectKnownEntryIdSet([mergedView]),
+  })
   if (valid.length === 0) return `Cannot delete: ${rejected.join('; ')}`
 
   const statePath = harnessStatePath(baseDir, sessionId)

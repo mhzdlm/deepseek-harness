@@ -226,10 +226,45 @@ console.log('== validateProposals (FIX-4) ==')
 	])
 	check('bad kind rejected', bad.rejected.some((r) => r.includes('invalid kind "bogus"')))
 	check('bad action rejected', bad.rejected.some((r) => r.includes('invalid action "noop"')))
-	check('__proto__ id rejected', bad.rejected.some((r) => r.includes('invalid id "__proto__"')))
+	check('__proto__ id rejected', bad.rejected.some((r) => r.includes('__proto__') && r.includes('id')))
 	check('missing evidence rejected', bad.rejected.some((r) => r.includes('evidence is required')))
 	check('delete without id rejected', bad.rejected.some((r) => r.includes('delete requires an existing id')))
 	check('duplicate target deduped', bad.valid.length === 1, `valid=${bad.valid.length} rejected=${bad.rejected.length}`)
+}
+
+console.log('== validateProposals slug-id tolerance (existence-first) ==')
+{
+	const known = new Set([
+		'memory:loop_ab12cd34/round_001',
+		'skill:loop-audit',
+		'memory:550e8400-e29b-41d4-a716-446655440000',
+	])
+
+	const ok = validateProposals([
+		{ kind: 'memory', action: 'delete', id: 'loop_ab12cd34/round_001', title: 'verified progress', content: '', evidence: 'turn 3' },
+		{ kind: 'skill', action: 'upsert', id: 'loop-audit', title: 'loop-audit', content: 'desc', evidence: 'turn 4' },
+	], { knownIds: known })
+	check('known slug ids pass for delete and upsert-update', ok.valid.length === 2 && ok.rejected.length === 0, JSON.stringify(ok.rejected))
+
+	const unknownSlug = validateProposals([
+		{ kind: 'memory', action: 'delete', id: 'not_in_set/slug', title: 'x', content: '', evidence: 'e' },
+	], { knownIds: known })
+	check('unknown slug-shaped id still rejected with knownIds', unknownSlug.rejected.some((r) => r.includes('unknown or malformed id')))
+
+	const dangerous = validateProposals([
+		{ kind: 'memory', action: 'delete', id: '__proto__', title: 'x', content: '', evidence: 'e' },
+	], { knownIds: new Set(['memory:__proto__']) })
+	check('__proto__ rejected even when listed in knownIds', dangerous.rejected.some((r) => r.includes('__proto__')))
+
+	const legacy = validateProposals([
+		{ kind: 'memory', action: 'delete', id: 'loop_ab12cd34/round_001', title: 'x', content: '', evidence: 'e' },
+	])
+	check('legacy shape-only behavior preserved without knownIds', legacy.rejected.some((r) => r.includes('unknown or malformed id')))
+
+	const hexOk = validateProposals([
+		{ kind: 'memory', action: 'delete', id: '550e8400-e29b-41d4-a716-446655440000', title: 'x', content: '', evidence: 'e' },
+	], { knownIds: new Set() })
+	check('uuid-shaped id unaffected by knownIds absence', hexOk.valid.length === 1, JSON.stringify(hexOk))
 }
 
 console.log('== applyProposals evidence persistence (FIX-8) ==')

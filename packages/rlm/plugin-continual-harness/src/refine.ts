@@ -49,6 +49,50 @@ const EVIDENCE_MAX = 2_000
 /** item-10: how many `RefinementEvent`s (and their snapshots) are retained. */
 export const DEFAULT_MAX_REFINEMENT_EVENTS = 100
 const ID_RE = /^[0-9a-fA-F-]{8,64}$/
+/**
+ * Ids that are never acceptable proposal targets regardless of shape or
+ * existence (FIX-4 prototype-pollution guard; also enforced when a permissive
+ * `knownIds` set would otherwise admit them).
+ */
+const DANGEROUS_ID_SET: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype'])
+
+export interface ValidateProposalsOptions {
+  /**
+   * `kind:id` keys of entries that exist in the current merged harness view
+   * (see {@link collectKnownEntryIdSet}). When provided, an explicit proposal
+   * id referencing a KNOWN entry is accepted regardless of its textual shape —
+   * first-party tools mint slug-shaped ids (`loop_<run>/round_001`, skill
+   * slugs like `loop-audit`) that the UUID-ish shape regex cannot express, and
+   * refusing them made `/refine` update/delete and `/harness delete`
+   * structurally unable to manage those entries. Unknown ids still fall back
+   * to the strict shape check, preserving the FIX-4 guard against
+   * model-invented ids. Absent → legacy shape-only behavior.
+   */
+  knownIds?: ReadonlySet<string>
+}
+
+/** Shape-or-existence acceptance rule for an explicit proposal id. */
+function idAcceptable(kind: string, id: string, knownIds: ReadonlySet<string> | undefined): boolean {
+  if (DANGEROUS_ID_SET.has(id)) return false
+  if (ID_RE.test(id)) return true
+  return knownIds?.has(`${kind}:${id}`) ?? false
+}
+
+/**
+ * Build the `kind:id` existence set that {@link validateProposals}'s
+ * `knownIds` option expects, from one or more harness state files (global +
+ * local, or a single merged view).
+ */
+export function collectKnownEntryIdSet(states: readonly HarnessStateFile[]): Set<string> {
+  const ids = new Set<string>()
+  for (const state of states) {
+    for (const [kind, entries] of Object.entries(state.entries ?? {})) {
+      if (!entries) continue
+      for (const id of Object.keys(entries)) ids.add(`${kind}:${id}`)
+    }
+  }
+  return ids
+}
 const KIND_SET: ReadonlySet<string> = new Set(['prompt', 'memory', 'skill', 'subagent'])
 const ACTION_SET: ReadonlySet<string> = new Set(['upsert', 'delete'])
 const SCOPE_SET: ReadonlySet<string> = new Set(['local', 'global'])
@@ -206,7 +250,8 @@ export function extractProposals(result: unknown): ExtractResult {
  * touch harness state (FIX-4). Invalid entries are rejected with reasons rather
  * than silently dropped; duplicate targets collapse to the first occurrence.
  */
-export function validateProposals(proposals: unknown[]): ValidatedProposals {
+export function validateProposals(proposals: unknown[], options?: ValidateProposalsOptions): ValidatedProposals {
+  const knownIds = options?.knownIds
   const valid: RefineProposal[] = []
   const rejected: string[] = []
   const seen = new Set<string>()
@@ -226,8 +271,10 @@ export function validateProposals(proposals: unknown[]): ValidatedProposals {
     if (typeof action !== 'string' || !ACTION_SET.has(action)) problems.push(`invalid action "${String(action)}"`)
 
     const id = raw.id
-    if (id !== undefined && (typeof id !== 'string' || !ID_RE.test(id))) {
+    if (id !== undefined && typeof id !== 'string') {
       problems.push(`invalid id "${String(id)}"`)
+    } else if (typeof id === 'string' && !idAcceptable(typeof kind === 'string' ? kind : '', id, knownIds)) {
+      problems.push(`unknown or malformed id "${id}"`)
     }
     if (action === 'delete' && typeof id !== 'string') problems.push('delete requires an existing id')
 
@@ -433,7 +480,13 @@ export async function runRefine(
   const { proposals, parseError } = extractProposals(result)
   if (parseError) return `Failed to parse refine proposals: ${parseError}`
 
-  const { valid, rejected } = validateProposals(proposals)
+  // Existence-aware id validation (slug-tolerant): first-party tools land
+  // entries under non-UUID ids; the current merged view is the authority on
+  // what exists. The CAS write below still guards against concurrent moves.
+  const statesForIds = await readHarnessStatesDetailed(baseDir, sessionId)
+  const { valid, rejected } = validateProposals(proposals, {
+    knownIds: collectKnownEntryIdSet([statesForIds.global.state, statesForIds.local.state]),
+  })
   if (valid.length === 0) {
     return rejected.length > 0
       ? `No valid harness updates proposed.\nRejected ${rejected.length} proposal(s):\n- ${rejected.join('\n- ')}`
