@@ -119,6 +119,36 @@ describe('live-kernel cap with LRU eviction (T3.2)', () => {
     // victim freed the slot first, so no forced snapshot may have run.
     expect(snapCalls).toBe(0)
   })
+
+  it('defers cap eviction entirely while every over-cap kernel is busy, then applies it on the next idle cycle', async () => {
+    let now = 0
+    let snapCalls = 0
+    const registry = makeRegistry({ maxLiveKernels: 1, now: () => now })
+    const k = internals(registry)
+    const snapshot = () => {
+      snapCalls += 1
+      return Promise.resolve({})
+    }
+    now = 10; k.markBusy('s1'); k.markIdle('s1')
+    now = 20; k.markBusy('s2'); k.markIdle('s2')
+    k.kernels.set('s1', fakeManager(snapshot))
+    k.kernels.set('s2', fakeManager(snapshot))
+    // Both execute again: busy kernels are hard-exempt from cap candidates.
+    k.markBusy('s1')
+    k.markBusy('s2')
+
+    now = 100
+    await expect(registry.disposeIdle()).resolves.toEqual([])
+    expect([...k.kernels.keys()].sort()).toEqual(['s1', 's2'])
+    // Over-cap pressure must not even probe (force-snapshot) busy kernels.
+    expect(snapCalls).toBe(0)
+
+    // The deferred pressure applies on the first cycle with an eligible victim.
+    k.markIdle('s1')
+    now = 150
+    await expect(registry.disposeIdle()).resolves.toEqual(['s1'])
+    expect([...k.kernels.keys()]).toEqual(['s2'])
+  })
 })
 
 describe('live-kernel cap eviction of leased kernels (T3.2 C semantics)', () => {
