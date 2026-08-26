@@ -10,6 +10,16 @@
 
 import type { Session } from '@deepseek-ai/dsh-session'
 
+/**
+ * Every session-log event type this plugin appends. The persistence read path
+ * refuses logs containing types outside the generated catalog
+ * (`KNOWN_SESSION_EVENT_TYPES`), and `Session.append` cannot mark an event
+ * ignorable, so adding a member here requires regenerating the catalog
+ * (`pnpm run gen-persistence-catalog`); `tests/persistence-catalog.spec.ts`
+ * pins that pairing.
+ */
+export const LOOP_EVENT_TYPES = ['session/loop-start', 'session/loop-round-done'] as const
+
 /** Pre-record record of one Loop Engineering run. */
 export interface LoopStartEventData {
   runId: string
@@ -46,7 +56,7 @@ declare module '@deepseek-ai/dsh-session/types' {
  */
 export function emitLoopEvent(
   session: Pick<Session, 'append'> | null | undefined,
-  name: 'session/loop-start' | 'session/loop-round-done',
+  name: (typeof LOOP_EVENT_TYPES)[number],
   payload: LoopStartEventData | LoopRoundDoneEventData,
 ): void {
   if (!session) return

@@ -10,6 +10,16 @@
 
 import type { Session } from '@deepseek-ai/dsh-session'
 
+/**
+ * Every session-log event type this plugin appends. The persistence read path
+ * refuses logs containing types outside the generated catalog
+ * (`KNOWN_SESSION_EVENT_TYPES`), and `Session.append` cannot mark an event
+ * ignorable, so adding a member here requires regenerating the catalog
+ * (`pnpm run gen-persistence-catalog`); `tests/persistence-catalog.spec.ts`
+ * pins that pairing.
+ */
+export const MOA_EVENT_TYPES = ['session/moa-reference', 'session/moa-synthesis'] as const
+
 /** One settled reference slot's durable record. */
 export interface MoaReferenceEventData {
   preset: string
@@ -44,7 +54,7 @@ declare module '@deepseek-ai/dsh-session/types' {
  */
 export function emitMoaEvent(
   session: Pick<Session, 'append'> | null | undefined,
-  name: 'session/moa-reference' | 'session/moa-synthesis',
+  name: (typeof MOA_EVENT_TYPES)[number],
   payload: MoaReferenceEventData | MoaSynthesisEventData,
 ): void {
   if (!session) return

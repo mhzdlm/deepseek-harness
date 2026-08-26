@@ -12,7 +12,7 @@
   "main": "lib/types/index.js",
   "types": "lib/types/index.d.ts",
   "scripts": {
-    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-loop/tests/parser.spec.ts packages/rlm/plugin-rlm-loop/tests/loop-tool.spec.ts"
+    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-loop/tests/parser.spec.ts packages/rlm/plugin-rlm-loop/tests/loop-tool.spec.ts packages/rlm/plugin-rlm-loop/tests/persistence-catalog.spec.ts"
   },
   "exports": {
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/types/index.js" },

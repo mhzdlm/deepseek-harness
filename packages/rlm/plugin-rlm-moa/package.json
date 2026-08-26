@@ -12,7 +12,7 @@
   "main": "lib/types/index.js",
   "types": "lib/types/index.d.ts",
   "scripts": {
-    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-moa/tests/moa.spec.ts packages/rlm/plugin-rlm-moa/tests/redact.spec.ts packages/rlm/plugin-rlm-moa/tests/preset-store.spec.ts packages/rlm/plugin-rlm-moa/tests/llm-stream.spec.ts"
+    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-moa/tests/moa.spec.ts packages/rlm/plugin-rlm-moa/tests/redact.spec.ts packages/rlm/plugin-rlm-moa/tests/preset-store.spec.ts packages/rlm/plugin-rlm-moa/tests/llm-stream.spec.ts packages/rlm/plugin-rlm-moa/tests/persistence-catalog.spec.ts"
   },
   "exports": {
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/types/index.js" },

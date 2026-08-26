@@ -638,6 +638,50 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 
 Source: [`packages/core/session/src/types.ts:336`](../packages/core/session/src/types.ts)
 
+<a id="sessionloop-round-done--log-only"></a>
+
+#### `session/loop-round-done` — log-only
+
+```ts persistence-catalog
+/** Log-only record of one recorded loop round. */
+'session/loop-round-done': LoopRoundDoneEventData
+```
+
+Source: [`packages/rlm/plugin-rlm-loop/src/events.ts:49`](../packages/rlm/plugin-rlm-loop/src/events.ts)
+
+<a id="sessionloop-start--log-only"></a>
+
+#### `session/loop-start` — log-only
+
+```ts persistence-catalog
+/** Log-only record of one loop run start. */
+'session/loop-start': LoopStartEventData
+```
+
+Source: [`packages/rlm/plugin-rlm-loop/src/events.ts:47`](../packages/rlm/plugin-rlm-loop/src/events.ts)
+
+<a id="sessionmoa-reference--log-only"></a>
+
+#### `session/moa-reference` — log-only
+
+```ts persistence-catalog
+/** Log-only record of one settled moa reference slot. */
+'session/moa-reference': MoaReferenceEventData
+```
+
+Source: [`packages/rlm/plugin-rlm-moa/src/events.ts:45`](../packages/rlm/plugin-rlm-moa/src/events.ts)
+
+<a id="sessionmoa-synthesis--log-only"></a>
+
+#### `session/moa-synthesis` — log-only
+
+```ts persistence-catalog
+/** Log-only record of one moa aggregation result. */
+'session/moa-synthesis': MoaSynthesisEventData
+```
+
+Source: [`packages/rlm/plugin-rlm-moa/src/events.ts:47`](../packages/rlm/plugin-rlm-moa/src/events.ts)
+
 <a id="sessiontitle--log-only"></a>
 
 #### `session/title` — log-only
@@ -666,6 +710,28 @@ Source: [`packages/session/session-title/src/index.ts:100`](../packages/session/
 Types: [SessionTitleLlmRequestEventData](subsystems/session-title.md)
 
 Source: [`packages/session/session-title-llm/src/index.ts:43`](../packages/session/session-title-llm/src/index.ts)
+
+<a id="sessionverify-request--log-only"></a>
+
+#### `session/verify-request` — log-only
+
+```ts persistence-catalog
+/** Log-only pre-dispatch record of one verify run. */
+'session/verify-request': VerifyRequestEventData
+```
+
+Source: [`packages/rlm/plugin-rlm-verifier/src/events.ts:68`](../packages/rlm/plugin-rlm-verifier/src/events.ts)
+
+<a id="sessionverify-result--log-only"></a>
+
+#### `session/verify-result` — log-only
+
+```ts persistence-catalog
+/** Log-only post-settlement record of one verify run. */
+'session/verify-result': VerifyResultEventData
+```
+
+Source: [`packages/rlm/plugin-rlm-verifier/src/events.ts:70`](../packages/rlm/plugin-rlm-verifier/src/events.ts)
 
 ### `step/*`
 

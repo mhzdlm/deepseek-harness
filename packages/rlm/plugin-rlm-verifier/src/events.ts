@@ -10,6 +10,16 @@
 
 import type { Session } from '@deepseek-ai/dsh-session'
 
+/**
+ * Every session-log event type this plugin appends. The persistence read path
+ * refuses logs containing types outside the generated catalog
+ * (`KNOWN_SESSION_EVENT_TYPES`), and `Session.append` cannot mark an event
+ * ignorable, so adding a member here requires regenerating the catalog
+ * (`pnpm run gen-persistence-catalog`); `tests/persistence-catalog.spec.ts`
+ * pins that pairing.
+ */
+export const VERIFY_EVENT_TYPES = ['session/verify-request', 'session/verify-result'] as const
+
 /** Pre-dispatch record of one verification run. */
 export interface VerifyRequestEventData {
   /** Execution engine; the seam hosts all scoring since phase 2b. */
@@ -67,7 +77,7 @@ declare module '@deepseek-ai/dsh-session/types' {
  */
 export function emitVerifyEvent(
   session: Pick<Session, 'append'> | null | undefined,
-  name: 'session/verify-request' | 'session/verify-result',
+  name: (typeof VERIFY_EVENT_TYPES)[number],
   payload: VerifyRequestEventData | VerifyResultEventData,
 ): void {
   if (!session) return
