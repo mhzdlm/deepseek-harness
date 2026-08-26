@@ -145,6 +145,27 @@ describe('verify seam engine', () => {
     expect(names.at(-1)).toBe('session/verify-result')
     const request = appended[0]?.payload as { models: string[] } | undefined
     expect(request?.models).toEqual(['model-a', 'model-b'])
+    // All judges succeeded: no failedJudges field, and scores are per-candidate.
+    const result = appended.at(-1)?.payload as { failedJudges?: string[]; scores: number[] }
+    expect(result.failedJudges).toBeUndefined()
+    expect(result.scores).toHaveLength(2)
+  })
+
+  it('caps manual candidates before they reach scoring prompts', async () => {
+    const prompts: string[] = []
+    const tool = createVerifyTool(baseOptions({
+      maxChildChars: 40,
+      callModel: async (request) => {
+        prompts.push(request.userText)
+        return { text: 'x', logprobs: [] }
+      },
+    }))
+    const oversized = 'Q'.repeat(200) + 'TAIL-MARKER'
+    await tool.execute({ problem: 'p', candidates: [oversized, 'b'] }, execStub)
+    expect(prompts.length).toBeGreaterThan(0)
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain('TAIL-MARKER')
+    }
   })
 
   it('auto_spawn builds the candidate pool from spawned children', async () => {

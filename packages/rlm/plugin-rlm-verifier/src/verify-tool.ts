@@ -235,6 +235,10 @@ export function createVerifyTool(options: VerifyToolOptions) {
       let candidates: string[] = Array.isArray(raw)
         ? raw.filter((c): c is string => typeof c === 'string')
         : []
+      // Cap every candidate entering scoring prompts (mirrors the spawned-child
+      // cap): user-pasted candidates otherwise inflate judge context silently.
+      const maxCandidateChars = options.maxChildChars ?? 20_000
+      candidates = candidates.map(c => (c.length > maxCandidateChars ? c.slice(0, maxCandidateChars) : c))
 
       const childSessionIds: string[] = []
       // auto_spawn: dispatch N children against the task and use their results
@@ -359,8 +363,17 @@ export function createVerifyTool(options: VerifyToolOptions) {
           throw new Error(`verify: all ${outcomes.length} judges failed (${outcomes.map(o => o.model).join(', ')})`)
         }
         const fused = fuseMeanPreferences(okOutcomes.map(o => ({ model: o.model, status: o.status, meanPreference: o.meanPreference })))
-        const baseScores = okOutcomes[0]?.meanPreference ?? []
-        const bestScores = fused.fusedRanking.map(i => baseScores[i] ?? 0)
+        // Scores are per-CANDIDATE in candidate order, averaged across the
+        // judges that succeeded — same order/semantics as the single-judge
+        // path's meanPreference. Ranking stays the Borda-fused ordering.
+        const okVectors = okOutcomes.map(o => o.meanPreference)
+        const scoresByCandidate = candidates.map((_, candidateIndex) => {
+          if (okVectors.length === 0) return 0
+          let sum = 0
+          for (const vector of okVectors) sum += vector[candidateIndex] ?? 0
+          return sum / okVectors.length
+        })
+        const failedJudgeNames = outcomes.filter(o => o.status === 'failed').map(o => o.name)
 
         const judgeOutcomes = outcomes.map(o => ({
           model: o.model,
@@ -378,11 +391,12 @@ export function createVerifyTool(options: VerifyToolOptions) {
           engine: 'seam',
           models: selected.map(s => s.profile.model),
           index: fused.bestIndex,
-          scores: bestScores,
+          scores: scoresByCandidate,
           ranking: fused.fusedRanking,
           nComparisons: okOutcomes.reduce((sum, o) => sum + o.nComparisons, 0),
           durationMs: Date.now() - startedAt,
           judges: judgeOutcomes,
+          ...(failedJudgeNames.length > 0 ? { failedJudges: failedJudgeNames } : {}),
           ...(childSessionIds.length > 0 ? { childSessionIds } : {}),
           ...(detailPath !== undefined ? { detailPath } : {}),
         })
@@ -390,7 +404,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
         return {
           text: renderFused(fused, candidates, okOutcomes.length),
           index: fused.bestIndex,
-          scores: bestScores,
+          scores: scoresByCandidate,
           ranking: fused.fusedRanking,
           nComparisons: okOutcomes.reduce((sum, o) => sum + o.nComparisons, 0),
           judges: outcomes.map(o => ({ model: o.model, status: o.status })),
