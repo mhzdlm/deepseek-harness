@@ -2,14 +2,13 @@ name: E2E (rlm plugins, DeepSeek)
 
 # The rlm plugin e2e suite drives a real IPython kernel (uv-provisioned venv)
 # against the live DeepSeek API. It spends tokens and bootstraps a kernel venv,
-# so it is gated on the DEEPSEEK_API_KEY repository secret and runs nightly plus
-# on demand. A nightly run without the secret FAILS LOUDLY instead of reporting
-# an all-skipped green (the specs self-skip locally precisely so CI can tell
-# "ran and passed" apart from "never ran").
+# so it is gated on the DEEPSEEK_API_KEY repository secret and runs on demand
+# only — scheduled burns were removed to keep the test-API bill predictable;
+# dispatch it when a fresh end-to-end signal is wanted. A run without the
+# secret FAILS LOUDLY instead of reporting an all-skipped green (the specs
+# self-skip locally precisely so CI can tell "ran and passed" apart from
+# "never ran").
 on:
-  schedule:
-    # 04:17 UTC daily — off-peak for token cost and for CI runners.
-    - cron: '17 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -49,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$DEEPSEEK_API_KEY" ]; then
-            echo "::error::DEEPSEEK_API_KEY is empty. Configure the repository secret so the nightly rlm e2e suite actually runs (an all-skipped CI run is indistinguishable from no coverage)."
+            echo "::error::DEEPSEEK_API_KEY is empty. Configure the repository secret so the rlm e2e suite actually runs (an all-skipped CI run is indistinguishable from no coverage)."
             exit 1
           fi
 
