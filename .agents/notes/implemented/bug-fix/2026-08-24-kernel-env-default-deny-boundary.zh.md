@@ -12,10 +12,10 @@ RLM 内核从三处派生子进程——`vendor/kernel/index.ts` 的直接 `spaw
 
 单一模块 `packages/rlm/plugin-rlm-kernel/src/kernel-env.ts` 拥有两组环境构造：
 
-- `buildKernelEnv(overrides?, platform?, source?)` —— 内核进程的默认拒绝白名单，用于直接 spawn 与 forkserver 模板。凭据类前缀（`DSH_`、`DEEPSEEK_`、`OPENAI_`、`ANTHROPIC_`、`GOOGLE_`、`AZURE_`、`AWS_`、`PRIME_`、`PI_`、`CODEBUDDY_`、`CLAUDE_`）在任何白名单检查之前阻断；运行必需项（`RLM_*`、`PATH`、`HOME`、`USERPROFILE`、`SYSTEMROOT`、`SYSTEMDRIVE`、`TMP`、`TEMP`、locale、`PYTHON*`、`UV_*`、`npm_config_*`）放行。win32 上匹配折叠键名大小写但输出保留源键原始大小写；POSIX 上为精确大小写匹配，与既有内联实现逐字节等价。
+- `buildKernelEnv(overrides?, platform?, source?)` —— 内核进程的默认拒绝白名单，用于直接 spawn 与 forkserver 模板。凭据类前缀（`DSH_`、`DEEPSEEK_`、`OPENAI_`、`ANTHROPIC_`、`GOOGLE_`、`AZURE_`、`AWS_`、`PRIME_`、`PI_`、`CODEBUDDY_`、`CLAUDE_`）在任何白名单检查之前阻断；运行必需项（`RLM_*`、`PATH`、`HOME`、`USERPROFILE`、`SYSTEMROOT`、`SYSTEMDRIVE`、`TMP`、`TEMP`、locale、`PYTHON*`）放行。工具命名空间（`UV_*`、`npm_config_*`）不放行——二者都携带凭据形态变体（`UV_PUBLISH_TOKEN`、npm auth/代理配置）；需要它们的 uv/bootstrap 子进程改经 `buildScrubbedEnv` 获取。win32 上匹配折叠键名大小写但输出保留源键原始大小写；POSIX 上为精确大小写匹配，与既有内联实现逐字节等价。
 - `buildScrubbedEnv(platform?, source?)` —— 仅凭据黑名单剥离，供合法需要宽环境的引导子进程使用（uv 安装器、bootstrap shell 步骤）。代理、XDG、locale 设置保留，仅移除含密钥命名空间。
 
-`overrides` 并入时不复筛；调用方只传内部 `RLM_*` 接线。黑名单导出为规范常量 `CREDENTIAL_BLOCKLIST_PREFIXES`，verifier 的子进程剥离直接导入该常量而非自持副本。`platform` 与 `source` 参数使两种大小写语义在任何主机上确定性可测（`tests/kernel-env.spec.ts` 共 10 项，注入式 source，不改真实 `process.env`）。`scripts/audit-vendor.mts` 新增 #14 检查项与全量 env 直通禁令（所有 vendor 内核文件禁止 `...process.env` / `env: process.env`，共 39 项）钉住导入与调用点防回归。
+`overrides` 并入时不复筛；调用方只传内部 `RLM_*` 接线。黑名单导出为规范常量 `CREDENTIAL_BLOCKLIST_PREFIXES`，verifier 的子进程剥离直接导入该常量而非自持副本。`platform` 与 `source` 参数使两种大小写语义在任何主机上确定性可测（`tests/kernel-env.spec.ts` 共 12 项，注入式 source，不改真实 `process.env`）。`scripts/audit-vendor.mts` 新增 #14 检查项与全量 env 直通禁令（所有 vendor 内核文件禁止 `...process.env` / `env: process.env`，共 49 项）钉住导入与调用点防回归。
 
 ## Alternatives considered
 
@@ -33,7 +33,7 @@ RLM 内核从三处派生子进程——`vendor/kernel/index.ts` 的直接 `spaw
 
 ## Testing
 
-- `tests/kernel-env.spec.ts`：10 项，经注入式 source 覆盖双平台的阻断、放行、大小写、overrides 与剥离语义。
+- `tests/kernel-env.spec.ts`：12 项，经注入式 source 覆盖双平台的阻断、放行、大小写、overrides、工具命名空间排除与剥离语义。
 - `tests/kernel-env-runtime.spec.ts`：1 项端到端——宿主植入的凭据不会出现在真实内核子进程的 os.environ 中（无内核 venv 时自动跳过）。
 - `scripts/audit-vendor.mts` #14 检查（`index.ts` 共享模块导入、`fork-server.ts` 净化启动环境、`bootstrap.ts` 净化引导环境）加全量 env 直通禁令，共 39 项。
 - `pnpm exec tsc --noEmit -p packages/rlm/plugin-rlm-kernel/tsconfig.json` 与包内 vitest 保持全绿。

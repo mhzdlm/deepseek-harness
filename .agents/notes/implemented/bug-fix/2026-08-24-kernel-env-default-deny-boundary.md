@@ -12,10 +12,10 @@ The RLM kernel spawns helper children from three places — the direct `spawn()`
 
 A single module, `packages/rlm/plugin-rlm-kernel/src/kernel-env.ts`, owns both environment constructions:
 
-- `buildKernelEnv(overrides?, platform?, source?)` — default-deny allowlist for kernel processes. Used by the direct spawn and the forkserver template. Credential-shaped prefixes (`DSH_`, `DEEPSEEK_`, `OPENAI_`, `ANTHROPIC_`, `GOOGLE_`, `AZURE_`, `AWS_`, `PRIME_`, `PI_`, `CODEBUDDY_`, `CLAUDE_`) are blocked before any allowlist check; runtime-required names (`RLM_*`, `PATH`, `HOME`, `USERPROFILE`, `SYSTEMROOT`, `SYSTEMDRIVE`, `TMP`, `TEMP`, locale, `PYTHON*`, `UV_*`, `npm_config_*`) pass. On `win32`, matching folds name casing while the output keeps each source key's original casing; on POSIX, matching is exact-case and byte-identical to the pre-existing inline implementation.
+- `buildKernelEnv(overrides?, platform?, source?)` — default-deny allowlist for kernel processes. Used by the direct spawn and the forkserver template. Credential-shaped prefixes (`DSH_`, `DEEPSEEK_`, `OPENAI_`, `ANTHROPIC_`, `GOOGLE_`, `AZURE_`, `AWS_`, `PRIME_`, `PI_`, `CODEBUDDY_`, `CLAUDE_`) are blocked before any allowlist check; runtime-required names (`RLM_*`, `PATH`, `HOME`, `USERPROFILE`, `SYSTEMROOT`, `SYSTEMDRIVE`, `TMP`, `TEMP`, locale, `PYTHON*`) pass. Tool namespaces (`UV_*`, `npm_config_*`) are excluded because both carry credential variants (`UV_PUBLISH_TOKEN`, npm auth/proxy config); uv and bootstrap helper children get them through `buildScrubbedEnv` instead. On `win32`, matching folds name casing while the output keeps each source key's original casing; on POSIX, matching is exact-case and byte-identical to the pre-existing inline implementation.
 - `buildScrubbedEnv(platform?, source?)` — deny-only credential strip for helper children that legitimately need a broad environment (uv installer, bootstrap shell steps). Proxy, XDG, and locale settings survive; only secret-bearing namespaces are removed.
 
-`overrides` are merged without re-screening; callers pass internal `RLM_*` wiring only. The blocklist is exported as the canonical `CREDENTIAL_BLOCKLIST_PREFIXES`; `plugin-rlm-verifier`'s subprocess scrub imports it instead of keeping its own copy. The `platform` and `source` parameters make both case regimes testable deterministically on any host (`tests/kernel-env.spec.ts`, 10 items, injected source, no live `process.env` mutation). `scripts/audit-vendor.mts` gained the #14 checks plus a full-environment passthrough ban (`...process.env` / `env: process.env` are forbidden in every vendored kernel file; 39 total).
+`overrides` are merged without re-screening; callers pass internal `RLM_*` wiring only. The blocklist is exported as the canonical `CREDENTIAL_BLOCKLIST_PREFIXES`; `plugin-rlm-verifier`'s subprocess scrub imports it instead of keeping its own copy. The `platform` and `source` parameters make both case regimes testable deterministically on any host (`tests/kernel-env.spec.ts`, 12 items, injected source, no live `process.env` mutation). `scripts/audit-vendor.mts` gained the #14 checks plus a full-environment passthrough ban (`...process.env` / `env: process.env` are forbidden in every vendored kernel file; 49 total).
 
 ## Alternatives considered
 
@@ -33,7 +33,7 @@ Kernel children no longer see provider credentials through any of the three spaw
 
 ## Testing
 
-- `tests/kernel-env.spec.ts`: 10 items covering both platforms' blocking, allowlisting, casing, overrides, and scrubbing semantics via injected sources.
+- `tests/kernel-env.spec.ts`: 12 items covering both platforms' blocking, allowlisting, casing, overrides, tool-namespace exclusion, and scrubbing semantics via injected sources.
 - `tests/kernel-env-runtime.spec.ts`: one end-to-end item — a credential planted on the host never appears inside a live kernel child (self-skips without the kernel venv).
 - `scripts/audit-vendor.mts` #14 checks (shared-module import in `index.ts`, scrubbed launch env in `fork-server.ts`, scrubbed bootstrap env in `bootstrap.ts`) plus the full-environment passthrough ban across all vendored files — 39 checks total.
 - `pnpm exec tsc --noEmit -p packages/rlm/plugin-rlm-kernel/tsconfig.json` and the package vitest run stay green.

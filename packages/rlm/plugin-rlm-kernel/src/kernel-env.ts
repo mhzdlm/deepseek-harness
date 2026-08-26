@@ -26,10 +26,16 @@
 // Runtime-required variables. Prefix matches are checked with startsWith;
 // exact entries must name the variable in full. Names here are written in
 // canonical case and folded per platform at match time.
+//
+// Tool namespaces (`UV_*`, `npm_config_*`) are deliberately NOT allowlisted
+// even though they look like innocuous configuration: both carry credential
+// variants (`UV_PUBLISH_TOKEN`, npm auth/proxy config) that would otherwise
+// reach the model-writable kernel process. The uv/bootstrap helper children
+// that genuinely need them run through {@link buildScrubbedEnv} instead.
 const ALLOWLIST_PREFIXES = [
   'RLM_', 'PATH', 'HOME', 'USERPROFILE', 'SYSTEMROOT', 'SYSTEMDRIVE',
   'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'PYTHONPATH',
-  'PYTHONIOENCODING', 'UV_', 'npm_config_',
+  'PYTHONIOENCODING',
 ] as const
 const ALLOWLIST_EXACT = new Set([
   'ComSpec', 'OS', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',

@@ -53,6 +53,27 @@ describe('buildKernelEnv', () => {
     expect(env.TOTALLY_UNRELATED_VAR).toBeUndefined()
   })
 
+  it('does not admit credential-bearing tool namespaces via allowlist prefixes', () => {
+    // UV_* and npm_config_* look like innocuous tool configuration but carry
+    // secret variants; the kernel process must never receive them (uv itself
+    // runs on the host side through buildScrubbedEnv).
+    const env = buildKernelEnv(undefined, 'linux', {
+      UV_PUBLISH_TOKEN: 'pypi-token',
+      UV_CACHE_DIR: '/tmp/uvcache',
+      npm_config__auth: 'base64-auth',
+      NPM_CONFIG_REGISTRY: 'https://registry.example.com',
+    })
+    expect(env.UV_PUBLISH_TOKEN).toBeUndefined()
+    expect(env.UV_CACHE_DIR).toBeUndefined()
+    expect(env.npm_config__auth).toBeUndefined()
+    expect(env.NPM_CONFIG_REGISTRY).toBeUndefined()
+  })
+
+  it('blocks tool-namespace credentials case-insensitively on Windows', () => {
+    const env = buildKernelEnv(undefined, 'win32', { Uv_Publish_Token: 'pypi-token' })
+    expect(pick(env, 'uv_publish_token')).toBeUndefined()
+  })
+
   it('merges overrides without re-screening them', () => {
     const env = buildKernelEnv({ RLM_SESSION_DIR: '/tmp/artifacts' }, 'linux', {})
     expect(env.RLM_SESSION_DIR).toBe('/tmp/artifacts')
@@ -118,11 +139,16 @@ describe('buildScrubbedEnv', () => {
       AWS_SECRET_ACCESS_KEY: 's',
       PATH: '/usr/bin',
       MY_RANDOM_CONFIG: 'keep-me',
+      UV_CACHE_DIR: '/tmp/uvcache',
+      npm_config_registry: 'https://registry.example.com',
     })
     expect(env.DEEPSEEK_API_KEY).toBeUndefined()
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined()
     expect(env.PATH).toBe('/usr/bin')
     expect(env.MY_RANDOM_CONFIG).toBe('keep-me')
+    // Helper children (uv installer, bootstrap steps) keep their tool config.
+    expect(env.UV_CACHE_DIR).toBe('/tmp/uvcache')
+    expect(env.npm_config_registry).toBe('https://registry.example.com')
   })
 
   it('scrubs case-insensitively on Windows', () => {
