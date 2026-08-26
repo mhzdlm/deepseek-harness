@@ -10,7 +10,7 @@
 import { homedir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { createLoopTool } from './loop-tool.ts'
+import { createLoopTool, type LoopRun } from './loop-tool.ts'
 
 export const name = 'plugin-rlm-loop'
 export const inject = ['tools']
@@ -42,8 +42,15 @@ export function apply(ctx: Context, config: Config): void {
   const dataDir = expandHome(config.dataDir?.trim() ? config.dataDir : '~/.dsh/rlm')
   const maxRounds = config.maxRounds ?? 32
 
+  // The run map is shared with the tool so session disposal can evict the
+  // owning entry — without this, a long-lived desktop host accumulates one
+  // LoopRun (task + contract strings) per session forever.
+  const runs = new Map<string, LoopRun>()
   ctx.effect(
-    () => ctx.tools.register(createLoopTool({ dataDir, maxRounds })),
+    () => ctx.tools.register(createLoopTool({ dataDir, maxRounds, runs })),
     'register loop tool',
   )
+  ctx.on('session/disposed', (session) => {
+    runs.delete(String(session.id))
+  })
 }

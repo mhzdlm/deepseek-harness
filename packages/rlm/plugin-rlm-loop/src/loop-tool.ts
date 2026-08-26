@@ -24,6 +24,12 @@ export interface LoopToolOptions {
   dataDir: string
   /** Soft per-run round ceiling; exceeding it warns but never blocks. */
   maxRounds: number
+  /**
+   * Shared live-run map keyed by session id. The plugin assembly supplies one
+   * so it can evict entries on session disposal; omitted, the tool keeps a
+   * private map (fine for tests and short-lived hosts).
+   */
+  runs?: Map<string, LoopRun>
 }
 
 interface RecordedRound {
@@ -35,7 +41,7 @@ interface RecordedRound {
   contractAudit: string
 }
 
-interface LoopRun {
+export interface LoopRun {
   runId: string
   task: string
   contract: string
@@ -63,7 +69,7 @@ function sessionIdOf(exec: { agent?: { session?: Session } }): { sid: string; se
 
 /** Build the `loop` tool around harness state at {@link LoopToolOptions.dataDir}. */
 export function createLoopTool(options: LoopToolOptions) {
-  const runs = new Map<string, LoopRun>()
+  const runs = options.runs ?? new Map<string, LoopRun>()
 
   async function landEntry(sid: string, id: string, title: string, content: string): Promise<boolean> {
     try {
@@ -142,6 +148,8 @@ export function createLoopTool(options: LoopToolOptions) {
         const contract = typeof args.contract === 'string' ? args.contract.trim() : ''
         const previous = runs.get(sid)
         const runId = `loop_${randomUUID().slice(0, 8)}`
+        // One live run per session; the plugin assembly evicts entries on
+        // session disposal, so replaced runs drop out here via the set below.
         runs.set(sid, { runId, task, contract, rounds: [] })
         emitLoopEvent(session, 'session/loop-start', {
           runId,
