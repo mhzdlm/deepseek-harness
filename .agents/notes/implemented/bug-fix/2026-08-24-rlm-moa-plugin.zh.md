@@ -12,7 +12,7 @@ RLM 插件家族此前只有选择面（`verify`，对候选做 best-of-N），�
 
 `packages/rlm/plugin-rlm-moa/` 以与兄弟插件相同的 Cordis 形态注册 `moa` 工具。面板完全跑在本上下文的 LLM 缝上：每个参考槽与聚合器都是 `ctx.llm.stream()` 调用（compaction summarizer 的调用形状——`createUserMessage`、`BlockAssembler`、finish 规整），凭据由各 adapter 自己解析，不存在子进程桥或转发密钥清单。
 
-- Config 持有命名 presets（`referenceModels[]` + `aggregator`，preset 级 `referenceMaxTokens`、`referenceTimeoutMs`、`degradedPolicy`）。未配置时使用内置 preset：扇出两个 DeepSeek 参考、更强的聚合器。`dataDir` 默认共享的 `~/.dsh/rlm`；trace 以 JSONL 追加在 `<dataDir>/moa-traces/<sessionId>.jsonl`。
+- Config 持有命名 presets（`referenceModels[]` + `aggregator`，preset 级 `referenceMaxTokens`、`referenceTimeoutMs`、`degradedPolicy`）。未配置时使用内置 preset：两个 `deepseek-v4-flash` 参考槽、flash 聚合器——pro 是手动选择，需要时在显式面板里点名（全 flash 默认让测试账单可预期；高档思考加 pro 定价使 pro 默认的每次调用都很贵）。`dataDir` 默认共享的 `~/.dsh/rlm`；trace 以 JSONL 追加在 `<dataDir>/moa-traces/<sessionId>.jsonl`。
 - 失败语义对齐 Hermes 的 `aggregate_moa_context`：失败或超时的参考变成 `failedLabels` 里的标签（`loud` 时向聚合器播报，`quiet` 时静默丢弃）；只有全部参考失败才抛错并完全跳过聚合器调用。
 - 聚合器永不接收 `referenceMaxTokens`——给综合设上限会截断长输出；上限只属于参考。
 - 每个参考运行在 `AbortSignal.any([exec.signal, AbortSignal.timeout(referenceTimeoutMs)])` 下；工具调用的 abort 始终是权威信号。

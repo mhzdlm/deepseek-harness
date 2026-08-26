@@ -95,17 +95,18 @@ function normalizePreset(raw: unknown): Omit<MoaResolvedPreset, 'name'> | null {
 
 /**
  * Build the built-in preset used when the deployment declares none: two
- * DeepSeek reference slots with distinct models plus a stronger aggregator,
- * all on the harness's own provider route.
+ * flash DeepSeek reference slots plus a flash aggregator, all on the
+ * harness's own provider route. Pro stays a manual choice — name it in an
+ * explicit panel (Config `presets` or `/moa use`) when a task wants it.
  */
 export function defaultPreset(): MoaResolvedPreset {
   return {
     name: DEFAULT_PRESET_NAME,
     references: [
       { provider: DEFAULT_SLOT_PROVIDER, model: 'deepseek-v4-flash', label: `deepseek-v4-flash@${DEFAULT_SLOT_PROVIDER}`, mode: 'llm', providerFromDefault: false },
-      { provider: DEFAULT_SLOT_PROVIDER, model: 'deepseek-v4-pro', label: `deepseek-v4-pro@${DEFAULT_SLOT_PROVIDER}`, mode: 'llm', providerFromDefault: false },
+      { provider: DEFAULT_SLOT_PROVIDER, model: 'deepseek-v4-flash', label: `deepseek-v4-flash@${DEFAULT_SLOT_PROVIDER}`, mode: 'llm', providerFromDefault: false },
     ],
-    aggregator: { provider: DEFAULT_SLOT_PROVIDER, model: 'deepseek-v4-pro', label: `deepseek-v4-pro@${DEFAULT_SLOT_PROVIDER}`, mode: 'llm', providerFromDefault: false },
+    aggregator: { provider: DEFAULT_SLOT_PROVIDER, model: 'deepseek-v4-flash', label: `deepseek-v4-flash@${DEFAULT_SLOT_PROVIDER}`, mode: 'llm', providerFromDefault: false },
     referenceMaxTokens: DEFAULT_REFERENCE_MAX_TOKENS,
     referenceTimeoutMs: DEFAULT_REFERENCE_TIMEOUT_MS,
     degradedPolicy: 'loud',
