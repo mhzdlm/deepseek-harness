@@ -94,16 +94,19 @@ describe('live-kernel cap with LRU eviction (T3.2)', () => {
     expect([...k.kernels.keys()].sort()).toEqual(['s2', 's3'])
   })
 
-  it('skips leased and busy kernels during cap eviction', async () => {
+  it('prefers unleased victims during cap eviction and never forces a leased snapshot while they suffice', async () => {
     let now = 0
+    let snapCalls = 0
     const registry = makeRegistry({ maxLiveKernels: 2, now: () => now })
     const k = internals(registry)
     now = 10; k.markBusy('s1'); k.markIdle('s1')
     now = 20; k.markBusy('s2'); k.markIdle('s2')
     now = 30; k.markBusy('s3'); k.markIdle('s3')
-    for (const id of ['s1', 's2', 's3']) k.kernels.set(id, fakeManager())
+    k.kernels.set('s1', fakeManager(() => { snapCalls += 1; return Promise.resolve({}) }))
+    k.kernels.set('s2', fakeManager())
+    k.kernels.set('s3', fakeManager())
 
-    // Lease the oldest; busy the newest → only the middle is evictable.
+    // Lease the oldest; busy the newest → only the middle is needed.
     registry.pin('s1', 'goal')
     now = 50
     k.markBusy('s3')
@@ -112,40 +115,79 @@ describe('live-kernel cap with LRU eviction (T3.2)', () => {
     const disposed = await registry.disposeIdle()
     expect(disposed).toEqual(['s2'])
     expect([...k.kernels.keys()].sort()).toEqual(['s1', 's3'])
+    // C semantics: the leased kernel was never even probed — the unleased
+    // victim freed the slot first, so no forced snapshot may have run.
+    expect(snapCalls).toBe(0)
   })
 })
 
-describe('leased reclaim with snapshot-failure protection (T3.2)', () => {
-  it('skips a leased kernel whose snapshot fails, then reclaims after the grace window', async () => {
+describe('live-kernel cap eviction of leased kernels (T3.2 C semantics)', () => {
+  it('evicts an over-cap leased kernel once its forced snapshot succeeds', async () => {
     let now = 0
-    const snapFail = true
-    const registry = makeRegistry({
-      idleTimeoutMs: 1_000,
-      reclaimSnapshotGraceMs: 100,
-      now: () => now,
-    })
+    const registry = makeRegistry({ maxLiveKernels: 1, now: () => now })
     const k = internals(registry)
     now = 10; k.markBusy('s1'); k.markIdle('s1')
-    k.kernels.set('s1', fakeManager(() => (snapFail ? Promise.resolve(null) : Promise.resolve({}))))
+    now = 20; k.markBusy('s2'); k.markIdle('s2')
+    now = 30; k.markBusy('s3'); k.markIdle('s3')
+    for (const id of ['s1', 's2', 's3']) k.kernels.set(id, fakeManager())
+    registry.pin('s1', 'goal')
+    registry.pin('s2', 'schedule')
+
+    now = 100
+    // excess=2: unleased s3 goes first, then the OLDEST leased (s1) passes its
+    // forced snapshot and is evicted to WARM; newer leased s2 survives.
+    const disposed = await registry.disposeIdle()
+    expect(disposed).toEqual(['s3', 's1'])
+    expect([...k.kernels.keys()]).toEqual(['s2'])
+  })
+
+  it('a leased kernel whose forced snapshot fails stays HOT while unleased peers free the cap', async () => {
+    let now = 0
+    const registry = makeRegistry({ maxLiveKernels: 1, reclaimSnapshotGraceMs: 500, now: () => now })
+    const k = internals(registry)
+    now = 10; k.markBusy('s1'); k.markIdle('s1')
+    now = 20; k.markBusy('s2'); k.markIdle('s2')
+    now = 30; k.markBusy('s3'); k.markIdle('s3')
+    k.kernels.set('s1', fakeManager(() => Promise.resolve(null))) // dill keeps failing
+    k.kernels.set('s2', fakeManager())
+    k.kernels.set('s3', fakeManager())
     registry.pin('s1', 'schedule')
 
+    now = 100
+    // Unleased s2/s3 (LRU order) free the cap; the failing-snapshot lease is
+    // never torn down.
+    const disposed = await registry.disposeIdle()
+    expect(disposed).toEqual(['s2', 's3'])
+    expect([...k.kernels.keys()]).toEqual(['s1'])
+  })
+
+  it('the eviction gate honors the grace window before re-forcing a snapshot', async () => {
+    let now = 0
+    let calls = 0
+    let healthy = false
+    const registry = makeRegistry({ reclaimSnapshotGraceMs: 400, now: () => now })
+    const k = internals(registry)
+    k.kernels.set('s1', fakeManager(() => { calls += 1; return healthy ? Promise.resolve({}) : Promise.resolve(null) }))
+    registry.pin('s1', 'schedule')
+
+    const gate = registry as unknown as {
+      canSafelyEvictLeased(sessionId: string, nowMs: number): Promise<boolean>
+    }
+
+    now = 1_000
+    expect(await gate.canSafelyEvictLeased('s1', now)).toBe(false)
+    expect(calls).toBe(1)
+
+    // Inside the grace window: skipped WITHOUT hammering the snapshot again.
+    now = 1_200
+    expect(await gate.canSafelyEvictLeased('s1', now)).toBe(false)
+    expect(calls).toBe(1)
+
+    // Past the grace window with a recovered dill: eviction allowed, retry cleared.
     now = 2_000
-    // Failed snapshot → skipped, retry scheduled.
-    const first = await registry.disposeIdle()
-    expect(first).toEqual([])
-    expect(k.kernels.has('s1')).toBe(true)
-
-    // Within the grace window the kernel stays untouched (no snapshot hammering).
-    now = 2_050
-    const second = await registry.disposeIdle()
-    expect(second).toEqual([])
-
-    // A failed-snapshot kernel with no lease is still reclaimed as before.
-    registry.unpin('s1', 'schedule')
-    now = 2_100
-    const third = await registry.disposeIdle()
-    expect(third).toEqual(['s1'])
-    expect(k.kernels.has('s1')).toBe(false)
+    healthy = true
+    expect(await gate.canSafelyEvictLeased('s1', now)).toBe(true)
+    expect(calls).toBe(2)
   })
 })
 

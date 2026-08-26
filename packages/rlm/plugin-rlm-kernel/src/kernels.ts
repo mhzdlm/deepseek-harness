@@ -61,9 +61,11 @@ export interface SessionKernelOptions {
   /** item-13: auto-snapshot debounce after a successful cell (ms). Default 1500. */
   snapshotDebounceMs?: number
   /**
-   * T3.2 Phase A: cap on concurrently live (HOT) kernels; `0` disables. When
-   * exceeded, the oldest kernels WITHOUT a lease are disposed (LRU eviction);
-   * leased and busy kernels are skipped. Defaults to 4.
+   * T3.2 (C semantics): cap on concurrently live (HOT) kernels; `0` disables.
+   * When exceeded, the oldest non-busy kernels are disposed LRU-first:
+   * unleased ones outright, leased ones only after a forced snapshot succeeds
+   * (failure defers to the next sweep after {@link reclaimSnapshotGraceMs}).
+   * Defaults to 4.
    */
   maxLiveKernels?: number
   /**
@@ -297,12 +299,13 @@ export class SessionKernelRegistry {
   }
 
   /**
-   * item-4 + T3.2 Phase A: dispose kernels idle past the timeout. Leased and
-   * busy kernels are excluded; a leased kernel whose snapshot cannot flush is
-   * skipped this cycle and retried after the grace window, so a temporary
-   * dill failure never silently loses a lease-held namespace. After the idle
-   * pass the live-kernel cap is enforced (LRU eviction of unleased kernels).
-   * Returns the disposed session ids.
+   * item-4 + T3.2 (C semantics): dispose kernels idle past the timeout. Leased
+   * and busy kernels are excluded from the idle sweep entirely — a lease means
+   * "keep this kernel HOT". The live-kernel cap is enforced afterwards:
+   * unleased kernels are evicted LRU-first, and only if still over cap do
+   * leased kernels become eligible, each gated on a successful forced snapshot
+   * (failure skips the cycle and retries after the grace window). Returns the
+   * disposed session ids.
    */
   async disposeIdle(now?: number): Promise<string[]> {
     const nowMs = now ?? this.options.now?.() ?? Date.now()
@@ -310,20 +313,20 @@ export class SessionKernelRegistry {
     const pinned = this.pinnedSessions()
     const exclude = new Set([...this.busy, ...pinned])
     for (const sessionId of this.idle.expired([...this.kernels.keys()], exclude, nowMs)) {
-      if (pinned.has(sessionId) && !(await this.canReclaimPinned(sessionId, nowMs))) continue
       this.disposeSession(sessionId)
       disposed.push(sessionId)
     }
-    await this.enforceLiveCap(disposed)
+    await this.enforceLiveCap(disposed, nowMs)
     return disposed
   }
 
   /**
-   * T3.2 Phase A: whether a leased kernel may be reclaimed this cycle.
-   * Forces a snapshot; on failure schedules a retry after the grace window
-   * and returns false (the kernel stays HOT).
+   * T3.2 (C semantics): whether a LEASED kernel may be evicted this cycle.
+   * Forces a snapshot first; on failure schedules a retry after the grace
+   * window and returns false (the kernel stays HOT), so memory pressure never
+   * silently loses a lease-held namespace.
    */
-  private async canReclaimPinned(sessionId: string, nowMs: number): Promise<boolean> {
+  private async canSafelyEvictLeased(sessionId: string, nowMs: number): Promise<boolean> {
     const retryAt = this.reclaimRetryAt.get(sessionId)
     if (retryAt !== undefined && retryAt > nowMs) return false
     const manager = this.kernels.get(sessionId)
@@ -338,18 +341,27 @@ export class SessionKernelRegistry {
   }
 
   /**
-   * T3.2 Phase A: when the live-kernel count exceeds `maxLiveKernels`, dispose
-   * the oldest kernels without a lease or busy flag (LRU). Leased kernels are
-   * never cap-evicted.
+   * T3.2 (C semantics): when the live-kernel count exceeds `maxLiveKernels`,
+   * dispose the oldest kernels without a busy flag (LRU): unleased first; then
+   * leased ones, each only after its forced snapshot succeeds.
    */
-  private async enforceLiveCap(disposed: string[]): Promise<void> {
+  private async enforceLiveCap(disposed: string[], nowMs: number): Promise<void> {
     const cap = this.options.maxLiveKernels
     if (cap === undefined || cap <= 0) return
     let excess = this.kernels.size - cap
     if (excess <= 0) return
-    const exclude = new Set([...this.busy, ...this.pinnedSessions()])
-    for (const sessionId of this.idle.oldest([...this.kernels.keys()], exclude)) {
+    // Busy kernels are hard-exempt. Leased kernels are soft-exempt: they are
+    // only considered after every unleased candidate is exhausted, and even
+    // then only through the forced-snapshot gate (C semantics).
+    const pinnedNow = this.pinnedSessions()
+    const candidates = this.idle.oldest([...this.kernels.keys()], new Set(this.busy))
+    const ordered = [
+      ...candidates.filter(id => !pinnedNow.has(id)),
+      ...candidates.filter(id => pinnedNow.has(id)),
+    ]
+    for (const sessionId of ordered) {
       if (excess <= 0) break
+      if (pinnedNow.has(sessionId) && !(await this.canSafelyEvictLeased(sessionId, nowMs))) continue
       this.disposeSession(sessionId)
       disposed.push(sessionId)
       excess -= 1

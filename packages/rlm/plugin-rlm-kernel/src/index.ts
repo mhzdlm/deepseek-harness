@@ -50,11 +50,13 @@ export interface Config {
    */
   warmupOnSessionCreate?: boolean
   /**
-   * T3.2 Phase A: cap on concurrently live kernels (0 = unlimited). When
-   * exceeded, the oldest kernels without a lease are disposed (LRU). Defaults to 4.
+   * T3.2 (C semantics): cap on concurrently live kernels (0 = unlimited).
+   * When exceeded, the oldest non-busy kernels are disposed LRU-first:
+   * unleased ones outright; leased ones only after a forced snapshot succeeds
+   * (failure defers eviction to a later sweep). Defaults to 4.
    */
   maxLiveKernels?: number
-  /** T3.2 Phase A: grace (ms) before retrying a leased kernel whose snapshot failed at reclaim. Defaults to 5000. */
+  /** T3.2 (C semantics): grace (ms) before a leased over-cap kernel retries its forced eviction snapshot. Defaults to 5000. */
   reclaimSnapshotGraceMs?: number
 }
 
