@@ -65,3 +65,93 @@ describe('rlm bootstrap code', () => {
     expect(buildSkillImportProbe()).toContain('_PRIME_AGENT_SKILL_IMPORT_ERRORS')
   })
 })
+
+/**
+ * Exec-based regression (binding fix): `transcript`/`agent_message` used to be
+ * bound ONLY inside the missing-runtime branch, so every healthy kernel lacked
+ * them entirely (T1.1/T1.2 broke silently). String-containment assertions above
+ * cannot catch that shape of bug, so these cases EXECUTE the generated Python
+ * in the real venv interpreter and assert bindings plus host-request routing
+ * on both paths. Self-skips when the venv is missing.
+ */
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { existsSync } from 'node:fs'
+import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
+
+const execFileAsync = promisify(execFile)
+const venvReadyBootstrapSpec = existsSync(venvPythonPath(getKernelVenvDir()))
+const dIt = venvReadyBootstrapSpec ? it : it.skip
+
+/**
+ * Python harness: installs get_ipython (+ an rlm module stub on the healthy
+ * path; None-in-sys.modules forces ImportError on the fallback path), execs
+ * the generated bootstrap, then reports namespace bindings and how the two
+ * bridges route. Every async probe is failure-captured so the fallback path
+ * surfaces its install-guidance RuntimeError as data instead of crashing.
+ */
+function buildExecHarness(opts: { healthyStub: boolean }): string {
+  const lines = [
+    'import sys, types, json, asyncio, builtins',
+    'class _FakeIPython:',
+    '    colors = None',
+    'builtins.get_ipython = lambda: _FakeIPython()',
+  ]
+  if (opts.healthyStub) {
+    lines.push(
+      'fake = types.ModuleType("rlm")',
+      'class _FakeRlm: pass',
+      'fake.rlm = _FakeRlm()',
+      'async def _hr(request_type, payload=None):',
+      '    return {"messages": [{"role": "stub", "text": request_type}]}',
+      'fake.host_request = _hr',
+      'sys.modules["rlm"] = fake',
+    )
+  } else {
+    lines.push('sys.modules["rlm"] = None')
+  }
+  lines.push(
+    'ns = {"__name__": "__bootstrap__"}',
+    'BOOTSTRAP = json.loads(sys.argv[1])',
+    'exec(compile(BOOTSTRAP, "bootstrap.py", "exec"), ns)',
+    'def _probe(coro):',
+    '    try:',
+    '        return {"ok": asyncio.run(coro)}',
+    '    except Exception as exc:',
+    '        return {"error": str(exc)}',
+    'names = sorted(n for n in ns if not n.startswith("_prime_agent") and n not in ("__builtins__", "asyncio", "os"))',
+    'print(json.dumps({"names": names, "rlmClass": type(ns["rlm"]).__name__}))',
+    'print(json.dumps(_probe(ns["transcript"].tail(5))))',
+    'print(json.dumps(_probe(ns["agent_message"].send("hi"))))',
+  )
+  return lines.join('\n')
+}
+
+describe('generated bootstrap execution (binding regression)', () => {
+  dIt('healthy path binds rlm/transcript/agent_message and routes both bridges', async () => {
+    const code = buildRlmBootstrapCode()
+    const { stdout } = await execFileAsync(
+      venvPythonPath(getKernelVenvDir()),
+      ['-c', buildExecHarness({ healthyStub: true }), JSON.stringify(code)],
+      { timeout: 120_000 },
+    )
+    const [info, tail, send] = stdout.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(info).toMatchObject({ rlmClass: '_FakeRlm' })
+    expect(info.names).toEqual(expect.arrayContaining(['rlm', 'transcript', 'agent_message']))
+    expect(tail).toEqual({ ok: [{ role: 'stub', text: 'session.query' }] })
+    expect(send).toEqual({ ok: { messages: [{ role: 'stub', text: 'rlm.message' }] } })
+  }, 180_000)
+
+  dIt('missing-runtime path still binds the objects and fails with install guidance', async () => {
+    const code = buildRlmBootstrapCode()
+    const { stdout } = await execFileAsync(
+      venvPythonPath(getKernelVenvDir()),
+      ['-c', buildExecHarness({ healthyStub: false }), JSON.stringify(code)],
+      { timeout: 120_000 },
+    )
+    const [info, tail] = stdout.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(info).toMatchObject({ rlmClass: '_PrimeAgentMissingRlm' })
+    expect(info.names).toEqual(expect.arrayContaining(['transcript', 'agent_message']))
+    expect(tail).toMatchObject({ error: expect.stringContaining('prime-agent-runtime is not installed') })
+  }, 180_000)
+})

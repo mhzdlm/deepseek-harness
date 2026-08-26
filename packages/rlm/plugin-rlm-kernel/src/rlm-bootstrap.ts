@@ -20,9 +20,20 @@ try:
 except Exception:
     pass
 
+# [local fix] transcript/agent_message used to be bound ONLY inside the
+# missing-runtime branch below, so a healthy kernel never had them at all
+# (T1.1/T1.2 regression). They are now bound unconditionally after the
+# import attempt. Routing note: the vendored runtime exposes host_request as
+# a MODULE-level function (rlm/__init__.py), not on the rlm callable object,
+# so each path binds its own bridge:
+#   - healthy: module-level host_request
+#   - missing runtime: the install-guidance stub on the rlm replacement
 try:
     import rlm as _prime_agent_rlm_module
     rlm = _prime_agent_rlm_module.rlm
+
+    async def _prime_agent_host_request(request_type, payload=None):
+        return await _prime_agent_rlm_module.host_request(request_type, payload)
 except Exception as _prime_agent_rlm_error:
     _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
 
@@ -36,7 +47,7 @@ except Exception as _prime_agent_rlm_error:
             )
 
         async def host_request(self, request_type, payload=None):
-            # transcript/agent_message route through rlm.host_request; without
+            # transcript/agent_message route through the host bridge; without
             # the runtime they must surface this install guidance rather than
             # an AttributeError about a missing attribute.
             self._raise_missing()
@@ -58,49 +69,55 @@ except Exception as _prime_agent_rlm_error:
 
     rlm = _PrimeAgentMissingRlm()
 
-    class _PrimeAgentTranscript:
-        """Programmatic read access to this session's own transcript.
+    async def _prime_agent_host_request(request_type, payload=None):
+        return await rlm.host_request(request_type, payload)
 
-        Backed by the host read-only session.query bridge: the model can
-        inspect and search its own history as data (prompt-as-a-variable)
-        instead of relying on memory alone. Output is capped host-side.
-        """
 
-        async def _query(self, payload):
-            return await rlm.host_request("session.query", payload)
+class _PrimeAgentTranscript:
+    """Programmatic read access to this session's own transcript.
 
-        async def tail(self, n=20, max_chars=2000):
-            result = await self._query({"op": "tail", "n": n, "maxChars": max_chars})
-            return result.get("messages", [])
+    Backed by the host read-only session.query bridge: the model can
+    inspect and search its own history as data (prompt-as-a-variable)
+    instead of relying on memory alone. Output is capped host-side.
+    """
 
-        async def grep(self, pattern, limit=50, max_chars=2000):
-            result = await self._query({"op": "grep", "pattern": pattern, "limit": limit, "maxChars": max_chars})
-            return result.get("messages", [])
+    async def _query(self, payload):
+        return await _prime_agent_host_request("session.query", payload)
 
-        async def search(self, pattern, limit=20, max_chars=2000):
-            """Cross-session full-text search (requires the host-side
-            session-query service; fails loud when it is not mounted)."""
-            result = await self._query({"op": "search", "pattern": pattern, "limit": limit, "maxChars": max_chars})
-            return result.get("messages", [])
+    async def tail(self, n=20, max_chars=2000):
+        result = await self._query({"op": "tail", "n": n, "maxChars": max_chars})
+        return result.get("messages", [])
 
-    transcript = _PrimeAgentTranscript()
+    async def grep(self, pattern, limit=50, max_chars=2000):
+        result = await self._query({"op": "grep", "pattern": pattern, "limit": limit, "maxChars": max_chars})
+        return result.get("messages", [])
 
-    class _PrimeAgentMessage:
-        """Follow-up messaging for retained children (spawned with retained=True).
+    async def search(self, pattern, limit=20, max_chars=2000):
+        """Cross-session full-text search (requires the host-side
+        session-query service; fails loud when it is not mounted)."""
+        result = await self._query({"op": "search", "pattern": pattern, "limit": limit, "maxChars": max_chars})
+        return result.get("messages", [])
 
-        send() delivers the message as the child's next turn and returns only a
-        delivery acknowledgement; the child's answer arrives back here through
-        the ordinary settlement path.
-        """
 
-        async def send(self, message, receiver_name=None):
-            payload = {"message": message}
-            if receiver_name is not None:
-                payload["target"] = receiver_name
-            return await rlm.host_request("rlm.message", payload)
+transcript = _PrimeAgentTranscript()
 
-    agent_message = _PrimeAgentMessage()
-`.trim()
+
+class _PrimeAgentMessage:
+    """Follow-up messaging for retained children (spawned with retained=True).
+
+    send() delivers the message as the child's next turn and returns only a
+    delivery acknowledgement; the child's answer arrives back here through
+    the ordinary settlement path.
+    """
+
+    async def send(self, message, receiver_name=None):
+        payload = {"message": message}
+        if receiver_name is not None:
+            payload["target"] = receiver_name
+        return await _prime_agent_host_request("rlm.message", payload)
+
+
+agent_message = _PrimeAgentMessage()`.trim()
 
 /**
  * Build the Python bootstrap for a fresh kernel: base RLM runtime injection,
