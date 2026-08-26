@@ -122,6 +122,11 @@ function normalizedScore(value: number): number {
  * and finally to 0.5 (verbatim port of `extract_score`, including the
  * tokenizer's fused `>LETTER` stripping and the per-value max-prob rule that
  * merges upper/lowercase variants of the same letter).
+ *
+ * With the v1 LLM seam every position carries a single alternative, so the
+ * expectation reduces to that chosen token's scale value; the distribution
+ * math stays for seams that surface top-k variants (the calibration script
+ * feeds real top-20 data through here).
  */
 export function extractScore(
   text: string,

@@ -12,7 +12,7 @@ Status: implemented
 
 verify 工具的执行层就是宿主缝本身：
 
-- `src/scoring.ts` 逐字移植评判契约：20 字母量表、成对提示布局、在流式 logprob 条目上定位标签（累计文本匹配、融合 `>` 处理、末次匹配规则），以及带字面文本回退的 Eq 3.1 期望分提取。
+- `src/scoring.ts` 逐字移植评判契约：20 字母量表、成对提示布局、在流式 logprob 条目上定位标签（累计文本匹配、融合 `>` 处理、末次匹配规则），以及带字面文本回退的 Eq 3.1 期望分提取。v1 缝只回传 chosen-token logprobs（无 top-k 变体），每个判定位置仅单备选，期望分等于所选字母的分值；多备选数学为未来支持变体的缝保留，校准探针经原生 HTTP 消费真 top-20 数据。
 - `src/tournament.ts` 移植概率枢纽锦标赛（带种子的环循环、Bradley-Terry 软胜负、枢纽选择/轮次）。mulberry32 取代 Python 的 Mersenne Twister：同种子运行的确定性限定在 TypeScript 内部；跨语言环一致性明确不属于契约。
 - 单模型与多评判（`judges[]`）运行共享同一代码路径——每个评判一次完整 PPT，跨评判用 Borda 融合排名。多评判不再需要逐 profile 的凭据变量；每个评判可任取 adapter 路由。
 - `src/python-bridge.ts`、它的 spec 与 `forwardProviderCredentials` 被删除。`cacheFile` 从 Config 移除（它缓存的是已不存在的 llm_verifier 结果）；评分调用携带 `logprobs: { topLogprobs: 20 }`、默认温度，以及同参考 DeepSeek 路径一致的 `maxTokens` 4096。

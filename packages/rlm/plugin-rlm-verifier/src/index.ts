@@ -1,8 +1,10 @@
 /**
  * LLM-as-a-Verifier plugin: registers the `verify` tool — a Probabilistic
  * Pivot Tournament over candidate trajectories, scored through this context's
- * LLM seam with chosen-token logprobs (Eq 3.1 fine-grained reward). Pairs
- * with the other RLM plugins.
+ * LLM seam via chosen-token logprobs (Eq 3.1 expectation; with the v1
+ * chosen-token-only seam each verdict position carries a single alternative,
+ * so the expectation equals the chosen letter's scale value). Pairs with the
+ * other RLM plugins.
  * @module @deepseek-ai/dsh-plugin-rlm-verifier
  */
 
@@ -11,6 +13,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel'
 import type {} from '@deepseek-ai/dsh-subagent'
 import z from '@deepseek-ai/schemastery'
 import { createVerifyTool, type VerifyCallModel } from './verify-tool.ts'

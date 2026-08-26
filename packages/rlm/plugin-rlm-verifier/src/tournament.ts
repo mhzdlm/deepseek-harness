@@ -55,7 +55,7 @@ export function bradleyTerry(ra: number, rb: number): number {
 /**
  * Score each directed pair and aggregate soft wins into `w`/`c` in place.
  * @param pairs - directed comparisons.
- * @param score - returns the fine-grained rewards with `a` in slot A.
+ * @param score - returns the judge scores with `a` in slot A.
  */
 export function accumulate(
   pairs: ReadonlyArray<readonly [number, number]>,
@@ -115,7 +115,7 @@ export interface TournamentResult {
 
 /**
  * Run the full PPT over a directed scoring callback.
- * @param scorePair - returns the averaged fine-grained rewards (R_a, R_b)
+ * @param scorePair - returns the averaged judge scores (R_a, R_b)
  *   with `a` in slot A; called once per directed comparison.
  */
 export async function runTournament(

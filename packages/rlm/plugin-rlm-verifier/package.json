@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-plugin-rlm-verifier",
-  "description": "LLM-as-a-Verifier: fine-grained reward (Eq 3.1 expectation over scoring-token logprobs) + Probabilistic Pivot Tournament best-of-N selection, exposed as a `verify` tool. Pairs with @deepseek-ai/dsh-plugin-rlm-kernel for best-of-N over rlm-run child trajectories.",
+  "description": "LLM-as-a-Verifier: pairwise judged rankings from a Probabilistic Pivot Tournament over LLM-judge scores, exposed as a `verify` tool. Verdict letters are read from the chosen-token logprob stream. Pairs with @deepseek-ai/dsh-plugin-rlm-kernel for best-of-N over rlm-run child trajectories.",
   "version": "0.1.1-rc.2",
   "publishConfig": { "access": "public" },
   "repository": {
@@ -12,7 +12,7 @@
   "main": "lib/types/index.js",
   "types": "lib/types/index.d.ts",
   "scripts": {
-    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-verifier/tests/verify.spec.ts packages/rlm/plugin-rlm-verifier/tests/rlm-preset.spec.ts packages/rlm/plugin-rlm-verifier/tests/events.spec.ts packages/rlm/plugin-rlm-verifier/tests/scoring.spec.ts packages/rlm/plugin-rlm-verifier/tests/tournament.spec.ts",
+    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-verifier/tests/verify.spec.ts packages/rlm/plugin-rlm-verifier/tests/rlm-preset.spec.ts packages/rlm/plugin-rlm-verifier/tests/events.spec.ts packages/rlm/plugin-rlm-verifier/tests/scoring.spec.ts packages/rlm/plugin-rlm-verifier/tests/tournament.spec.ts packages/rlm/plugin-rlm-verifier/tests/persistence-catalog.spec.ts packages/rlm/plugin-rlm-verifier/tests/plugin-apply.spec.ts packages/rlm/plugin-rlm-verifier/tests/seam-contract.spec.ts",
     "test:e2e": "vitest run --root ../../../ --config vitest.e2e.config.ts packages/rlm/plugin-rlm-verifier/tests/judges.e2e.ts"
   },
   "exports": {

@@ -3,9 +3,15 @@
  * the harness LLM seam.
  *
  * Scoring contract is the TypeScript port in `scoring.ts` (20-letter scale,
- * pairwise judge prompt, Eq 3.1 expectation over the chosen-token
- * distribution) and the selection loop is the Probabilistic Pivot Tournament
- * in `tournament.ts` — O(Nk) directed comparisons instead of O(N²).
+ * pairwise judge prompt, Eq 3.1 expectation over the token distribution at the
+ * verdict position) and the selection loop is the Probabilistic Pivot
+ * Tournament in `tournament.ts` — O(Nk) directed comparisons instead of O(N²).
+ *
+ * The v1 LLM seam surfaces only chosen-token logprobs (no top-k variants), so
+ * every verdict position carries a single alternative and the Eq 3.1
+ * expectation reduces to the chosen letter's scale value. The
+ * multi-alternative machinery stays intact for a seam that exposes variants;
+ * `scripts/calibrate-judge.mts` consumes real top-20 data over raw HTTP.
  *
  * Failure semantics follow the reference `on_error: "tie"`: a failed scoring
  * call contributes a 0.5/0.5 tie for that comparison instead of failing the
@@ -137,8 +143,9 @@ export function createVerifyTool(options: VerifyToolOptions) {
     name: 'verify',
     description:
       'Score N candidate solutions/trajectories for a task with an LLM verifier panel ' +
-      '(fine-grained reward over scoring-token logprobs, Probabilistic Pivot Tournament) ' +
-      'and return the best one. Pass the task as `problem` and each candidate as an element of `candidates`.',
+      '(pairwise judged rankings from a Probabilistic Pivot Tournament; verdict letters are ' +
+      'read from the chosen-token logprob stream) and return the best one. ' +
+      'Pass the task as `problem` and each candidate as an element of `candidates`.',
     parameters: {
       problem: {
         type: 'string',
@@ -558,6 +565,8 @@ async function scorePairOnSeam(
           signal,
         })
         const tokens = out.logprobs.map(entry => entry.token)
+        // v1 seam: chosen-token only, so each verdict position gets exactly one
+        // alternative and extractScore's expectation equals that letter's value.
         const positions = out.logprobs.map(entry => [[entry.token, entry.logprob]] as const)
         ra = extractScore(out.text, tokens, positions, '<score_A>')
         rb = extractScore(out.text, tokens, positions, '<score_B>')
