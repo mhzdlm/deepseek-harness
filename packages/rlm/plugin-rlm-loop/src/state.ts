@@ -1,10 +1,11 @@
 /**
  * Harness-state landing for loop verdicts. Entries ride the existing
- * `memory` kind under a `loop/<runId>/...` id convention instead of new
- * `HarnessKind` values, so the continual-harness overview injection,
- * `/refine` whitelist, and rollback machinery apply unchanged. Writes go
- * through the shared CAS pipeline (read with mtime, upsert, rename) and stay
- * session-local: verified progress belongs to the run that audited it.
+ * `memory` kind under a `loop_<runId>/...` id convention (e.g.
+ * `loop_ab12cd34/round_002`) instead of new `HarnessKind` values, so the
+ * continual-harness overview injection, `/refine` whitelist, and rollback
+ * machinery apply unchanged. Writes go through the shared CAS pipeline (read
+ * with mtime, upsert, rename) and stay session-local: verified progress
+ * belongs to the run that audited it.
  *
  * @module @deepseek-ai/dsh-plugin-rlm-loop/state
  */
@@ -19,7 +20,7 @@ import {
 const SOURCE = 'plugin-rlm-loop'
 
 export interface UpsertInput {
-  /** Entry id inside the memory kind, e.g. `loop/<runId>/round_002`. */
+  /** Entry id inside the memory kind, e.g. `loop_ab12cd34/round_002`. */
   id: string
   title: string
   content: string
@@ -36,7 +37,7 @@ function nowIso(): string {
  * verdict itself (the session-log event is already durable by then).
  * @param baseDir - harness base dir shared with plugin-continual-harness.
  * @param sessionId - owning session id; entries stay session-local.
- * @param input - entry id (e.g. `loop/<runId>/round_002`), title, and content.
+ * @param input - entry id (e.g. `loop_ab12cd34/round_002`), title, and content.
  * @returns once the entry is durable under CAS.
  */
 export async function upsertMemoryEntry(
