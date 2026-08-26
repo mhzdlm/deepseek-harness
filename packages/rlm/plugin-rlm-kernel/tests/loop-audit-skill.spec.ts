@@ -48,7 +48,7 @@ describe('loop-audit kernel skill (live isolated venv)', () => {
 
   let root: string | undefined
   afterAll(() => {
-    if (root) rmSync(root, { recursive: true, force: true })
+    if (root) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   })
 
   it('installs via the harness convention and validates audit headers in-kernel', async () => {
@@ -106,6 +106,9 @@ describe('loop-audit kernel skill (live isolated venv)', () => {
       expect(bad.stdout).toContain('False None')
 
       await registry.disposeAll()
+      // Windows: the kernel child releases its venv handles slightly after
+      // dispose settles — give the OS a beat before the temp-tree cleanup.
+      await new Promise(resolve => setTimeout(resolve, 500))
     } catch (error) {
       try { registry.disposeAll() } catch { /* already disposing or disposed */ }
       throw error
