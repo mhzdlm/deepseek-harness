@@ -155,6 +155,12 @@ export async function readHarnessState(filePath: string): Promise<HarnessStateFi
  * immediately before renaming and throws {@link HarnessConflictError} if it
  * moved — so `/refine` cannot clobber a kernel-side write that landed between
  * its read and its write.
+ *
+ * On Windows a concurrent writer holding the destination turns the finalizing
+ * rename into EPERM/EBUSY instead of a clean replace. That is observably the
+ * same event as an mtime conflict — the file changed underneath this writer —
+ * so it is surfaced as the retryable {@link HarnessConflictError} (with the
+ * temp file cleaned up) rather than as a raw fs error callers cannot retry on.
  */
 export async function writeHarnessState(
   filePath: string,
@@ -175,7 +181,16 @@ export async function writeHarnessState(
   }
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`
   await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8')
-  await rename(tmp, filePath)
+  try {
+    await rename(tmp, filePath)
+  } catch (error) {
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined
+    if (code === 'EPERM' || code === 'EBUSY') {
+      await rm(tmp, { force: true }).catch(() => undefined)
+      throw new HarnessConflictError(filePath)
+    }
+    throw error
+  }
 }
 
 /** Both harness state files with the mtime observed at read (for CAS writes). */

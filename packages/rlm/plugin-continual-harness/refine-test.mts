@@ -561,19 +561,23 @@ console.log('== applyProposalsAndPersist conflict retry converges (FIX-7) ==')
 	const sid = 'retry-session'
 	const snapshotDir = path.join(path.dirname(harnessStatePath(retryDir, sid)), 'refinements')
 
-	// Interference: unconditionally rewrite both files (read-modify-write of
-	// the current content) so any in-flight attempt's observed mtimes go stale.
-	// Scheduled at 5/35/80ms to bracket fast machines without delaying the
-	// happy path meaningfully.
+	// Interference: rewrite both files (read-modify-write) so any in-flight
+	// attempt's observed mtimes go stale. Each write CASes against the mtime it
+	// just observed — a blind writer here could land AFTER the pipeline's
+	// successful write and clobber the landed state, turning a loaded machine
+	// into a false failure. Scheduled at 5/35/80ms to bracket fast machines
+	// without delaying the happy path meaningfully.
 	async function bump(): Promise<void> {
 		const lp = harnessStatePath(retryDir, sid)
 		const gp = globalHarnessStatePath(retryDir)
 		for (const p of [lp, gp]) {
 			try {
-				const cur = await readHarnessState(p)
-				await writeHarnessState(p, cur)
+				const detailed = await readHarnessStateDetailed(p)
+				if (detailed.mtimeMs === null) continue // Missing file: nothing to bump yet.
+				await writeHarnessState(p, detailed.state, detailed.mtimeMs)
 			} catch {
-				// Missing file: nothing to bump yet.
+				// Conflict with the pipeline or the sibling bump: this tick's
+				// interference is done; the next timer tick re-reads.
 			}
 		}
 	}
