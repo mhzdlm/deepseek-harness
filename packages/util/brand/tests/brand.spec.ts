@@ -73,7 +73,7 @@ describe('Branded<B> type safety', () => {
   it('maintains .length property from the underlying string', () => {
     expect(SessionId('abc').length).toBe(3)
     expect(SessionId('').length).toBe(0)
-    expect(SessionId('a-long-session-id-12345').length).toBe(24)
+    expect(SessionId('a-long-session-id-12345').length).toBe(23)
   })
 
   it('supports .charAt(), .indexOf(), .slice() and other string methods', () => {

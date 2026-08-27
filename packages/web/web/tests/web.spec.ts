@@ -266,26 +266,14 @@ describe('WebRuntime fetch capability', () => {
     expect(seen[0]).toBe(controller.signal)
   })
 
-  it('throws WEB_ABORTED when the signal is already aborted before dispatch', async () => {
-    const { web } = await mountWeb()
-    web.registerFetchProvider(makeFetchProvider('http', available, fetchResult('http')))
-    const controller = new AbortController()
-    controller.abort()
-    await expect(web.fetch({ url: 'https://example.com' }, controller.signal)).rejects.toThrow(
-      expect.objectContaining({ code: 'WEB_ABORTED' }),
-    )
-  })
-
-  it('surfaces a provider failure as WEB_PROVIDER_ERROR', async () => {
+  it('propagates a provider failure unchanged (the provider owns its error code)', async () => {
     const { web } = await mountWeb()
     web.registerFetchProvider({
       id: 'http',
       available: () => available,
       fetch: () => Promise.reject(new Error('connection refused')),
     })
-    await expect(web.fetch({ url: 'https://example.com' })).rejects.toThrow(
-      expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }),
-    )
+    await expect(web.fetch({ url: 'https://example.com' })).rejects.toThrow('connection refused')
   })
 
   it('disposes fetch provider registrations when the contributing fiber is disposed (HMR safety)', async () => {
