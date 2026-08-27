@@ -16,7 +16,7 @@ The vendored bootstrap already contained the full python-skill pipeline — `nor
 
 Once the bootstrap ran, provisioning executes one probe cell that dumps the bootstrap-recorded `_PRIME_AGENT_SKILL_IMPORT_ERRORS` map and parses the stdout. Non-empty → provisioning fails loud naming each offending skill and its first error line, and the kernel is disposed. This covers every mismatch shape statically undecidable from disk (wrong import name vs module layout, broken dependencies, packaging errors) against ground truth, mirroring the catalog philosophy of failing at the earliest point that can name the offending key. A probe that returns unparsable output warns and skips — that is our own code misbehaving, not a skill mismatch. Missing package directories stay on the T1.1 warn-only path: those entries never enter the install set, so there is no promise to verify.
 
-Orthogonal to the host-side markdown skill registry ([skill system](../architecture/2026-07-05-skill-system.md)): that registry serves instruction bundles into prompts; this pipeline installs executable Python packages into the kernel venv for direct in-REPL calls. They share only the vocabulary.
+Orthogonal to the host-side markdown skill registry ([skill system](../feature/2026-07-05-skill-system.md)): that registry serves instruction bundles into prompts; this pipeline installs executable Python packages into the kernel venv for direct in-REPL calls. They share only the vocabulary.
 
 ## Given up
 

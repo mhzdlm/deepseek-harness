@@ -204,6 +204,108 @@ describe('WebRuntime fetch capability', () => {
       expect.objectContaining({ code: 'WEB_PROVIDER_UNAVAILABLE' }),
     )
   })
+
+  it('throws WEB_PROVIDER_UNAVAILABLE when fetch providers exist but none are usable', async () => {
+    const { web } = await mountWeb()
+    web.registerFetchProvider(makeFetchProvider('http', unavailable, fetchResult('http')))
+    await expect(web.fetch({ url: 'https://example.com' })).rejects.toThrow(
+      expect.objectContaining({ code: 'WEB_PROVIDER_UNAVAILABLE' }),
+    )
+  })
+
+  it('throws WEB_PROVIDER_CONFIGURED_MISSING for an unregistered configured fetch id', async () => {
+    const { web } = await mountWeb({ fetchProvider: 'curl' })
+    web.registerFetchProvider(makeFetchProvider('http', available, fetchResult('http')))
+    await expect(web.fetch({ url: 'https://example.com' })).rejects.toThrow(
+      expect.objectContaining({ code: 'WEB_PROVIDER_CONFIGURED_MISSING' }),
+    )
+  })
+
+  it('throws WEB_PROVIDER_CONFIGURED_UNAVAILABLE for an unusable configured fetch id', async () => {
+    const { web } = await mountWeb({ fetchProvider: 'http' })
+    web.registerFetchProvider(makeFetchProvider('http', unavailable, fetchResult('http')))
+    await expect(web.fetch({ url: 'https://example.com' })).rejects.toThrow(
+      expect.objectContaining({ code: 'WEB_PROVIDER_CONFIGURED_UNAVAILABLE' }),
+    )
+  })
+
+  it('throws WEB_PROVIDER_AMBIGUOUS for fetch rather than picking by order', async () => {
+    const { web } = await mountWeb()
+    web.registerFetchProvider(makeFetchProvider('http', available, fetchResult('http')))
+    web.registerFetchProvider(makeFetchProvider('curl', available, fetchResult('curl')))
+    await expect(web.fetch({ url: 'https://example.com' })).rejects.toThrow(
+      expect.objectContaining({ code: 'WEB_PROVIDER_AMBIGUOUS' }),
+    )
+  })
+
+  it('runs the configured fetch provider even when another usable provider is registered', async () => {
+    const { web } = await mountWeb({ fetchProvider: 'curl' })
+    web.registerFetchProvider(makeFetchProvider('http', available, fetchResult('http')))
+    web.registerFetchProvider(makeFetchProvider('curl', available, fetchResult('curl')))
+    const result = await web.fetch({ url: 'https://example.com' })
+    expect(result.body.content).toBe('curl')
+  })
+
+  it('ignores unusable fetch providers when auto-selecting', async () => {
+    const { web } = await mountWeb()
+    web.registerFetchProvider(makeFetchProvider('http', available, fetchResult('http')))
+    web.registerFetchProvider(makeFetchProvider('curl', unavailable, fetchResult('curl')))
+    await expect(web.fetch({ url: 'https://example.com' })).resolves.toMatchObject({ body: { content: 'http' } })
+  })
+
+  it('propagates the abort signal to the fetch provider', async () => {
+    const { web } = await mountWeb()
+    const seen: (AbortSignal | undefined)[] = []
+    web.registerFetchProvider({
+      id: 'http',
+      available: () => available,
+      fetch: (_request, signal) => { seen.push(signal); return Promise.resolve(fetchResult('http')) },
+    })
+    const controller = new AbortController()
+    await web.fetch({ url: 'https://example.com' }, controller.signal)
+    expect(seen[0]).toBe(controller.signal)
+  })
+
+  it('throws WEB_ABORTED when the signal is already aborted before dispatch', async () => {
+    const { web } = await mountWeb()
+    web.registerFetchProvider(makeFetchProvider('http', available, fetchResult('http')))
+    const controller = new AbortController()
+    controller.abort()
+    await expect(web.fetch({ url: 'https://example.com' }, controller.signal)).rejects.toThrow(
+      expect.objectContaining({ code: 'WEB_ABORTED' }),
+    )
+  })
+
+  it('surfaces a provider failure as WEB_PROVIDER_ERROR', async () => {
+    const { web } = await mountWeb()
+    web.registerFetchProvider({
+      id: 'http',
+      available: () => available,
+      fetch: () => Promise.reject(new Error('connection refused')),
+    })
+    await expect(web.fetch({ url: 'https://example.com' })).rejects.toThrow(
+      expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }),
+    )
+  })
+
+  it('disposes fetch provider registrations when the contributing fiber is disposed (HMR safety)', async () => {
+    const { ctx, web } = await mountWeb()
+    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
+      inner.web.registerFetchProvider(makeFetchProvider('http', available, fetchResult('http')))
+    }, { inject: ['web'] }))
+    await expect(web.fetch({ url: 'https://example.com' })).resolves.toMatchObject({ body: { content: 'http' } })
+    await fiber.dispose()
+    await expect(web.fetch({ url: 'https://example.com' })).rejects.toThrow(
+      expect.objectContaining({ code: 'WEB_PROVIDER_UNAVAILABLE' }),
+    )
+  })
+
+  it('throws WEB_DUPLICATE_PROVIDER on a duplicate fetch id', async () => {
+    const { web } = await mountWeb()
+    web.registerFetchProvider(makeFetchProvider('http', available, fetchResult('http')))
+    expect(() => web.registerFetchProvider(makeFetchProvider('http', available, fetchResult('http'))))
+      .toThrow(expect.objectContaining({ code: 'WEB_DUPLICATE_PROVIDER' }))
+  })
 })
 
 describe('WebError', () => {
