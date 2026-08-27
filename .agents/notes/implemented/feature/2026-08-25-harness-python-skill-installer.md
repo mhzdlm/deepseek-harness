@@ -1,6 +1,8 @@
-# 2026-08-25 — harness-to-kernel python skill installer (NEXT T2.1)
+# Agent Note: 2026-08-25 — harness-to-kernel python skill installer (NEXT T2.1)
 
-## Context
+Status: implemented
+
+## Problem
 
 The vendored bootstrap already contained the full python-skill pipeline — `normalizePythonSkills`, pyproject parsing, dependency collection, `uv pip install` into the shared kernel venv, and `.bootstrap-version` tracking with per-skill `pyprojectHash` change detection — but nothing on the plugin side ever fed it: `KernelManager` options accepted `pythonSkills` and no caller passed any. The prime upstream resolved this through its repo-internal `skills.js`, which was never vendored.
 
@@ -18,7 +20,7 @@ Once the bootstrap ran, provisioning executes one probe cell that dumps the boot
 
 Orthogonal to the host-side markdown skill registry ([skill system](../feature/2026-07-05-skill-system.md)): that registry serves instruction bundles into prompts; this pipeline installs executable Python packages into the kernel venv for direct in-REPL calls. They share only the vocabulary.
 
-## Given up
+## Alternatives considered
 
 - A `/skill-create` host command and routing-consistency invariants in this change (NEXT T2.2/T2.3): the collector only trusts entries that pass the vendored runtime's own reference validation on write.
 - Per-session venvs.
@@ -31,7 +33,12 @@ Given up:
 - A `/skill-create` slash command: `CommandResult` is success/error only — there is no prompt-expansion result kind, so a handler cannot hand a workflow brief to the model. Revisit when commands grow a prompt variant.
 - Hosting the upsert in continual-harness: in vitest suite workers the continual-harness entry namespace arrived partially initialized (`upsertPythonSkillEntry` undefined) while the same entry's collector bindings resolved fine — a cross-worker module-graph quirk around its heavyweight service imports. The upsert therefore lives beside the collector in kernel's `skill-source.ts`, composed from the same proven entry primitives (readHarnessStatesDetailed/writeHarnessStates). Symptom to watch: cross-package entry imports resolving `undefined` for some named exports only inside full-suite workers.
 
-## Required verification
+## Consequences
+
+- 收益：harness python skill 现在从插件侧经约定 + 惰性 provider + CAS 条目流入内核 venv；验证门针对真实真相校验任何 skill import 不匹配并响亮失败。
+- 代价：本次不含 `/skill-create` 宿主命令与路由一致性不变量；per-session venv 推迟；由于跨 worker 模块图怪象，upsert 落在 kernel 的 `skill-source.ts` 而非 continual-harness。
+
+## Verification
 
 - `collectPythonSkills` unit tests: materialization against the convention, missing-package reporting, non-python/non-skill filtering.
 - Kernel suite green with the provider wired through `forSession`.

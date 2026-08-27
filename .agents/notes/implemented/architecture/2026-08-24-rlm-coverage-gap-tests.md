@@ -1,6 +1,8 @@
-# 2026-08-24 — rlm family coverage-gap tests and two latent Windows/persistence bugs
+# Agent Note: 2026-08-24 — rlm family coverage-gap tests and two latent Windows/persistence bugs
 
-## Context
+Status: implemented
+
+## Problem
 
 A coverage-gap audit of `packages/rlm` (179 tests at the time) against the repo's per-file 100% gate found the family inside the gate's include glob with no exclusions, plus several "documented as fixed" behaviors that no test pinned. This batch adds 51 keyless cases across the five packages, runs the real-key e2e suite green on Windows, and — because writing the tests was the audit — fixes two defects the new assertions exposed immediately.
 
@@ -15,12 +17,17 @@ A coverage-gap audit of `packages/rlm` (179 tests at the time) against the repo'
 
 Handler-table and disposal wiring were exactly where AUDIT P1-1 had already caught one-sided fixes; without regression tests the same drift recurs silently. For #16, patching the shared `run()` covers every bootstrap child (uv install/upgrade, pip, python import probes) in one place, keeps the scrubbed-env boundary from #14 intact, and matches how #13e already made `.bat` shims reachable. Widening only the pure spec-builder (not `run` itself) keeps the spawn path vendor-shaped while still testable.
 
-## Given up
+## Alternatives considered
 
 - Direct unit tests for inline `findExecutable` (#13e) and `state-snapshot` size caps: both need either exporting more vendor surface or a live kernel; the dangerous `.bat/.cmd` spawn face is covered via #16 specs, and snapshot limits stay exercised indirectly by idle-reclaim/e2e.
 - A stale shim whose target exe is missing still defeats bootstrap (`isExecutable` checks existence of the shim only). Repairing machine state (reinstalling uv) was chosen over teaching the resolver to probe-exec candidates; noted in windows-compatibility §7.6.
 
-## Required verification
+## Consequences
+
+- 收益：rlm 家族补齐 51 个无 key 回归用例（落进每文件 100% 门禁），并由新断言当场暴露、就地修复两处真实缺陷——vendor #16 批量 `.bat`/`.cmd` spawn、以及 `writeHarnessStates` 回滚快照/补偿 CAS 双重损坏。
+- 代价：为可测性外扩了一个 vendor helper（`run()` 的 spec builder）导出；`findExecutable` 与 state-snapshot 容量上限等内联路径因需活内核/vendor 面而仍未单测。
+
+## Verification
 
 - Package suites all green on win32: kernel 69 (13 files), verifier 30, moa 33, loop 18; continual-harness refine-test 80 checks. Real-key e2e 5/5 (`rlm-e2e` + `refine-e2e`) after the fixes, including depth-2 recursion.
 - `pnpm --filter @deepseek-ai/dsh-plugin-rlm-kernel run vendor:check` → 43/43 with the new #16 entry.
