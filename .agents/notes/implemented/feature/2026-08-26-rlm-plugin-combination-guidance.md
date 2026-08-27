@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-26-rlm-plugin-combination-guidance.zh.md)
+
 - **Date**: 2026-08-26
 - **Area**: `docs/recipes/agent-presets/rlm/agent.cordis.yml` persona
 - **Status**: 已落地

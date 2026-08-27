@@ -49,6 +49,7 @@ export const MOA_PHONE_RE =
  * Redact credential-shaped material plus email/formatted-phone PII from one
  * advisor text. Non-string input passes through unchanged.
  * @param text - advisor answer (or any surface destined for the aggregator).
+ * @returns the input text with credential-shaped material and email/phone PII masked.
  */
 export function redactReferenceText(text: string): string {
   let out = text

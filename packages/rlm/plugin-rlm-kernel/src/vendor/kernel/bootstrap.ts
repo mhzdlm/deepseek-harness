@@ -23,12 +23,20 @@ import { buildScrubbedEnv } from "../../kernel-env.ts";
 // `runtimeCandidateDirs`), which is what installs our vendored Python runtime
 // into the kernel venv instead of pulling from PyPI.
 
+/**
+ * Metadata describing a Python skill package that the kernel can install into
+ * the venv: its import name plus the on-disk package and pyproject paths.
+ */
 export interface SkillPythonMetadata {
 	importName: string;
 	packagePath: string;
 	pyprojectPath: string;
 }
 
+/**
+ * A Python skill the kernel must ensure is importable, extending the base
+ * metadata with the human-readable skill name used in progress messages.
+ */
 export interface PythonSkillRuntimeInfo extends SkillPythonMetadata {
 	name: string;
 }
@@ -54,8 +62,11 @@ const DEFAULT_RLM_EXTRA_PACKAGES = [
 	{ uvArg: "pydantic", importName: "pydantic", promptLabel: "pydantic" },
 	{ uvArg: "tyro", importName: "tyro", promptLabel: "tyro" },
 ];
+/** Default extra `uv` requirement arguments installed into every kernel venv. */
 export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.uvArg);
+/** Import names corresponding to {@link DEFAULT_RLM_EXTRA_UV_ARGS}, for readiness checks. */
 export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
+/** Human-readable labels for {@link DEFAULT_RLM_EXTRA_UV_ARGS}, shown in progress messages. */
 export const DEFAULT_RLM_EXTRA_IMPORT_LABELS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.promptLabel);
 const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 // [local patch #15] Windows has no POSIX shell: run the official PowerShell
@@ -96,9 +107,15 @@ const BOOTSTRAP_LOCK_WAIT_TIMEOUT_MS = 60_000;
 
 let inFlightEnsureKernelPython: { key: string; promise: Promise<string> } | null = null;
 
+/** A Python skill the kernel must ensure is importable within the venv. */
 export type KernelPythonSkill = PythonSkillRuntimeInfo;
+/** Callback invoked with progress messages while the kernel Python is being set up. */
 export type KernelBootstrapProgressHandler = (message: string) => void;
 
+/**
+ * Options controlling {@link ensureKernelPython}: the Python skills to make
+ * importable and an optional progress reporter.
+ */
 export interface EnsureKernelPythonOptions {
 	pythonSkills?: readonly KernelPythonSkill[];
 	onProgress?: KernelBootstrapProgressHandler;
@@ -373,6 +390,13 @@ function ensureKernelPythonKey(pythonSkills: readonly BootstrapPythonSkill[]): s
 	].join("\0");
 }
 
+/**
+ * Resolve the directory where the kernel Python virtual environment is created.
+ * Honors the `DSH_RLM_KERNEL_VENV` override, falling back to the per-user
+ * `.prime/agent/kernel-venv` location.
+ *
+ * @returns Absolute path to the kernel venv directory.
+ */
 export function getKernelVenvDir(): string {
 	const override = rlmEnv(...ENV_KERNEL_VENV);
 	if (override) return path.resolve(expandHome(override));
@@ -381,6 +405,13 @@ export function getKernelVenvDir(): string {
 
 // [local patch] venv 布局因平台而异：Windows 用 Scripts/python.exe，POSIX 用
 // bin/python。prime 原版硬编码 Unix 布局，无法在 Windows 上引导内核。
+/**
+ * Compute the absolute path to the Python interpreter inside a venv, using the
+ * platform-appropriate layout (`Scripts/python.exe` on Windows, `bin/python` elsewhere).
+ *
+ * @param venv - Absolute path to the virtual environment directory.
+ * @returns Absolute path to the venv's Python executable.
+ */
 export function venvPythonPath(venv: string): string {
 	return process.platform === "win32"
 		? path.join(venv, "Scripts", "python.exe")
@@ -424,7 +455,16 @@ async function resolveWritableKernelVenvDir(): Promise<string> {
 // windowsVerbatimArguments stops node from re-quoting it.
 const WINDOWS_BATCH_FILE_RE = /\.(bat|cmd)$/i;
 
-/** Exported for tests: translate one spawn target into its cmd-safe form. */
+/**
+ * Translate a spawn target and its arguments into a form safe to execute on the
+ * current platform. Exported for tests. On non-Windows or for non-batch targets
+ * it returns the inputs unchanged; on Windows a `.bat`/`.cmd` target is routed
+ * through `COMSPEC` with fully quoted, verbatim arguments (CVE-2024-27980 mitigation).
+ *
+ * @param command - The program (or batch file) to spawn.
+ * @param args - The arguments to pass to the command.
+ * @returns The resolved command, its rewritten args, and whether verbatim quoting applies.
+ */
 export function windowsBatchSpawnSpec(
 	command: string,
 	args: readonly string[],
@@ -778,6 +818,14 @@ async function resolveRuntimeSourceDir(): Promise<string | null> {
 // content hash of every rlm/*.py file plus pyproject.toml, so any runtime code or
 // dependency change invalidates an existing venv automatically. Falls back to the
 // bare package name when the runtime resolves to a registry install (no local source).
+/**
+ * Resolve the identity string recorded for the installed `prime-agent-runtime`.
+ * For a local source checkout this is a content hash of every `rlm/*.py` file plus
+ * `pyproject.toml` (so any code or dependency change invalidates the venv); it
+ * falls back to the bare package name when the runtime resolves to a registry install.
+ *
+ * @returns The runtime identity, either a `sha256:` hash or the package name.
+ */
 export async function resolveRuntimeIdentity(): Promise<string> {
 	const sourceDir = await resolveRuntimeSourceDir();
 	if (!sourceDir) return RUNTIME_REQUIREMENT;
@@ -1011,6 +1059,15 @@ async function ensureKernelPythonUncached(
 	return python;
 }
 
+/**
+ * Ensure a Python interpreter with ipykernel, a current `prime-agent-runtime`, the
+ * default extra packages, and the requested Python skills is available, bootstrapping
+ * the venv on first use. Concurrent calls with identical inputs share one in-flight
+ * promise.
+ *
+ * @param options - Optional Python skills to make importable and an optional progress reporter.
+ * @returns A promise resolving to the absolute path of the ready Python interpreter.
+ */
 export function ensureKernelPython(options: EnsureKernelPythonOptions = {}): Promise<string> {
 	const pythonSkills = normalizePythonSkills(options.pythonSkills);
 	const key = ensureKernelPythonKey(pythonSkills);

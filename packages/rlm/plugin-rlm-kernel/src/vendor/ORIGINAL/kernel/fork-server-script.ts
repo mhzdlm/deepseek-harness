@@ -12,6 +12,10 @@
 //   <- { "type": "ready" }                             once, after imports finish
 //   <- { "id": <n>, "pid": <pid> }                     fork succeeded
 //   <- { "id": <n>, "error": "<message>" }             fork failed
+/**
+ * Python forkserver script shipped as an embedded string so it can never be
+ * missing from a release layout. Run via `python -c <this> <control-socket-path>`.
+ */
 export const FORK_SERVER_SCRIPT = String.raw`
 import gc
 import json

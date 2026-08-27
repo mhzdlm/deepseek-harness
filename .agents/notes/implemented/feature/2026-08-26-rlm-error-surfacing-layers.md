@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-26-rlm-error-surfacing-layers.zh.md)
+
 - **Date**: 2026-08-26
 - **Area**: `plugin-rlm-kernel`（Layer ②，本轮落地）、`plugin-rlm-verifier`/`plugin-rlm-moa`（Layer ③，UI 依赖）、`plugin-rlm-loop` + shell/web（Layer ①，UI 依赖）
 - **Status**: Layer ② 内核诊断上浮已落地；①/③ 的"渲染到 GUI"为 UI 依赖项，本轮只记录现状与设计

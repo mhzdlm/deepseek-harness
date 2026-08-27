@@ -24,6 +24,9 @@ export type UpsertPythonSkillEntry = (
   spec: { id: string; title: string; description: string; importName: string; callable?: string },
 ) => Promise<HarnessEntry>
 
+/**
+ * Options for building the `create_python_skill` tool.
+ */
 export interface SkillCreateToolOptions {
   /** The rlm data dir owning both the skills tree and the harness state. */
   dataDir: string
@@ -34,6 +37,10 @@ export interface SkillCreateToolOptions {
 /**
  * Validate that the package the model claims to have written actually exists
  * on disk, returning the list of concrete problems (empty when usable).
+ * @param dataDir - The rlm data dir owning the skills tree.
+ * @param id - The skill slug id used as the package directory name.
+ * @param importName - The python module name the kernel binds as a callable.
+ * @returns The list of concrete problems; empty when the package is usable.
  */
 export function validateSkillPackage(
   dataDir: string,
@@ -57,8 +64,9 @@ export function validateSkillPackage(
 /**
  * Build the `create_python_skill` tool.
  * @param options - data dir owning the skills tree and harness state.
+ * @returns The configured `create_python_skill` tool definition.
  */
-export function createSkillCreateTool(options: SkillCreateToolOptions) {
+export function createSkillCreateTool(options: SkillCreateToolOptions): ReturnType<typeof defineTool> {
   const { dataDir } = options
   return defineTool({
     name: 'create_python_skill',

@@ -4,7 +4,7 @@
  * that will change, apply them, and record a RefinementEvent. Rollback restores
  * a snapshot by event id.
  *
- * Fixes (see docs/rlm-plugins-fixes.md):
+ * Fixes:
  *  - FIX-1: provider name is now a parameter (`refineProvider`), not the
  *    hard-coded `'refine'` string that no provider is registered under.
  *  - FIX-2: the proposal prompt carries the current harness overview with
@@ -56,6 +56,7 @@ const ID_RE = /^[0-9a-fA-F-]{8,64}$/
  */
 const DANGEROUS_ID_SET: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype'])
 
+/** Options controlling proposal validation, principally the known-entry id set. */
 export interface ValidateProposalsOptions {
   /**
    * `kind:id` keys of entries that exist in the current merged harness view
@@ -82,6 +83,8 @@ function idAcceptable(kind: string, id: string, knownIds: ReadonlySet<string> | 
  * Build the `kind:id` existence set that {@link validateProposals}'s
  * `knownIds` option expects, from one or more harness state files (global +
  * local, or a single merged view).
+ * @param states - Harness state files whose entries populate the result set.
+ * @returns The set of `kind:id` keys for every entry present in `states`.
  */
 export function collectKnownEntryIdSet(states: readonly HarnessStateFile[]): Set<string> {
   const ids = new Set<string>()
@@ -97,6 +100,7 @@ const KIND_SET: ReadonlySet<string> = new Set(['prompt', 'memory', 'skill', 'sub
 const ACTION_SET: ReadonlySet<string> = new Set(['upsert', 'delete'])
 const SCOPE_SET: ReadonlySet<string> = new Set(['local', 'global'])
 
+/** A single model-proposed harness entry change to apply, validate, or reject. */
 export interface RefineProposal {
   kind: HarnessKind
   action: 'upsert' | 'delete'
@@ -119,6 +123,7 @@ export interface ExtractResult {
   parseError?: string
 }
 
+/** The result of validating raw proposals: accepted entries and rejection reasons. */
 export interface ValidatedProposals {
   valid: RefineProposal[]
   /** Human-readable rejection reasons, one per dropped proposal. */
@@ -209,6 +214,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Extract proposals from a subagent result. Distinguishes "valid JSON, empty
  * list" from "could not parse" so a malformed model reply cannot masquerade
  * as a successful no-op (FIX-4).
+ * @param result - Raw subagent output: a JSON string, a structured object, or a
+ *   `{ structured: {...} }` wrapper.
+ * @returns The parsed proposal list, plus a `parseError` when the input could
+ *   not be parsed.
  */
 export function extractProposals(result: unknown): ExtractResult {
   let candidate: unknown
@@ -249,6 +258,11 @@ export function extractProposals(result: unknown): ExtractResult {
  * Validate model-produced proposals against the output schema before they can
  * touch harness state (FIX-4). Invalid entries are rejected with reasons rather
  * than silently dropped; duplicate targets collapse to the first occurrence.
+ * @param proposals - Raw proposal objects as produced by the model.
+ * @param options - Optional validation controls, including the known-entry id
+ *   set for slug-tolerant id acceptance.
+ * @returns The validated proposals and a list of human-readable rejection
+ *   reasons for any dropped entries.
  */
 export function validateProposals(proposals: unknown[], options?: ValidateProposalsOptions): ValidatedProposals {
   const knownIds = options?.knownIds
@@ -333,6 +347,11 @@ function nowIso(): string {
  * first. Returns human-readable change lines, the reverse snapshot path, and
  * the after-image of every touched key (FIX-5: used by rollback to detect
  * concurrent edits before overwriting).
+ * @param state - The harness state file the proposals are applied to (mutated in place).
+ * @param proposals - The validated proposals to apply.
+ * @param snapshotDir - Directory where the reverse snapshot file is written, if any.
+ * @returns Change lines, the written snapshot path (or null), and the after-image
+ *   of every touched key.
  */
 export async function applyProposals(
   state: HarnessStateFile,
@@ -423,6 +442,14 @@ export async function applyProposals(
  *
  * `provider` is the subagent provider name (FIX-1) — the same registry used by
  * `rlm.run`; the refine agent's display name rides on `request.label`.
+ * @param ctx - The Cordis context used to reach sessions and subagents.
+ * @param sessionId - The session whose transcript and harness are refined.
+ * @param baseDir - Harness base directory for state reads and writes.
+ * @param parent - The agent that owns this refine run (used as the subagent parent).
+ * @param provider - The subagent provider name to run the refine agent under.
+ * @param signal - Abort signal that cancels the refine subagent and run.
+ * @param maxRefinementEvents - Cap on retained `RefinementEvent`s and snapshots.
+ * @returns A human-readable summary of applied changes and any rejections.
  */
 export async function runRefine(
   ctx: Context,
@@ -520,6 +547,7 @@ export async function runRefine(
     : summary
 }
 
+/** Outcome of applying and persisting refine proposals in one transaction. */
 export interface PersistedRefine {
   applied: boolean
   changes: string[]
@@ -536,6 +564,14 @@ export interface PersistedRefine {
  * A2: a CAS-conflict retry re-runs applyProposals (which writes a fresh
  * timestamped snapshot); the superseded file is removed so it is never left
  * orphaned and unreferenced by any event.
+ * @param baseDir - Harness base directory for state reads and writes.
+ * @param sessionId - The session whose harness state is updated.
+ * @param proposals - The validated proposals to apply.
+ * @param snapshotDir - Directory where the reverse snapshot file is written.
+ * @param maxRefinementEvents - Cap on retained `RefinementEvent`s and snapshots.
+ * @param trigger - Label recorded on the resulting refinement event.
+ * @returns Whether anything was applied, the change lines, the event id, and the
+ *   written snapshot path.
  */
 export async function applyProposalsAndPersist(
   baseDir: string,
@@ -624,6 +660,11 @@ function parseSnapshotKey(key: string): { scope: HarnessScope; kind: HarnessKind
  * snapshotted and recorded on the rollback event (so a rollback is reversible),
  * and any key that moved on since the refine applied is called out instead of
  * being silently clobbered.
+ * @param baseDir - Harness base directory for state reads and writes.
+ * @param sessionId - The session whose harness state is rolled back.
+ * @param eventId - The id of the refinement event to reverse.
+ * @param maxRefinementEvents - Cap on retained `RefinementEvent`s and snapshots.
+ * @returns A human-readable summary of the rollback, with any overwrite warnings.
  */
 export async function rollbackRefine(
   baseDir: string,
@@ -739,6 +780,10 @@ function eventAfter(state: HarnessStateFile, eventId: string): Record<string, Ha
  * snapshot files are deleted — they can no longer be rollback targets, and
  * leaving them would be unbounded disk growth. Called before the state write so
  * the file lands already pruned.
+ * @param refinements - The event log, mutated in place to keep only the newest
+ *   `maxEvents` entries.
+ * @param maxEvents - Maximum number of retained refinement events.
+ * @returns Resolves once pruning (and snapshot deletion) completes.
  */
 export async function pruneRefinements(refinements: RefinementEvent[], maxEvents: number): Promise<void> {
   const excess = refinements.length - maxEvents

@@ -32,6 +32,10 @@ function affectsInterpreterStartup(key: string): boolean {
 	return key.startsWith("PYTHON") || INTERPRETER_STARTUP_ENV_EXACT.includes(key);
 }
 
+/**
+ * Error thrown when the forkserver is disabled, unavailable, or a spawn request
+ * fails/times out, signaling callers to fall back to the direct-spawn path.
+ */
 export class ForkServerUnavailable extends Error {
 	constructor(message: string) {
 		super(message);
@@ -39,8 +43,11 @@ export class ForkServerUnavailable extends Error {
 	}
 }
 
-// On by default on Linux (fork-without-exec is unsafe on macOS);
-// PRIME_AGENT_KERNEL_FORKSERVER=0 opts out.
+/**
+ * Returns whether the kernel forkserver is enabled. On by default on Linux
+ * (fork-without-exec is unsafe on macOS); PRIME_AGENT_KERNEL_FORKSERVER=0 opts out.
+ * @returns True if the forkserver may be used for this platform and environment.
+ */
 export function isForkServerEnabled(): boolean {
 	if (process.platform !== "linux") return false;
 	return process.env.PRIME_AGENT_KERNEL_FORKSERVER !== "0";
@@ -331,6 +338,9 @@ function registerForkServerCleanupOnce(): void {
  * interpreter, applying `spawn.cwd`/`spawn.env` in the forked child. Throws
  * ForkServerUnavailable if forking is disabled or fails — callers fall back to
  * direct spawn. Returns the forked child's pid (owned/killed by the caller).
+ * @param python - The interpreter (Python executable) whose warm template the kernel is forked from.
+ * @param spawn - The per-kernel spawn parameters (connection path, cwd, env).
+ * @returns The forked child's process id, owned and killed by the caller.
  */
 export async function forkKernel(python: string, spawn: SpawnParams): Promise<number> {
 	if (!isForkServerEnabled()) throw new ForkServerUnavailable("forkserver disabled");
@@ -357,6 +367,11 @@ export async function forkKernel(python: string, spawn: SpawnParams): Promise<nu
 	}
 }
 
+/**
+ * Disposes every live forkserver and clears the shared server map, killing all
+ * warm templates. Intended for full process shutdown teardown, not per-session cleanup.
+ * @returns void
+ */
 export function disposeAllForkServers(): void {
 	for (const server of servers.values()) server.dispose();
 	servers.clear();

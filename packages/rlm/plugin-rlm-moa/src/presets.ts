@@ -98,6 +98,7 @@ function normalizePreset(raw: unknown): Omit<MoaResolvedPreset, 'name'> | null {
  * flash DeepSeek reference slots plus a flash aggregator, all on the
  * harness's own provider route. Pro stays a manual choice — name it in an
  * explicit panel (Config `presets` or `/moa use`) when a task wants it.
+ * @returns the built-in default preset, ready for fan-out.
  */
 export function defaultPreset(): MoaResolvedPreset {
   return {

@@ -35,6 +35,10 @@ import { rollbackRefine, runRefine, DEFAULT_MAX_REFINEMENT_EVENTS } from './refi
 export const name = 'plugin-continual-harness'
 export const inject = ['systemPrompt', 'commands', 'sessions', 'agents', 'subagents']
 
+/**
+ * Configuration for the continual harness plugin: where harness state lives,
+ * how much of it renders into the prompt, and how `/refine` behaves.
+ */
 export interface Config {
   /** Root directory for harness state. Defaults to `~/.dsh/rlm` — must match plugin-rlm-kernel. */
   dataDir?: string

@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-26-rlm-namespace-hygiene-persona.zh.md)
+
 ## Problem
 
 A persistent IPython kernel keeps `variables` and `imports` alive for the whole

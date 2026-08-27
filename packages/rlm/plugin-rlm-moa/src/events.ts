@@ -51,6 +51,8 @@ declare module '@deepseek-ai/dsh-session/types' {
 /**
  * Append one moa lifecycle event to the session's durable log.
  * @param session - the executing agent's session, or null to skip.
+ * @param name - the moa event type to append.
+ * @param payload - the event data to record.
  */
 export function emitMoaEvent(
   session: Pick<Session, 'append'> | null | undefined,

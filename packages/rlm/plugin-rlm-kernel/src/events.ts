@@ -50,6 +50,7 @@ declare module '@deepseek-ai/dsh-session/types' {
 /**
  * Append one kernel-snapshot lifecycle event to the session's durable log.
  * @param session - the executing agent's session, or null to skip.
+ * @param payload - the snapshot outcome data to record for log-only audit.
  */
 export function emitKernelSnapshotEvent(
   session: Pick<Session, 'append'> | null | undefined,

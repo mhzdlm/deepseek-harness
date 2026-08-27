@@ -21,7 +21,9 @@ import { createPresetView } from './preset-store.ts'
 import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel'
 import { listMoaPresetsText, removeManagedMoaPreset, showMoaPresetText, useMoaPresetDefault } from './moa-cmd.ts'
 
+/** Plugin id registered with the Cordis loader; also used as the trace/store namespace. */
 export const name = 'plugin-rlm-moa'
+/** Service dependencies this plugin requires before `apply` runs. */
 export const inject = ['tools', 'llm', 'commands', 'subagents']
 
 /** One named panel: reference slots plus an aggregator slot. */
@@ -56,6 +58,7 @@ export interface MoaPresetConfig {
   degradedPolicy?: string
 }
 
+/** Top-level plugin configuration: artifact paths, preset definitions, privacy, tracing, and subagent defaults. */
 export interface Config {
   /** Artifact root for traces and the managed preset store; defaults to `~/.dsh/rlm`. */
   dataDir?: string
@@ -76,6 +79,7 @@ export interface Config {
   maxChildChars?: number
 }
 
+/** Schema for the plugin's `Config`; all fields mirror the {@link Config} interface. */
 export const Config: z<Config> = z.object({
   dataDir: z.string(),
   presets: z.dict(z.object({
@@ -105,6 +109,13 @@ export const Config: z<Config> = z.object({
  * Mirrors the compaction summarizer's call shape: a single hand-built user
  * message, finish normalization, and text-block extraction. Exported for
  * tests and custom wirings that bypass {@link createMoaTool}'s injection.
+ * @param llm - LLM runtime used to stream the completion.
+ * @param slot - Resolved reference/aggregator slot describing provider, model, and label.
+ * @param request - User text and system prompt sent to the model.
+ * @param signal - Abort signal cancelling the in-flight stream.
+ * @param maxTokens - Optional per-call token ceiling; undefined applies no limit.
+ * @param sessionId - Optional session id for token-meter/observability attribution.
+ * @returns The assembled text and a `truncated` flag when the slot hit `maxTokens`.
  */
 export async function callViaLlm(
   llm: LlmRuntime,
@@ -144,6 +155,13 @@ export async function callViaLlm(
   return finish.kind === 'max-tokens' ? { text, truncated: true } : { text }
 }
 
+/**
+ * Plugin entry point: registers the `moa` tool and the `/moa` management
+ * command, wiring preset views, privacy filtering, and trace output.
+ * @param ctx - Cordis context providing tool, llm, command, and subagent services.
+ * @param config - Resolved plugin configuration.
+ * @returns void
+ */
 export function apply(ctx: Context, config: Config): void {
   const dataDir = config.dataDir ?? join(homedir(), '.dsh', 'rlm')
   const storePath = join(dataDir, 'moa-presets.json')
@@ -245,4 +263,5 @@ export function apply(ctx: Context, config: Config): void {
   })
 }
 
+/** Re-exported slot shape resolved from a preset; describes provider, model, and label. */
 export type { MoaResolvedSlot }

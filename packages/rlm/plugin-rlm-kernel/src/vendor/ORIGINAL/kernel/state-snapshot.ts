@@ -18,6 +18,7 @@ const KERNEL_STATE_BASENAME = "kernel-state";
 /** Marker the Python helpers print so the host can recover the JSON result line. */
 const RESULT_MARKER = "__PRIME_AGENT_KERNEL_STATE__";
 
+/** Result of a kernel state snapshot: which names were saved, skipped, or pruned, plus payload size and path. */
 export interface SnapshotResult {
 	/** Top-level names successfully serialized into the payload. */
 	saved: string[];
@@ -30,6 +31,7 @@ export interface SnapshotResult {
 	path: string;
 }
 
+/** Result of reviving a kernel state snapshot into the live namespace: which names were restored or failed, plus the payload path. */
 export interface RestoreResult {
 	/** Names successfully revived into the kernel namespace. */
 	restored: string[];
@@ -38,12 +40,20 @@ export interface RestoreResult {
 	path: string;
 }
 
-/** Absolute path to the dill payload within a session's artifact directory. */
+/**
+ * Absolute path to the dill payload within a session's artifact directory.
+ * @param artifactDir - Session artifact directory.
+ * @returns Absolute path to the `.dill` snapshot payload.
+ */
 export function snapshotPathIn(artifactDir: string): string {
 	return join(artifactDir, `${KERNEL_STATE_BASENAME}.dill`);
 }
 
-/** Absolute path to the JSON manifest within a session's artifact directory. */
+/**
+ * Absolute path to the JSON manifest within a session's artifact directory.
+ * @param artifactDir - Session artifact directory.
+ * @returns Absolute path to the `.json` snapshot manifest.
+ */
 export function manifestPathIn(artifactDir: string): string {
 	return join(artifactDir, `${KERNEL_STATE_BASENAME}.json`);
 }
@@ -56,6 +66,12 @@ function pyStr(value: string): string {
 /**
  * Python that serializes the user namespace to `outPath` (atomic write) and a
  * sibling `.json` manifest, then prints a single marker line with the result.
+ * @param outPath - Destination `.dill` payload path.
+ * @param manifestPath - Destination `.json` manifest path.
+ * @param maxBytes - Aggregate snapshot size ceiling in bytes.
+ * @param maxVariableBytes - Per-variable size ceiling in bytes.
+ * @param pruneOversized - When true, drop oversized live variables from the namespace.
+ * @returns A complete Python script string that performs the snapshot.
  */
 export function buildSnapshotCode(
 	outPath: string,
@@ -199,6 +215,8 @@ finally:
  * Python that loads the payload at `inPath` (if present) into the user namespace,
  * reviving each name independently, then prints a single marker line with the result.
  * Tolerant of a missing or corrupt file: reports an empty restore, never raises.
+ * @param inPath - Path to the `.dill` payload to restore.
+ * @returns A complete Python script string that performs the restore.
  */
 export function buildRestoreCode(inPath: string): string {
 	// Builtins via the local _b alias so a shadowed name in the user namespace
@@ -250,7 +268,8 @@ finally:
 `.trim();
 }
 
-/** Marker-line list of live user-defined names, filtered like the snapshot. Never raises. */
+/** Marker-line list of live user-defined names, filtered like the snapshot. Never raises.
+ * @returns A complete Python script string that prints the filtered name list. */
 export function buildListNamesCode(): string {
 	return `
 def _prime_agent_list_state_names():
@@ -326,6 +345,12 @@ function parseMarkerLine<T>(stdout: string): T | null {
 	}
 }
 
+/**
+ * Parse a kernel snapshot result from cell stdout, or null when the marker is absent/errored.
+ * @param stdout - Captured stdout of the snapshot cell.
+ * @param path - Path to the snapshot payload, surfaced on the parsed result.
+ * @returns The parsed {@link SnapshotResult}, or null when no valid result was found.
+ */
 export function parseSnapshotResult(stdout: string, path: string): SnapshotResult | null {
 	const raw = parseMarkerLine<RawSnapshot>(stdout);
 	if (!raw || raw.error) return null;
@@ -339,6 +364,12 @@ export function parseSnapshotResult(stdout: string, path: string): SnapshotResul
 	};
 }
 
+/**
+ * Parse a kernel restore result from cell stdout, or null when the marker is absent/errored.
+ * @param stdout - Captured stdout of the restore cell.
+ * @param path - Path to the snapshot payload, surfaced on the parsed result.
+ * @returns The parsed {@link RestoreResult}, or null when no valid result was found.
+ */
 export function parseRestoreResult(stdout: string, path: string): RestoreResult | null {
 	const raw = parseMarkerLine<RawRestore>(stdout);
 	if (!raw || raw.error) return null;
@@ -349,7 +380,9 @@ export function parseRestoreResult(stdout: string, path: string): RestoreResult 
 	};
 }
 
-/** Sorted list of live user-defined names, or null if the marker was absent/invalid. */
+/** Sorted list of live user-defined names, or null if the marker was absent/invalid.
+ * @param stdout - Captured stdout of the list-names cell.
+ * @returns The sorted name list, or null when no valid result was found. */
 export function parseListNamesResult(stdout: string): string[] | null {
 	const raw = parseMarkerLine<RawListNames>(stdout);
 	if (!raw || raw.error) return null;

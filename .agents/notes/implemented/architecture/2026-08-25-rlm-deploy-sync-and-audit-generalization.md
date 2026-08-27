@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-25-rlm-deploy-sync-and-audit-generalization.zh.md)
+
 ## Problem
 
 Installing the rlm family into the desktop deployment was a multi-hour manual walk: build, copy five packages by hand (robocopy with node_modules exclusions), pull runtime dependencies from wherever they happened to exist, then discover — only through the deployed preset mount failing — that three vendored files carried extensionless relative imports (`../../util/platform`) which tsx resolves but plain Node over node_modules does not.

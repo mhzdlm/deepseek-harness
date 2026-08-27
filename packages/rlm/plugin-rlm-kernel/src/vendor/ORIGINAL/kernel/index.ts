@@ -46,6 +46,7 @@ const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS = 256;
 const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE =
 	"IPython kernel is still running the previously interrupted cell. Wait and try again, or kill the IPython kernel to start fresh.";
 
+/** Error thrown when an execute() call finds the IPython kernel still busy after an interrupt. */
 export class KernelBusyAfterInterruptError extends Error {
 	constructor() {
 		super(KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE);
@@ -111,6 +112,9 @@ function assertGenuineHostRequestContext(context: unknown): asserts context is H
 /**
  * Creates a branded wrapper rather than mutating its implementation. Both its
  * generic shape and runtime arity reject unary callbacks before they can run.
+ * @param implementation - the context-aware handler to wrap.
+ * @param _unaryRejection - phantom rest tuple that rejects unary handler types at compile time.
+ * @returns a dispatcher-created, branded host-request handler capability.
  */
 export function createHostRequestHandler<T extends HostRequestHandlerImplementation>(
 	implementation: T,
@@ -127,7 +131,11 @@ export function createHostRequestHandler<T extends HostRequestHandlerImplementat
 	return Object.defineProperty(handler, hostRequestHandlerBrand, { value: true }) as HostRequestHandlerCapability;
 }
 
-/** Reject copied-symbol and raw-function forgeries before they observe authenticated payloads. */
+/**
+ * Reject copied-symbol and raw-function forgeries before they observe authenticated payloads.
+ * @param value - the candidate to validate as a dispatcher-created capability.
+ * @returns void; throws when the value is not a genuine host-request handler.
+ */
 export function assertHostRequestHandler(value: unknown): asserts value is HostRequestHandlerCapability {
 	if (
 		typeof value !== "function" ||
@@ -155,6 +163,7 @@ export interface KernelSnapshotConfig {
 	debounceMs?: number;
 }
 
+/** Construction options for a {@link KernelManager}, controlling its Python runtime, session, and snapshot behavior. */
 export interface KernelManagerOptions {
 	/** Python interpreter that has `ipykernel` available. Defaults to the auto-bootstrapped kernel. */
 	python?: string;
@@ -169,11 +178,13 @@ export interface KernelManagerOptions {
 	username?: string;
 }
 
+/** Options for {@link KernelManager.start}, controlling bootstrap progress reporting and abort. */
 export interface KernelStartOptions {
 	onBootstrapProgress?: KernelBootstrapProgressHandler;
 	signal?: AbortSignal;
 }
 
+/** Per-execution options for {@link KernelManager.execute}, controlling abort, streaming, and output caps. */
 export interface ExecuteOptions {
 	/** Aborting interrupts the kernel via the control channel. */
 	signal?: AbortSignal;
@@ -220,6 +231,7 @@ export interface KernelAttachment {
 	path?: string;
 }
 
+/** An agent message emitted by a cell, captured from an {@link AGENT_MESSAGE_DISPLAY_MIME} display payload. */
 export interface KernelSentAgentMessage {
 	id: string;
 	message: string;
@@ -232,6 +244,7 @@ export interface KernelSentAgentMessage {
 	};
 }
 
+/** Result of a single {@link KernelManager.execute} call, aggregating streams, diffs, attachments, and status. */
 export interface ExecuteResult {
 	stdout: string;
 	stderr: string;
@@ -579,6 +592,10 @@ function installSignalHandlersOnce(): void {
 	});
 }
 
+/**
+ * Manages a Jupyter/IPython kernel subprocess: connection handshake, code execution,
+ * host-request comm handling, snapshot/restore, and lifecycle teardown.
+ */
 export class KernelManager {
 	private readonly options: Pick<
 		KernelManagerOptions,
@@ -630,6 +647,7 @@ export class KernelManager {
 		};
 	}
 
+	/** The session id this kernel is scoped to, or undefined when none was configured. */
 	get ownerSessionId(): string | undefined {
 		return this.options.sessionId;
 	}
@@ -638,6 +656,11 @@ export class KernelManager {
 		this.kernelStderr += `[kernel] ${message.endsWith("\n") ? message : `${message}\n`}`;
 	}
 
+	/**
+	 * Boot the kernel if it is not already running, memoizing a single in-flight startup for concurrent callers.
+	 * @param options - bootstrap progress handler and abort signal for this startup attempt.
+	 * @returns a promise that resolves once the kernel is ready to execute.
+	 */
 	async start(options: KernelStartOptions = {}): Promise<void> {
 		if (options.signal?.aborted) {
 			throw createKernelStartupAbortError();
@@ -872,6 +895,12 @@ export class KernelManager {
 		);
 	}
 
+	/**
+	 * Run a cell of Python code on the kernel, serializing against other executions, and refresh the on-disk snapshot on success.
+	 * @param code - the Python source to execute.
+	 * @param opts - execution options such as abort signal, stream handlers, and output caps.
+	 * @returns the aggregated execution result (stdout, stderr, result, diffs, attachments, status).
+	 */
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
 		const result = await this.enqueueExecute(code, opts);
 		// Refresh the on-disk snapshot after real work so a later resume (or a
@@ -1431,6 +1460,11 @@ export class KernelManager {
 		}
 	}
 
+	/**
+	 * Gracefully stop the kernel, optionally flushing a final namespace snapshot before teardown.
+	 * @param opts - when `snapshot` is true, persist the user namespace before closing the kernel.
+	 * @returns a promise that resolves once the kernel and its resources are released.
+	 */
 	async shutdown(opts: { snapshot?: boolean } = {}): Promise<void> {
 		if (this.state === "shutdown") {
 			liveKernels.delete(this);
@@ -1460,6 +1494,10 @@ export class KernelManager {
 		this.cleanupResources();
 	}
 
+	/**
+	 * Shut the kernel down and start a fresh one, preserving the manager's configuration and serialization queue.
+	 * @returns a promise that resolves once the restarted kernel is ready to execute.
+	 */
 	async restart(): Promise<void> {
 		const prev = this.executionQueue;
 		let resolveNext: () => void = () => {};
@@ -1478,6 +1516,10 @@ export class KernelManager {
 		}
 	}
 
+	/**
+	 * Force-kill the kernel immediately with SIGKILL, bypassing the graceful shutdown handshake.
+	 * @returns a promise that resolves once the kernel process and its resources are released.
+	 */
 	async kill(): Promise<void> {
 		this.state = "shutdown";
 		liveKernels.delete(this);
@@ -1487,12 +1529,15 @@ export class KernelManager {
 	/**
 	 * Serialize the user namespace to disk (best-effort, per-variable). No-op when
 	 * the kernel isn't running or no snapshot target was configured. Never throws.
+	 * @returns the snapshot result, or null when the kernel is not running or the capture failed.
 	 */
 	async snapshotState(): Promise<SnapshotResult | null> {
 		return this.captureSnapshot();
 	}
 
-	/** Persist the namespace, then remove variables above the per-variable cap. */
+	/** Persist the namespace, then remove variables above the per-variable cap.
+	 * @returns the snapshot result, or null when the kernel is not running or the capture failed.
+	 */
 	async pruneOversizedVariables(): Promise<SnapshotResult | null> {
 		return this.captureSnapshot({ executionTimeoutMs: SNAPSHOT_EXECUTION_TIMEOUT_MS, pruneOversized: true });
 	}
@@ -1532,6 +1577,7 @@ export class KernelManager {
 	 * Revive a previously snapshotted namespace into the kernel. Call right after
 	 * start() and before the runtime bootstrap, which then refreshes live handles
 	 * (rlm, skills) over anything restored. Never throws.
+	 * @returns the restore result, or null when no snapshot target was configured or the restore failed.
 	 */
 	async restoreState(): Promise<RestoreResult | null> {
 		const cfg = this.options.snapshot;
@@ -1550,7 +1596,10 @@ export class KernelManager {
 		}
 	}
 
-	/** Live user-defined top-level names, or null if the kernel isn't running. Never throws. */
+	/** Live user-defined top-level names, or null if the kernel isn't running. Never throws.
+	 * @param signal - abort signal that cancels the listing execution.
+	 * @returns the live top-level variable names, or null when the kernel is not running or the listing failed.
+	 */
 	async listNamespaceNames(signal?: AbortSignal): Promise<string[] | null> {
 		if (!this.isRunning) return null;
 		try {
@@ -1632,6 +1681,7 @@ export class KernelManager {
 		this.cleanupResources();
 	}
 
+	/** Whether the kernel has completed startup and is ready to execute code. */
 	get isRunning(): boolean {
 		return this.state === "running";
 	}

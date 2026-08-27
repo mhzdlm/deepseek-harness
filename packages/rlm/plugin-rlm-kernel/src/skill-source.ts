@@ -29,6 +29,11 @@ import {
 import type { PythonSkillRuntimeInfo } from './vendor/kernel/bootstrap.ts'
 import { SLUG_PATTERN } from './skill-create.ts'
 
+/**
+ * Result of {@link collectPythonSkills}: the installable python-backed skills
+ * collected from the global harness state, plus the entry ids that could not be
+ * materialized.
+ */
 export interface CollectedPythonSkills {
   /** Installable python-backed skills, in harness entry order. */
   skills: PythonSkillRuntimeInfo[]
@@ -106,6 +111,7 @@ export interface PythonSkillEntrySpec {
  * (T2.3). Read-modify-write under mtime CAS on both state files, recording a
  * `skill-create` refinement event whose `after` snapshot enables rollback.
  * @param dataDir - the rlm data dir the harness state lives under.
+ * @param spec - the python-backed skill registration request to create or update.
  * @returns the stored entry as written.
  * @throws HarnessConflictError when either state file moved mid-operation.
  */

@@ -71,6 +71,11 @@ const MAX_PATTERN_CHARS = 200
  */
 const GREP_SCAN_BUDGET_CHARS = 400_000
 
+/**
+ * Bundle returned by `createHostHandlers`: the host-request handler map plus a
+ * per-session abort hook used to cancel outstanding `rlm.run` children when
+ * their owning session is disposed.
+ */
 export interface HostHandlersBundle {
   handlers: HostRequestHandlers
   /** Abort every outstanding `rlm.run` child owned by the given session. */
@@ -125,6 +130,17 @@ function subagentDescriptor(
  *
  * `dataDir` is the plugin's artifact root; it is used to report a child's
  * truthful artifacts directory in `rlm.run` results (FIX-9).
+ *
+ * @param ctx - The Cordis context used to reach host services (agents,
+ *   subagents, optional llm/sessionQuery) and register the abort effect.
+ * @param subagentProvider - The provider name passed to `ctx.subagents.start`
+ *   for each spawned child.
+ * @param dataDir - The plugin's artifact root, used to compute each child's
+ *   artifacts directory in `rlm.run` results.
+ * @param limitOverrides - Optional per-session resource governors merged over
+ *   the package defaults (max children and prompt char cap).
+ * @returns A bundle of the host-request handler map plus an `abortSession`
+ *   function that cancels a session's outstanding `rlm.run` children.
  */
 export function createHostHandlers(
   ctx: Context,

@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-25-rlm-entry-exports-over-cross-package-src.zh.md)
+
 ## Problem
 
 Mounting the rlm presets into the desktop deployment (plain Node over `node_modules`, no vite/tsx) failed with `Stripping types is currently unsupported for files under node_modules`. The family compiled cleanly, but two sibling rows imported each other through `@deepseek-ai/dsh-plugin-*/src/*.ts` specifiers — legal only under the vitest toolchain, where tsx strips types and tsconfig paths resolve. Plain Node resolved those specifiers to real `.ts` files under `node_modules` and refused.

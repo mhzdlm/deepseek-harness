@@ -48,12 +48,19 @@ export interface JudgeCriterion {
  * criterion-independent comes first so prefix-caching backends serve the
  * trace-heavy body from cache; the varying criterion stays strictly at the
  * tail (verbatim port of `build_prompt`).
+ * @param input the problem, traces, criterion, and optional ground-truth note to embed.
+ * @returns the assembled judge prompt string.
  */
 export function buildJudgePrompt(input: {
+  /** The task description the agent was asked to solve. */
   problem: string
+  /** The first agent's trajectory to evaluate. */
   traceA: string
+  /** The second agent's trajectory to evaluate. */
   traceB: string
+  /** The single criterion the judge reasons about. */
   criterion: JudgeCriterion
+  /** Optional note about ground truth prepended to the prompt. */
   groundTruthNote?: string
 }): string {
   const { problem, traceA, traceB, criterion } = input
@@ -90,6 +97,9 @@ export type PositionAlternatives = ReadonlyArray<readonly [string, number]>
  * the cumulative text is matched against the tag and the tag without its
  * trailing '>' — and the LAST match wins, because the verdict block sits at
  * the end of the reply while the format may be quoted mid-analysis.
+ * @param tokens the streamed reply tokens in order.
+ * @param positionLogprobs per-position top alternatives from the provider.
+ * @param tag the XML-style tag whose following position carries the score letter.
  * @returns the next position's alternatives, or null when absent.
  */
 export function findTagLogprobs(
@@ -127,6 +137,11 @@ function normalizedScore(value: number): number {
  * expectation reduces to that chosen token's scale value; the distribution
  * math stays for seams that surface top-k variants (the calibration script
  * feeds real top-20 data through here).
+ * @param text the full model reply, used for the literal-tag fallback.
+ * @param tokens the streamed reply tokens in order.
+ * @param positionLogprobs per-position top alternatives from the provider.
+ * @param tag the XML-style tag identifying the score position.
+ * @returns the normalized expected score in [0, 1].
  */
 export function extractScore(
   text: string,

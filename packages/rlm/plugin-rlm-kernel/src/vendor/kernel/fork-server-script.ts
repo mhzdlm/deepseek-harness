@@ -1,17 +1,19 @@
-// The Python "kernel forkserver": a long-lived template process that pays the
-// ~1.2s IPython/ipykernel/rlm import cost once, then forks a ready-to-run kernel
-// per request in ~ms. Children inherit the imported module objects via
-// copy-on-write, bypassing the (slow, virtiofs-backed) per-file import path.
-//
-// Embedded as a string rather than shipped as a package asset so it can never be
-// missing from a release layout (see the built-in-skills packaging gap). Run via
-// `python -c <this> <control-socket-path>`.
-//
-// Protocol (newline-delimited JSON over the unix socket, forkserver is the client):
-//   -> { "id": <n>, "connectionPath": "<abs path>" }   spawn request from Node
-//   <- { "type": "ready" }                             once, after imports finish
-//   <- { "id": <n>, "pid": <pid> }                     fork succeeded
-//   <- { "id": <n>, "error": "<message>" }             fork failed
+/**
+ * The Python "kernel forkserver": a long-lived template process that pays the
+ * ~1.2s IPython/ipykernel/rlm import cost once, then forks a ready-to-run kernel
+ * per request in ~ms. Children inherit the imported module objects via
+ * copy-on-write, bypassing the (slow, virtiofs-backed) per-file import path.
+ *
+ * Embedded as a string rather than shipped as a package asset so it can never be
+ * missing from a release layout (see the built-in-skills packaging gap). Run via
+ * `python -c <this> <control-socket-path>`.
+ *
+ * Protocol (newline-delimited JSON over the unix socket, forkserver is the client):
+ *   -> { "id": <n>, "connectionPath": "<abs path>" }   spawn request from Node
+ *   <- { "type": "ready" }                             once, after imports finish
+ *   <- { "id": <n>, "pid": <pid> }                     fork succeeded
+ *   <- { "id": <n>, "error": "<message>" }             fork failed
+ */
 export const FORK_SERVER_SCRIPT = String.raw`
 import gc
 import json

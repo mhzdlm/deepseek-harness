@@ -52,6 +52,7 @@ export type VerifyCallModel = (request: {
   signal: AbortSignal
 }) => Promise<{ text: string; logprobs: TokenLogprob[] }>
 
+/** Wiring for {@link createVerifyTool}: the scoring transport and verifier behavior knobs. */
 export interface VerifyToolOptions {
   /** Resolves the LLM transport; injected so orchestration is unit-testable. */
   callModel: VerifyCallModel
@@ -130,8 +131,12 @@ function resolveCriteria(raw: unknown): Array<JudgeCriterion> {
   return DEFAULT_CRITERIA.map(criterion => ({ ...criterion }))
 }
 
-/** Build the `verify` tool around the injected transport. */
-export function createVerifyTool(options: VerifyToolOptions) {
+/**
+ * Build the `verify` tool around the injected transport.
+ * @param options - wiring for the scoring model, judges, and privacy controls.
+ * @returns the configured `verify` tool definition.
+ */
+export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof defineTool> {
   const maxCallTokens = options.maxTokens ?? 4_096
   // T2.6 fix: one masking policy for every DURABLE byte of a run (detail-file
   // candidates, per-call prompts). Transport requests are forwarded verbatim.

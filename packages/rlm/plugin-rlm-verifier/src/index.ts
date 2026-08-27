@@ -29,6 +29,10 @@ export interface JudgeProfileConfig {
   provider?: string
 }
 
+/**
+ * Configuration for the RLM verifier plugin: provider/model routing, session
+ * artifact storage, multi-judge panels, and the privacy redaction tier.
+ */
 export interface Config {
   /**
    * Default provider route for scoring calls. Defaults to

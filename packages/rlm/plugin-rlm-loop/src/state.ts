@@ -19,6 +19,10 @@ import {
 
 const SOURCE = 'plugin-rlm-loop'
 
+/**
+ * Input payload for upserting a single local-scope memory entry into the
+ * session's harness state.
+ */
 export interface UpsertInput {
   /** Entry id inside the memory kind, e.g. `loop_ab12cd34/round_002`. */
   id: string

@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-24-rlm-verifier-seam-scoring.md
-2026-08-24-rlm-verifier-seam-scoring.md: 9a927d79691f1d62827673e6f73371f88842c076
-2026-08-24-rlm-verifier-seam-scoring.zh.md: 2e0aec2b3d79bb2d5821d7754a3d463cdb4cc525
+2026-08-24-rlm-verifier-seam-scoring.md: cd5c644254fe773b075b4de4ae52de75f132882f
+2026-08-24-rlm-verifier-seam-scoring.zh.md: bd6411595e4f08bb86749d400f4fe7d679e640c6

@@ -42,6 +42,10 @@ export const DEFAULT_SNAPSHOT_HISTORY = 3
 /** T4.1/T4.2: fallback debounce (ms) for a post-cell flush when built without `snapshotDebounceMs`. */
 export const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 1500
 
+/**
+ * Resolved options for a session's kernel registry, supplied by the plugin
+ * from `ctx.sessions` at provision time.
+ */
 export interface SessionKernelOptions {
   /** Python interpreter with ipykernel + prime-agent-runtime. Omitted → auto-bootstrapped venv. */
   python?: string
@@ -103,6 +107,10 @@ export interface SessionKernelOptions {
  * Kept as a separate exported class so it is unit-testable without a kernel.
  */
 export class IdleTracker {
+  /**
+   * @param timeoutMs - Idle threshold in milliseconds; ids unused longer than this are expired.
+   * @param now - Injectable clock returning the current time in ms; defaults to `Date.now`.
+   */
   constructor(
     private readonly timeoutMs: number,
     private readonly now: () => number = () => Date.now(),
@@ -110,18 +118,26 @@ export class IdleTracker {
 
   private readonly lastUsed = new Map<string, number>()
 
+  /** Record that a kernel id was just used, resetting its idle countdown.
+   * @param id - Kernel id to mark as just used. */
   touch(id: string): void {
     this.lastUsed.set(id, this.now())
   }
 
+  /** Drop a kernel id from idle tracking (e.g. on disposal).
+   * @param id - Kernel id to remove from idle tracking. */
   remove(id: string): void {
     this.lastUsed.delete(id)
   }
 
   /**
-	 * Ids among `candidates` whose last use is older than the timeout and that
-	 * are not in `busy`.
-	 */
+   * Ids among `candidates` whose last use is older than the timeout and that
+   * are not in `busy`.
+   * @param candidates - Ids to consider for expiry.
+   * @param busy - Ids currently executing a cell, excluded from expiry.
+   * @param now - Current time in ms; defaults to the injected clock.
+   * @returns The candidate ids that have been idle longer than the timeout.
+   */
   expired(candidates: readonly string[], busy: ReadonlySet<string>, now: number = this.now()): string[] {
     if (this.timeoutMs <= 0) return []
     return candidates.filter((id) => {
@@ -134,6 +150,9 @@ export class IdleTracker {
   /**
    * T3.2 Phase A: candidates (excluding `exclude`) ordered least-recently-used
    * first, for LRU eviction. Unknown ids (never touched) are dropped.
+   * @param candidates - Ids to consider for LRU ordering.
+   * @param exclude - Ids to drop (e.g. busy) before ordering.
+   * @returns The candidate ids ordered least-recently-used first; unknown ids dropped.
    */
   oldest(candidates: readonly string[], exclude: ReadonlySet<string>): string[] {
     return candidates
@@ -175,11 +194,20 @@ export class SessionKernelRegistry {
   private readonly idle: IdleTracker
   private readonly artifactRoot: string
 
+  /**
+   * @param options - Resolved kernel registry options for this session.
+   */
   constructor(private readonly options: SessionKernelOptions) {
     this.artifactRoot = path.join(options.dataDir, 'session-artifacts')
     this.idle = new IdleTracker(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, options.now ?? (() => Date.now()))
   }
 
+  /**
+   * Return the live kernel for a session, provisioning one on first use and
+   * sharing it across concurrent callers.
+   * @param sessionId - Session whose kernel is requested.
+   * @returns The session's `KernelManager`, provisioned if not already live.
+   */
   async forSession(sessionId: string): Promise<KernelManager> {
     this.idle.touch(sessionId)
     const existing = this.kernels.get(sessionId)
@@ -206,15 +234,22 @@ export class SessionKernelRegistry {
     return provisioning
   }
 
-  /** Claim and clear the restore notice for a session (if any), to be
-	 *  surfaced as a prefix on the next `ipython` tool result. */
+  /**
+	 *  surfaced as a prefix on the next `ipython` tool result.
+   * @param sessionId - Session whose restore notice is claimed.
+   * @returns The restore notice, or `undefined` if none was pending.
+   */
   consumeRestoreNotice(sessionId: string): RestoreResult | undefined {
     const notice = this.pendingRestore.get(sessionId)
     this.pendingRestore.delete(sessionId)
     return notice
   }
 
-  /** item-7: whether a live (provisioned) kernel exists for the session. */
+  /**
+   * item-7: whether a live (provisioned) kernel exists for the session.
+   * @param sessionId - Session to check.
+   * @returns Whether a live (provisioned) kernel exists for the session.
+   */
   hasSession(sessionId: string): boolean {
     return this.kernels.has(sessionId)
   }
@@ -222,32 +257,38 @@ export class SessionKernelRegistry {
   /**
    * T2.6: this session's artifacts directory (snapshots, harness state, and
    * the tool-results archive written by the ipython tool).
+   * @param sessionId - Session whose artifact directory is requested.
+   * @returns The absolute path to the session's artifact directory.
    */
   sessionArtifactDir(sessionId: string): string {
     return path.join(this.artifactRoot, sessionId)
   }
 
   /**
-	 * item-6: execute a cell for a session, recovering from a kernel that
-	 * refused to be interrupted.
-	 *
-	 * Aborting a cell sends a control-channel `interrupt_request`; on Windows
-	 * this cannot interrupt blocking C calls like `time.sleep()`, so the cell
-	 * keeps running and the NEXT execute hits `KernelBusyAfterInterruptError`.
-	 * Rather than surfacing a hard "kill the kernel" error, recreate the kernel
-	 * from its dill snapshot (variables survive) and run the cell once more.
-	 * A retry with an already-aborted signal settles `aborted` immediately, so
-	 * a cancelled cell is never accidentally re-run.
-	 *
-	 * P1-fix: the retry result carries `retried: true` so the model knows the
-	 * cell may have executed twice (non-idempotent side effects may repeat).
-	 *
-	 * Defensive handling: if the session was disposed concurrently while we
-	 * were re-provisioning, the in-flight promise chain disposes the freshly
-	 * created kernel (see forSession's claim check). In that narrow window
-	 * we surface a clear error rather than a confusing "kernel has been shut
-	 * down" from deep inside Jupyter protocol.
-	 */
+   * item-6: execute a cell for a session, recovering from a kernel that
+   * refused to be interrupted.
+   *
+   * Aborting a cell sends a control-channel `interrupt_request`; on Windows
+   * this cannot interrupt blocking C calls like `time.sleep()`, so the cell
+   * keeps running and the NEXT execute hits `KernelBusyAfterInterruptError`.
+   * Rather than surfacing a hard "kill the kernel" error, recreate the kernel
+   * from its dill snapshot (variables survive) and run the cell once more.
+   * A retry with an already-aborted signal settles `aborted` immediately, so
+   * a cancelled cell is never accidentally re-run.
+   *
+   * P1-fix: the retry result carries `retried: true` so the model knows the
+   * cell may have executed twice (non-idempotent side effects may repeat).
+   *
+   * Defensive handling: if the session was disposed concurrently while we
+   * were re-provisioning, the in-flight promise chain disposes the freshly
+   * created kernel (see forSession's claim check). In that narrow window
+   * we surface a clear error rather than a confusing "kernel has been shut
+   * down" from deep inside Jupyter protocol.
+   * @param sessionId - Session whose kernel runs the cell.
+   * @param code - Python source to execute.
+   * @param opts - Execution options: an abort signal and an output character cap.
+   * @returns The cell's execution result, tagged `retried: true` when the kernel was recreated after an interrupt.
+   */
   async execute(
     sessionId: string,
     code: string,
@@ -295,13 +336,15 @@ export class SessionKernelRegistry {
     }
   }
 
-  /** Mark a session's kernel as actively executing (item-4). */
+  /** Mark a session's kernel as actively executing (item-4).
+   * @param sessionId - Session whose kernel is marked busy. */
   markBusy(sessionId: string): void {
     this.busy.add(sessionId)
     this.idle.touch(sessionId)
   }
 
-  /** Mark a session's kernel execution finished (item-4). */
+  /** Mark a session's kernel execution finished (item-4).
+   * @param sessionId - Session whose kernel is marked idle. */
   markIdle(sessionId: string): void {
     this.busy.delete(sessionId)
     this.idle.touch(sessionId)
@@ -311,6 +354,8 @@ export class SessionKernelRegistry {
    * T3.2 Phase A: hold one lease on a session's kernel so it survives idle
    * reclamation and LRU eviction until the matching {@link unpin}. Counted
    * per reason; cleared automatically on `session/disposed`.
+   * @param sessionId - Session whose kernel is leased.
+   * @param reason - Lease reason; leases are reference-counted per reason.
    */
   pin(sessionId: string, reason: string): void {
     const reasons = this.leases.get(sessionId) ?? new Map<string, number>()
@@ -318,7 +363,11 @@ export class SessionKernelRegistry {
     this.leases.set(sessionId, reasons)
   }
 
-  /** T3.2 Phase A: release one lease held by {@link pin}. */
+  /**
+   * T3.2 Phase A: release one lease held by {@link pin}.
+   * @param sessionId - Session whose lease is released.
+   * @param reason - Lease reason whose reference count is decremented.
+   */
   unpin(sessionId: string, reason: string): void {
     const reasons = this.leases.get(sessionId)
     if (!reasons) return
@@ -341,6 +390,8 @@ export class SessionKernelRegistry {
    * leased kernels become eligible, each gated on a successful forced snapshot
    * (failure skips the cycle and retries after the grace window). Returns the
    * disposed session ids.
+   * @param now - Current time in ms; defaults to the injected clock or `Date.now`.
+   * @returns The session ids whose kernels were disposed by the sweep.
    */
   async disposeIdle(now?: number): Promise<string[]> {
     const nowMs = now ?? this.options.now?.() ?? Date.now()
@@ -403,6 +454,10 @@ export class SessionKernelRegistry {
     }
   }
 
+  /**
+   * Tear down a session's kernel, clearing idle/busy/lease state and any in-flight provision.
+   * @param sessionId - Session whose kernel is torn down.
+   */
   disposeSession(sessionId: string): void {
     this.cancelScheduledFlush(sessionId)
     this.idle.remove(sessionId)
@@ -461,6 +516,9 @@ export class SessionKernelRegistry {
    * intact (a failed flush has nothing new to retain). A missing kernel (already
    * disposed) or a snapshot error never throws; the event still records the
    * failure so the durable log explains a lost namespace.
+   * @param sessionId - Session whose kernel is snapshotted.
+   * @param reason - Why the snapshot is taken: a post-cell flush or a reclaim eviction.
+   * @returns Whether the snapshot serialized a payload (`false` keeps prior history intact).
    */
   async flushSnapshot(sessionId: string, reason: 'cell' | 'reclaim'): Promise<boolean> {
     const manager = this.kernels.get(sessionId)
@@ -526,6 +584,7 @@ export class SessionKernelRegistry {
     }
   }
 
+  /** Dispose every live and in-flight kernel, leaving the registry empty. */
   disposeAll(): void {
     for (const sessionId of [...this.kernels.keys()]) {
       this.disposeSession(sessionId)
@@ -610,6 +669,8 @@ export class SessionKernelRegistry {
  * ~5s cold start happens at session creation instead of the first ipython
  * call. Failures are swallowed — the next `forSession` (from an actual ipython
  * call) retries provisioning from scratch.
+ * @param kernels - The session kernel registry that owns the provision.
+ * @param sessionId - Session whose kernel is warmed up in the background.
  */
 export function warmUpSession(kernels: SessionKernelRegistry, sessionId: string): void {
   void kernels.forSession(sessionId).catch(() => undefined)

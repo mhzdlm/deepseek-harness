@@ -20,6 +20,7 @@ export type AuditIntegrity = 'clean' | 'suspect' | 'violation'
 /** Verdict on whether the executed subtask still matches the stable task contract. */
 export type AuditContract = 'aligned' | 'unknown' | 'needs_revision' | 'invalid'
 
+/** Parsed verdict triple for a Loop Engineering auditor report header. */
 export interface AuditHeader {
   status: AuditStatus
   integrity: AuditIntegrity
@@ -56,6 +57,9 @@ export function parseAuditHeader(report: string): AuditHeader | null {
 /**
  * Whether an audit header clears the trust gate: only a complete, clean,
  * contract-aligned round may become verified progress.
+ * @param header - the parsed audit header to evaluate.
+ * @returns `true` when status is `complete`, integrity is `clean`, and
+ * contract is `aligned`; otherwise `false`.
  */
 export function isCleanComplete(header: AuditHeader): boolean {
   return header.status === 'complete'

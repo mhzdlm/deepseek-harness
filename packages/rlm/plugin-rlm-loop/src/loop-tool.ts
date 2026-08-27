@@ -19,6 +19,10 @@ import { emitLoopEvent } from './events.ts'
 import { isCleanComplete, parseAuditHeader } from './parse.ts'
 import { upsertMemoryEntry } from './state.ts'
 
+/**
+ * Construction options for the `loop` tool: where harness state lives, the soft
+ * round ceiling, and an optional shared live-run map the plugin can evict.
+ */
 export interface LoopToolOptions {
   /** Harness base dir; must match plugin-continual-harness's `dataDir`. */
   dataDir: string
@@ -41,6 +45,7 @@ interface RecordedRound {
   contractAudit: string
 }
 
+/** A single Manage→Execute→Audit run tracked by the `loop` tool for one session. */
 export interface LoopRun {
   runId: string
   task: string
@@ -50,7 +55,10 @@ export interface LoopRun {
 
 const ROUTES = new Set(['gui', 'cli', 'done', 'blocked', 'ask'])
 
-/** Tool-facing result of one `loop` call. */
+/**
+ * Tool-facing result of one `loop` call: a human-readable summary plus the
+ * structured verdict fields the renderer echoes and callers may inspect.
+ */
 export interface LoopToolResult {
   text: string
   runId?: string
@@ -67,8 +75,14 @@ function sessionIdOf(exec: { agent?: { session?: Session } }): { sid: string; se
   return session ? { sid: String(session.id), session } : { sid: '', session: null }
 }
 
-/** Build the `loop` tool around harness state at {@link LoopToolOptions.dataDir}. */
-export function createLoopTool(options: LoopToolOptions) {
+/**
+ * Build the `loop` tool around harness state at {@link LoopToolOptions.dataDir}.
+ *
+ * @param options - Construction options: the harness data dir, a soft round
+ *   ceiling, and an optional shared live-run map.
+ * @returns A `defineTool` tool object implementing the `loop` action surface.
+ */
+export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defineTool> {
   const runs = options.runs ?? new Map<string, LoopRun>()
 
   async function landEntry(sid: string, id: string, title: string, content: string): Promise<boolean> {

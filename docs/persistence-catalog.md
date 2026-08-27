@@ -731,7 +731,7 @@ Source: [`packages/session/session-title-llm/src/index.ts:43`](../packages/sessi
 'session/verify-request': VerifyRequestEventData
 ```
 
-Source: [`packages/rlm/plugin-rlm-verifier/src/events.ts:68`](../packages/rlm/plugin-rlm-verifier/src/events.ts)
+Source: [`packages/rlm/plugin-rlm-verifier/src/events.ts:71`](../packages/rlm/plugin-rlm-verifier/src/events.ts)
 
 <a id="sessionverify-result--log-only"></a>
 
@@ -742,7 +742,7 @@ Source: [`packages/rlm/plugin-rlm-verifier/src/events.ts:68`](../packages/rlm/pl
 'session/verify-result': VerifyResultEventData
 ```
 
-Source: [`packages/rlm/plugin-rlm-verifier/src/events.ts:70`](../packages/rlm/plugin-rlm-verifier/src/events.ts)
+Source: [`packages/rlm/plugin-rlm-verifier/src/events.ts:73`](../packages/rlm/plugin-rlm-verifier/src/events.ts)
 
 ### `step/*`
 

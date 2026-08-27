@@ -13,7 +13,7 @@ Status: implemented
 `GenerateOptions` 增加选择开关 `logprobs: { topLogprobs }`。开启后，支持的 adapter 在线上请求选中 token 概率，并发射新的流块：
 
 ```ts
-{ type: 'logprobs', index, tokens: readonly TokenLogprob[] }
+type LogprobsChunk = { type: 'logprobs'; index: number; tokens: ReadonlyArray<{ token: string; logprob: number }> }
 ```
 
 （`TokenLogprob = { token, logprob }`；top 变体列表 v1 不出缝。）`BlockAssembler` 按流序在 `logprobs` 访问器后累积条目。持久 `ContentBlock` 刻意不携带评分元数据——回放历史无需为单一消费方承载概率载荷。

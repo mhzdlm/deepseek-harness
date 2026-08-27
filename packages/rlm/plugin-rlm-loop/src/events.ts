@@ -53,6 +53,8 @@ declare module '@deepseek-ai/dsh-session/types' {
 /**
  * Append one loop lifecycle event to the session's durable log.
  * @param session - the executing agent's session, or null to skip.
+ * @param name - the loop event type to append.
+ * @param payload - the event data paired with the chosen event type.
  */
 export function emitLoopEvent(
   session: Pick<Session, 'append'> | null | undefined,

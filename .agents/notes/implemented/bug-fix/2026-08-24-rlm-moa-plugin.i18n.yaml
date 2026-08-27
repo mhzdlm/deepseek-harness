@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-24-rlm-moa-plugin.md
-2026-08-24-rlm-moa-plugin.md: 0e31bfd290f77e44916832ab5e2053b817259162
-2026-08-24-rlm-moa-plugin.zh.md: 776dda54081f3e714b6c4ae5c49aa86ff10f1014
+2026-08-24-rlm-moa-plugin.md: b265d88e58d7b433f550166bda371052c9595839
+2026-08-24-rlm-moa-plugin.zh.md: 922508dee02298089755a2cb3ab4527739c4f557

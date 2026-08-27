@@ -122,6 +122,8 @@ agent_message = _PrimeAgentMessage()`.trim()
 /**
  * Build the Python bootstrap for a fresh kernel: base RLM runtime injection,
  * then optional callable-skill wrappers keyed by import name.
+ * @param pythonSkills - Runtime info for the Python skills to wrap as callable modules in the kernel.
+ * @returns The full Python source string for the kernel bootstrap, including any callable-skill wrappers.
  */
 export function buildRlmBootstrapCode(pythonSkills: readonly PythonSkillRuntimeInfo[] = []): string {
   const importNames = [...new Set(pythonSkills.map(skill => skill.importName))]
@@ -203,6 +205,7 @@ export const SKILL_IMPORT_ERRORS_GLOBAL = '_PRIME_AGENT_SKILL_IMPORT_ERRORS'
  * T2.2 verification cell: after the bootstrap ran, dump the recorded import
  * errors as one JSON line so the host can fail loud on skills the prompt layer
  * promised but the venv cannot deliver.
+ * @returns The Python cell source that prints the recorded import-error map as a JSON line.
  */
 export function buildSkillImportProbe(): string {
   return `import json as _prime_agent_probe_json\nprint(_prime_agent_probe_json.dumps(${SKILL_IMPORT_ERRORS_GLOBAL}))`
@@ -212,6 +215,8 @@ export function buildSkillImportProbe(): string {
  * Parse a {@link buildSkillImportProbe} cell's stdout into its error map.
  * Returns `null` when no JSON object line is found (probe itself broken) —
  * callers treat that as an opaque verification failure, not as skill errors.
+ * @param stdout - Raw stdout captured from the probe cell to scan for the error JSON line.
+ * @returns The parsed error map keyed by skill import name, or `null` when no error JSON line was found.
  */
 export function parseSkillImportErrors(stdout: string): Record<string, string> | null {
   const lines = stdout.split('\n').map(line => line.trim()).filter(line => line.length > 0)

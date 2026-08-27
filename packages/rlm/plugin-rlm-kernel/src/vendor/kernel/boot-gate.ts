@@ -70,6 +70,15 @@ const FORKSERVER_KERNEL_BOOT_CONCURRENCY = Math.min(
 	Math.max(32, (cpus().length || 4) * 4),
 );
 
+/**
+ * Resolve the maximum number of kernels allowed to boot concurrently.
+ *
+ * Reads the `RLM_MAX_CONCURRENT_BOOTS` environment override, validates it as a
+ * positive integer, and clamps it to the per-mode cap. When unset or malformed,
+ * falls back to the auto-derived default for the current fork-server mode.
+ *
+ * @returns The resolved concurrency limit (always >= 1).
+ */
 export function resolveKernelBootConcurrency(): number {
 	const raw = rlmEnv(...ENV_MAX_CONCURRENT_BOOTS);
 	const fallback = isForkServerEnabled() ? FORKSERVER_KERNEL_BOOT_CONCURRENCY : DEFAULT_KERNEL_BOOT_CONCURRENCY;
@@ -93,6 +102,17 @@ export function resolveKernelBootConcurrency(): number {
 // happened to be set at import time.
 let kernelBootSemaphore: Semaphore | undefined;
 
+/**
+ * Acquire a kernel-boot concurrency permit, then run `boot` once admitted.
+ *
+ * Lazily constructs the shared semaphore on first call so the fork-server flag
+ * is honored whenever it is set before the first kernel starts. A queued call
+ * whose `signal` aborts before admission rejects without running `boot`.
+ *
+ * @param boot - Zero-argument async factory that starts a kernel boot.
+ * @param signal - Optional abort signal that rejects a queued waiter before it runs.
+ * @returns A promise resolving with the value returned by `boot`.
+ */
 export function withKernelBootPermit<T>(boot: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 	if (!kernelBootSemaphore) {
 		kernelBootSemaphore = new Semaphore(resolveKernelBootConcurrency());

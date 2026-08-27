@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-26-rlm-ui-toolrow-degradation.zh.md)
+
 - **Date**: 2026-08-26
 - **Status**: 已实现（新 client 插件包 `@deepseek-ai/dsh-client-ui-rlm`）
 - **Area**: `packages/client/ui-rlm/`（新包）、`packages/rlm/plugin-rlm-moa/src/moa-tool.ts`（host 侧配合）

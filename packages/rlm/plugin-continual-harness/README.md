@@ -1,0 +1,36 @@
+# @deepseek-ai/dsh-plugin-continual-harness
+
+English | [中文](README.zh.md)
+
+Continual-learning substrate for the rlm family. It owns the CAS-backed harness-state store, the `/refine` self-refinement flow, and the landing pipeline that turns verified loop progress into durable `memory` entries.
+
+## Config
+
+| Config | Type | Default | Description |
+|---|---|---|---|
+| `dataDir` | string | `~/.dsh/rlm` | Harness base dir for the CAS state store and landed entries; must match the other rlm plugins' `dataDir`. |
+
+## Tool: `/refine`
+
+`/refine` reviews the recent transcript, has a subagent propose small evidence-backed harness updates, reverse-snapshots the entries that will change, applies them, and records a `RefinementEvent`; rollback restores a snapshot by event id.
+
+## Model Experience
+
+### Refinement flow
+
+#### What the model sees
+
+The proposal subagent receives the current harness overview with authoritative entry ids, so update/delete proposals can name real ids; the tool adds no model-facing guidance beyond that overview.
+
+#### Token effect
+
+One `/refine` call adds the review prompt plus the proposal prompt to the turn and records a single `RefinementEvent`; cost is one review plus one proposal per invocation.
+
+#### KV Cache effect
+
+Landed entries re-enter context through the harness overview injection, so later turns read trusted state from the prompt instead of re-deriving it from history; the plugin never edits earlier request tokens.
+
+## Known Limitations and Deferred Work
+
+- `/refine` proposals are validated after extraction; a parse failure drops the proposal rather than applying a partial update.
+- Real-runtime mounting awaits the same dependency-closure fix as the other rlm plugins (`apps/cli` does not depend on rlm packages); until then the tool reaches sessions via explicit `ctx.plugin()` mounting or vitest-toolchain compositions.

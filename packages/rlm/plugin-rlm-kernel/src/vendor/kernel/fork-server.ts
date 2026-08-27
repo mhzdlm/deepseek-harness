@@ -38,6 +38,10 @@ function affectsInterpreterStartup(key: string): boolean {
 	return key.startsWith("PYTHON") || INTERPRETER_STARTUP_ENV_EXACT.includes(key);
 }
 
+/**
+ * Error thrown when the forkserver cannot satisfy a kernel request, so callers
+ * can fall back to direct spawn without depending on fork succeeding.
+ */
 export class ForkServerUnavailable extends Error {
 	constructor(message: string) {
 		super(message);
@@ -47,6 +51,13 @@ export class ForkServerUnavailable extends Error {
 
 // On by default on Linux (fork-without-exec is unsafe on macOS);
 // DSH_RLM_KERNEL_FORKSERVER=0 (legacy PRIME_AGENT_KERNEL_FORKSERVER) opts out.
+/**
+ * Reports whether the kernel forkserver path is active. Fork-without-exec is
+ * only safe on Linux, so this returns false on every other platform, and the
+ * DSH_RLM_KERNEL_FORKSERVER=0 opt-out disables it there too.
+ *
+ * @returns `true` when forking kernels is permitted, otherwise `false`.
+ */
 export function isForkServerEnabled(): boolean {
 	if (process.platform !== "linux") return false;
 	return rlmEnv(...ENV_FORKSERVER) !== "0";
@@ -55,10 +66,19 @@ export function isForkServerEnabled(): boolean {
 // A forkserver template is defined solely by the interpreter — the imported
 // module graph doesn't depend on cwd/env. Those are per-kernel and applied in the
 // forked child, so every kernel for a given python shares ONE template.
+/**
+ * Parameters that identify a single forkserver template. A template is defined
+ * solely by its interpreter, since cwd/env are applied per-kernel in the child.
+ */
 interface ForkServerParams {
 	python: string;
 }
 
+/**
+ * Per-kernel request describing where the forked kernel connects and the cwd/env
+ * the forked child applies to itself (undefined env values are dropped, mirroring
+ * how spawn() treats them on the direct path).
+ */
 interface SpawnParams {
 	connectionPath: string;
 	cwd?: string;
@@ -67,6 +87,10 @@ interface SpawnParams {
 	env?: Record<string, string | undefined>;
 }
 
+/**
+ * Tracks an in-flight fork request: its completion callbacks and the timer that
+ * rejects the caller if the forkserver does not reply within the spawn timeout.
+ */
 type PendingSpawn = {
 	resolve: (pid: number) => void;
 	reject: (err: Error) => void;
@@ -348,6 +372,10 @@ function registerForkServerCleanupOnce(): void {
  * interpreter, applying `spawn.cwd`/`spawn.env` in the forked child. Throws
  * ForkServerUnavailable if forking is disabled or fails — callers fall back to
  * direct spawn. Returns the forked child's pid (owned/killed by the caller).
+ *
+ * @param python - path to the Python interpreter whose warm forkserver template forks the kernel.
+ * @param spawn - per-kernel request describing the connection file, cwd, and env the child applies.
+ * @returns the forked child's pid, owned and killed by the caller.
  */
 export async function forkKernel(python: string, spawn: SpawnParams): Promise<number> {
 	if (!isForkServerEnabled()) throw new ForkServerUnavailable("forkserver disabled");
@@ -374,6 +402,13 @@ export async function forkKernel(python: string, spawn: SpawnParams): Promise<nu
 	}
 }
 
+/**
+ * Disposes every cached forkserver and clears the cache. Intended for process
+ * shutdown only — forkservers are shared across sessions, so per-session teardown
+ * must not call this.
+ *
+ * @returns void
+ */
 export function disposeAllForkServers(): void {
 	for (const server of servers.values()) server.dispose();
 	servers.clear();

@@ -24,6 +24,8 @@ export interface MoaPresetStoreFile {
  * Read the managed store. A missing file yields an empty store; a corrupted
  * file is set aside as `<name>.corrupt-<ts>` and treated as empty, mirroring
  * the harness state file's corruption policy.
+ * @param storePath - path to the managed store JSON file.
+ * @returns the parsed store, or an empty store when the file is missing or corrupted.
  */
 export function loadPresetStoreSync(storePath: string): MoaPresetStoreFile {
   if (!existsSync(storePath)) return {}
@@ -41,7 +43,10 @@ export function loadPresetStoreSync(storePath: string): MoaPresetStoreFile {
   }
 }
 
-/** Atomically persist the managed store (tmp write + rename). */
+/** Atomically persist the managed store (tmp write + rename).
+ * @param storePath - path to the managed store JSON file.
+ * @param store - the store object to persist.
+ */
 export function savePresetStoreSync(storePath: string, store: MoaPresetStoreFile): void {
   mkdirSync(dirname(storePath), { recursive: true })
   const tmp = `${storePath}.tmp-${process.pid}`
@@ -66,6 +71,7 @@ export interface PresetView {
  * @param configPresets - raw `presets` record from plugin Config.
  * @param configDefault - raw `defaultPreset` from plugin Config.
  * @param storePath - managed store file path.
+ * @returns a layered `PresetView` that re-reads the managed store on every accessor call.
  */
 export function createPresetView(
   configPresets: Record<string, unknown> | undefined,

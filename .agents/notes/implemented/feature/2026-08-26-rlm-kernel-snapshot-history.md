@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-26-rlm-kernel-snapshot-history.zh.md)
+
 ## Problem
 
 The dill snapshot is the only namespace-continuity mechanism for a persistent

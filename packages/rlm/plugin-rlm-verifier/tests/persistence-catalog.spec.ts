@@ -7,7 +7,7 @@
  * catalog (`pnpm run gen-persistence-catalog`).
  *
  * The catalog module is imported by relative path because the rlm packages
- * sit outside every consumer's dependency closure (see docs/INSTALL.md), so a
+ * sit outside every consumer's dependency closure (see docs/cookbook/rlm-plugin-install.md), so a
  * package-name import does not resolve under vitest.
  */
 import { describe, expect, it } from 'vitest'

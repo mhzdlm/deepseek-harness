@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-26-rlm-verify-degradation-observable.zh.md)
+
 - **Date**: 2026-08-26
 - **Status**: 已实现（方案 A）
 - **Area**: `packages/rlm/plugin-rlm-verifier/src/verify-tool.ts`、`src/events.ts`

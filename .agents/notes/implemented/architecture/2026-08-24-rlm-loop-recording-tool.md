@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-24-rlm-loop-recording-tool.zh.md)
+
 ## Problem
 
 LongHorizon-Harness analysis (see the operator's `docs/LOOP.md`) suggested porting its Manage→Execute→Audit loop into dsh. The tempting shape is a supervisor plugin: `loop.start(task)` drives rounds autonomously, spawning manager/executor/auditor children host-side. We built the opposite: `plugin-rlm-loop` is a recording tool, and the joining session stays the Manager.

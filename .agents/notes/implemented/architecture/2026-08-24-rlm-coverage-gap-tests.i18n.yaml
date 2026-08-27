@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-24-rlm-coverage-gap-tests.md
+2026-08-24-rlm-coverage-gap-tests.md: f599cc1d600bba300bedd2e184cc67eba5978a6c
+2026-08-24-rlm-coverage-gap-tests.zh.md: b4079c9ea9c0945b36251063b7090945d82d65fa

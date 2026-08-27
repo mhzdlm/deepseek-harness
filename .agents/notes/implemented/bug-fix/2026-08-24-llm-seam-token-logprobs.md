@@ -13,7 +13,7 @@ Scoring engines that need token-level distributions (the LLM-as-a-Verifier fine-
 `GenerateOptions` gains an opt-in switch, `logprobs: { topLogprobs }`. When set, supporting adapters request chosen-token probabilities on the wire and emit a new stream chunk:
 
 ```ts
-{ type: 'logprobs', index, tokens: readonly TokenLogprob[] }
+type LogprobsChunk = { type: 'logprobs'; index: number; tokens: ReadonlyArray<{ token: string; logprob: number }> }
 ```
 
 (`TokenLogprob = { token, logprob }`; top-variant lists stay provider-side in v1.) `BlockAssembler` accumulates the entries behind a `logprobs` accessor in stream order. Durable `ContentBlock`s intentionally stay free of scoring metadata — replay history does not need to carry probability payloads.

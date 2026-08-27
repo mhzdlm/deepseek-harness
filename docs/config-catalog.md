@@ -1541,6 +1541,10 @@ Source: [`packages/plan/plan-mode/src/index.ts:70`](../packages/plan/plan-mode/s
 Requires: `systemPrompt` · `commands` · `sessions` · `agents` · `subagents`
 
 ```ts config-catalog
+/**
+ * Configuration for the continual harness plugin: where harness state lives,
+ * how much of it renders into the prompt, and how `/refine` behaves.
+ */
 export interface Config {
   /** Root directory for harness state. Defaults to `~/.dsh/rlm` — must match plugin-rlm-kernel. */
   dataDir?: string
@@ -1565,7 +1569,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/rlm/plugin-continual-harness/src/index.ts:38`](../packages/rlm/plugin-continual-harness/src/index.ts)
+Source: [`packages/rlm/plugin-continual-harness/src/index.ts:42`](../packages/rlm/plugin-continual-harness/src/index.ts)
 
 <a id="deepseek-aidsh-plugin-rlm-kernel"></a>
 
@@ -1574,6 +1578,11 @@ Source: [`packages/rlm/plugin-continual-harness/src/index.ts:38`](../packages/rl
 Requires: `tools` · `subagents` · `sessions` · `agents`
 
 ```ts config-catalog
+/**
+ * Configuration for the persistent IPython-kernel plugin: the Python
+ * interpreter and venv, kernel lifecycle limits, idle reclamation, snapshot
+ * rotation, and the `rlm.run` fan-out bounds.
+ */
 export interface Config {
   /** Python interpreter with ipykernel + prime-agent-runtime. Omitted → auto-bootstrapped venv. */
   python?: string
@@ -1625,7 +1634,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/rlm/plugin-rlm-kernel/src/index.ts:30`](../packages/rlm/plugin-rlm-kernel/src/index.ts)
+Source: [`packages/rlm/plugin-rlm-kernel/src/index.ts:42`](../packages/rlm/plugin-rlm-kernel/src/index.ts)
 
 <a id="deepseek-aidsh-plugin-rlm-loop"></a>
 
@@ -1634,6 +1643,7 @@ Source: [`packages/rlm/plugin-rlm-kernel/src/index.ts:30`](../packages/rlm/plugi
 Requires: `tools`
 
 ```ts config-catalog
+/** Plugin configuration for the loop tool: where to land verified progress and the per-run round ceiling. */
 export interface Config {
   /**
    * Harness base dir for landing verified progress. Must match
@@ -1646,7 +1656,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/rlm/plugin-rlm-loop/src/index.ts:18`](../packages/rlm/plugin-rlm-loop/src/index.ts)
+Source: [`packages/rlm/plugin-rlm-loop/src/index.ts:21`](../packages/rlm/plugin-rlm-loop/src/index.ts)
 
 <a id="deepseek-aidsh-plugin-rlm-moa"></a>
 
@@ -1655,6 +1665,7 @@ Source: [`packages/rlm/plugin-rlm-loop/src/index.ts:18`](../packages/rlm/plugin-
 Requires: `tools` · `llm` · `commands` · `subagents`
 
 ```ts config-catalog
+/** Top-level plugin configuration: artifact paths, preset definitions, privacy, tracing, and subagent defaults. */
 export interface Config {
   /** Artifact root for traces and the managed preset store; defaults to `~/.dsh/rlm`. */
   dataDir?: string
@@ -1708,7 +1719,7 @@ export interface MoaPresetConfig {
 }
 ```
 
-Source: [`packages/rlm/plugin-rlm-moa/src/index.ts:59`](../packages/rlm/plugin-rlm-moa/src/index.ts)
+Source: [`packages/rlm/plugin-rlm-moa/src/index.ts:62`](../packages/rlm/plugin-rlm-moa/src/index.ts)
 
 <a id="deepseek-aidsh-plugin-rlm-verifier"></a>
 
@@ -1717,6 +1728,10 @@ Source: [`packages/rlm/plugin-rlm-moa/src/index.ts:59`](../packages/rlm/plugin-r
 Requires: `tools` · `llm` · `subagents`
 
 ```ts config-catalog
+/**
+ * Configuration for the RLM verifier plugin: provider/model routing, session
+ * artifact storage, multi-judge panels, and the privacy redaction tier.
+ */
 export interface Config {
   /**
    * Default provider route for scoring calls. Defaults to
@@ -1753,7 +1768,7 @@ export interface JudgeProfileConfig {
 }
 ```
 
-Source: [`packages/rlm/plugin-rlm-verifier/src/index.ts:32`](../packages/rlm/plugin-rlm-verifier/src/index.ts)
+Source: [`packages/rlm/plugin-rlm-verifier/src/index.ts:36`](../packages/rlm/plugin-rlm-verifier/src/index.ts)
 
 <a id="deepseek-aidsh-pwsh-local"></a>
 
@@ -3469,6 +3484,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-client-ui-plan` ([`packages/client/ui-plan/src/index.ts`](../packages/client/ui-plan/src/index.ts))
 - `@deepseek-ai/dsh-client-ui-reference` ([`packages/client/ui-reference/src/index.ts`](../packages/client/ui-reference/src/index.ts))
 - `@deepseek-ai/dsh-client-ui-renderer` ([`packages/client/ui-renderer/src/index.ts`](../packages/client/ui-renderer/src/index.ts))
+- `@deepseek-ai/dsh-client-ui-rlm` ([`packages/client/ui-rlm/src/index.ts`](../packages/client/ui-rlm/src/index.ts))
 - `@deepseek-ai/dsh-client-ui-settings` ([`packages/client/ui-settings/src/index.ts`](../packages/client/ui-settings/src/index.ts))
 - `@deepseek-ai/dsh-client-ui-settings-general` ([`packages/client/ui-settings-general/src/index.ts`](../packages/client/ui-settings-general/src/index.ts))
 - `@deepseek-ai/dsh-client-ui-settings-models` ([`packages/client/ui-settings-models/src/index.ts`](../packages/client/ui-settings-models/src/index.ts))

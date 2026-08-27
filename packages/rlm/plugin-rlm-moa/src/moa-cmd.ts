@@ -11,7 +11,12 @@
 
 import { loadPresetStoreSync, savePresetStoreSync, type PresetView } from './preset-store.ts'
 
-/** `/moa list`: every preset with its default marker and slot summary. */
+/**
+ * `/moa list`: every preset with its default marker and slot summary.
+ *
+ * @param view - the merged layered preset view to enumerate
+ * @returns a newline-joined text listing of all presets, or a notice when none exist
+ */
 export function listMoaPresetsText(view: PresetView): string {
   const defaultName = view.defaultName()
   const lines: string[] = []
@@ -24,7 +29,13 @@ export function listMoaPresetsText(view: PresetView): string {
   return lines.length > 0 ? lines.join('\n') : '(no moa presets)'
 }
 
-/** `/moa show <name>`: full slot detail for one preset. */
+/**
+ * `/moa show <name>`: full slot detail for one preset.
+ *
+ * @param view - the merged layered preset view to resolve the name against
+ * @param name - the preset name to display
+ * @returns the formatted detail text, or the resolution error message on failure
+ */
 export function showMoaPresetText(view: PresetView, name: string): string {
   let preset: MoaResolvedPresetLike
   try {
@@ -52,6 +63,11 @@ interface MoaResolvedPresetLike {
 /**
  * `/moa use <name>`: persist the active default pointer into the managed
  * store. The name must already exist in the merged view (Config or store).
+ *
+ * @param storePath - filesystem path of the managed preset store file
+ * @param view - the merged layered preset view to validate the name against
+ * @param name - the preset name to set as the default
+ * @returns a confirmation or an "unknown preset" message
  */
 export function useMoaPresetDefault(storePath: string, view: PresetView, name: string): string {
   if (!view.available().includes(name)) {
@@ -65,6 +81,10 @@ export function useMoaPresetDefault(storePath: string, view: PresetView, name: s
 /**
  * `/moa remove <name>`: delete one store-managed preset. Config-sourced
  * presets cannot be removed here — the command says so instead of failing.
+ *
+ * @param storePath - filesystem path of the managed preset store file
+ * @param name - the store-managed preset name to delete
+ * @returns a confirmation, or a notice when the name is not store-managed
  */
 export function removeManagedMoaPreset(storePath: string, name: string): string {
   const store = loadPresetStoreSync(storePath)

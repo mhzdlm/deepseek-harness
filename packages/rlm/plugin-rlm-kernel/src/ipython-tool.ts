@@ -33,8 +33,11 @@ function writeToolResultArchive(artifactDir: string, length: number, fullText: s
  * Build the `ipython` tool. The tool is registered by the plugin's apply fiber;
  * the registry is shared across every session the plugin manages.
  * item-13: `maxOutputChars` caps the cell output text returned to the model.
+ * @param kernels - shared session kernel registry used to execute cells and recover busy/idle state.
+ * @param maxOutputChars - cap on cell output text returned to the model; overflow is archived beside the session artifacts.
+ * @returns the registered `ipython` tool definition.
  */
-export function createIpythonTool(kernels: SessionKernelRegistry, maxOutputChars = MAX_OUTPUT_CHARS) {
+export function createIpythonTool(kernels: SessionKernelRegistry, maxOutputChars = MAX_OUTPUT_CHARS): ReturnType<typeof defineTool> {
   return defineTool({
     name: 'ipython',
     description:

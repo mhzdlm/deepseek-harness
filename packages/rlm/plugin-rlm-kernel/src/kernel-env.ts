@@ -109,6 +109,8 @@ export function buildKernelEnv(
  *
  * @param platform - Case-folding regime; see {@link buildKernelEnv}.
  * @param source - Environment to scrub; defaults to `process.env`.
+ * @returns A fresh env object with {@link BLOCKLIST_PREFIXES}-matching
+ *   names removed, safe to hand to `spawn` for a helper child.
  */
 export function buildScrubbedEnv(
   platform: NodeJS.Platform = process.platform,

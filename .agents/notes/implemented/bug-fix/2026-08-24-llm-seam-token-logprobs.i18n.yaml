@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-24-llm-seam-token-logprobs.md
-2026-08-24-llm-seam-token-logprobs.md: d50097570e100bce43b3850060fccb9aabf21083
-2026-08-24-llm-seam-token-logprobs.zh.md: 11c2beece58f12fc174e37a07e760f7173d7597a
+2026-08-24-llm-seam-token-logprobs.md: aa15e398437dd018594caec877437a940d1b8eca
+2026-08-24-llm-seam-token-logprobs.zh.md: 83319af36e9066e5507699b3a8a854d332270e1b

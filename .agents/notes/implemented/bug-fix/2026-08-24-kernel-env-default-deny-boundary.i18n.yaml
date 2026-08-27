@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-24-kernel-env-default-deny-boundary.md
-2026-08-24-kernel-env-default-deny-boundary.md: 9de5d82c4bc57084a799f7e57c48af6493a04b6b
-2026-08-24-kernel-env-default-deny-boundary.zh.md: 0f32de7255cecd0d8eb6805feb8455fb405c4e1f
+2026-08-24-kernel-env-default-deny-boundary.md: 9b75e49ba26d1e6c8b296c9ddb48e6024dd92fb4
+2026-08-24-kernel-env-default-deny-boundary.zh.md: 4b47fb47e83121c60a4ed9fc0082b7e07a9b7327

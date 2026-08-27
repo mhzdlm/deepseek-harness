@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-27-rlm-desktop-install-mechanism.zh.md)
+
 ## Problem
 
 The RLM (recursive language model) plugin family — `plugin-rlm-kernel`, `plugin-rlm-verifier`, `plugin-rlm-moa`, `plugin-rlm-loop`, `plugin-continual-harness` (host) and `ui-rlm` (client) — is developed under `packages/rlm/` and `packages/client/ui-rlm/` of the `deepseek-harness` repo, but reaches a running DeepSeek Harness Desktop through a separate install path. Two recurring failure modes obscured whether it was actually installed:

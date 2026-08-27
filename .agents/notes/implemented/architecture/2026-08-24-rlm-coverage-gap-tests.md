@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-24-rlm-coverage-gap-tests.zh.md)
+
 ## Problem
 
 A coverage-gap audit of `packages/rlm` (179 tests at the time) against the repo's per-file 100% gate found the family inside the gate's include glob with no exclusions, plus several "documented as fixed" behaviors that no test pinned. This batch adds 51 keyless cases across the five packages, runs the real-key e2e suite green on Windows, and — because writing the tests was the audit — fixes two defects the new assertions exposed immediately.

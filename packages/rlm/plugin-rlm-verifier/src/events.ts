@@ -77,6 +77,8 @@ declare module '@deepseek-ai/dsh-session/types' {
 /**
  * Append one verify lifecycle event to the session's durable log.
  * @param session - the executing agent's session, or null to skip.
+ * @param name - the verify event type to append (one of VERIFY_EVENT_TYPES).
+ * @param payload - the pre-dispatch or post-settlement record to append.
  */
 export function emitVerifyEvent(
   session: Pick<Session, 'append'> | null | undefined,

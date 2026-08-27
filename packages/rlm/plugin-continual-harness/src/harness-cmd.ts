@@ -54,7 +54,13 @@ function byUpdatedDesc(a: HarnessEntry, b: HarnessEntry): number {
   return String(b.updated_at ?? b.created_at).localeCompare(String(a.updated_at ?? a.created_at))
 }
 
-/** `/harness list [kind]`: all entries, newest first, full ids, scope markers. */
+/**
+ * `/harness list [kind]`: all entries, newest first, full ids, scope markers.
+ * @param baseDir - the workspace root used to locate harness state files.
+ * @param sessionId - the session whose scoped entries are merged in.
+ * @param kind - optional kind filter (`prompt`/`memory`/`skill`/`subagent`); lists all when omitted.
+ * @returns a human-readable listing of harness entries, or an error string for an unknown kind.
+ */
 export function listHarness(baseDir: string, sessionId: string, kind?: string): string {
   if (kind !== undefined && !KIND_SET.has(kind)) {
     return `Unknown harness kind "${kind}" (${KINDS.join('|')})`
@@ -75,7 +81,13 @@ export function listHarness(baseDir: string, sessionId: string, kind?: string): 
   return lines.length > 0 ? lines.join('\n') : '(harness empty)'
 }
 
-/** `/harness show <id>`: full detail for one entry. */
+/**
+ * `/harness show <id>`: full detail for one entry.
+ * @param baseDir - the workspace root used to locate harness state files.
+ * @param sessionId - the session whose scoped entries are merged in.
+ * @param selector - exact id or unique id prefix of the entry to display.
+ * @returns a formatted detail block for the resolved entry, or an error string.
+ */
 export function showHarnessEntry(baseDir: string, sessionId: string, selector: string): string {
   const resolved = resolveEntry(readMergedSync(baseDir, sessionId), selector)
   if (typeof resolved === 'string') return resolved
@@ -94,6 +106,11 @@ export function showHarnessEntry(baseDir: string, sessionId: string, selector: s
 /**
  * `/harness delete <id>`: remove one entry. Reuses the refine apply-and-persist
  * pipeline (reverse snapshot + event), so `/refine-rollback <eventId>` undoes it.
+ * @param baseDir - the workspace root used to locate harness state files.
+ * @param sessionId - the session whose scoped entries are merged in.
+ * @param selector - exact id or unique id prefix of the entry to delete.
+ * @param maxRefinementEvents - cap on stored refinement events before oldest are pruned.
+ * @returns a confirmation listing the deleted entry and its rollback command, or an error string.
  */
 export async function deleteHarnessEntry(
   baseDir: string,

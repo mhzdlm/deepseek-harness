@@ -1,5 +1,7 @@
 # @deepseek-ai/dsh-plugin-rlm-loop
 
+English | [中文](README.zh.md)
+
 Loop Engineering bookkeeping for the rlm family. Registers a `loop` tool that makes the Manage→Execute→Audit round protocol enforceable in code rather than model compliance:
 
 - **Deterministic audit parsing** — `parseAuditHeader` reads the auditor's ordered three-line verdict (`Status` / `Integrity` / `Contract audit`) or fails loudly; prose bodies are never guessed into facts.
@@ -26,15 +28,29 @@ The joining session stays the Manager; executor/auditor episodes ride the compos
 
 The structured output carries `runId`/`round`/`accepted`/`status`/`integrity`/`contractAudit`/`landed`; `text` carries model-facing guidance including rejection reasons (unparseable header, `done` route without a clean audit, missing note on a clean verdict).
 
-## Model Experience
-
-One `loop begin` per task adds the contract once; each round adds one `loop record` whose result text replaces ad-hoc verdict reasoning. Landed entries re-enter context through the harness overview injection, so later rounds read trusted state from the prompt instead of re-deriving it from history. KV effect matches one harness-state render plus small tool results; no per-token growth beyond recorded rounds.
-
 ## Tests
 
 ```bash
 pnpm_config_verify_deps_before_run=false pnpm --filter @deepseek-ai/dsh-plugin-rlm-loop run test
 ```
+
+## Model Experience
+
+### Loop progress
+
+#### What the model sees
+
+The model sees the contract once (via `loop begin`) and a `loop record`'s result text each round; the tool replaces ad-hoc verdict reasoning with a parsed, trustworthy progress signal rather than emitting new model guidance.
+
+#### Token effect
+
+One `loop begin` per task adds the contract once; each round adds one `loop record` whose small result text replaces verdict prose, so cost grows only with recorded rounds.
+
+#### KV Cache effect
+
+Landed entries re-enter context through the harness overview injection, so later rounds read trusted state from the prompt instead of re-deriving it from history; the tool never edits earlier request tokens.
+
+
 
 ## Known Limitations and Deferred Work
 

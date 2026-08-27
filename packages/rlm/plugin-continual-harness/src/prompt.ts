@@ -20,6 +20,10 @@ const KIND_HEADINGS: Record<HarnessKind, string> = {
   subagent: '## Subagents',
 }
 
+/**
+ * Options controlling how {@link renderHarnessOverview} truncates and budgets
+ * the rendered harness state section.
+ */
 export interface HarnessOverviewOptions {
   /** Per-kind cap on the number of entries shown. */
   maxEntriesPerKind?: number
@@ -29,6 +33,14 @@ export interface HarnessOverviewOptions {
   maxTotalChars?: number
 }
 
+/**
+ * Render the harness state into a system-prompt section, budget-truncated per
+ * kind (newest first) so a large harness cannot blow the prompt.
+ *
+ * @param state - The harness state file whose entries are rendered.
+ * @param options - Truncation and character-budget controls.
+ * @returns The assembled, budget-truncated overview string.
+ */
 export function renderHarnessOverview(
   state: HarnessStateFile,
   options: HarnessOverviewOptions = {},

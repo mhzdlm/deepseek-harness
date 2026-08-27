@@ -52,6 +52,7 @@ const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS = 256;
 const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE =
 	"IPython kernel is still running the previously interrupted cell. Wait and try again, or kill the IPython kernel to start fresh.";
 
+/** Error raised when a cell is interrupted but the kernel stays busy and cannot be reused. */
 export class KernelBusyAfterInterruptError extends Error {
 	constructor() {
 		super(KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE);
@@ -117,6 +118,10 @@ function assertGenuineHostRequestContext(context: unknown): asserts context is H
 /**
  * Creates a branded wrapper rather than mutating its implementation. Both its
  * generic shape and runtime arity reject unary callbacks before they can run.
+ * @param implementation - the context-aware handler to wrap and brand.
+ * @param _unaryRejection - compile-time guard that rejects handlers whose arity
+ *   does not include the dispatcher context argument.
+ * @returns a branded, dispatcher-created host-request handler capability.
  */
 export function createHostRequestHandler<T extends HostRequestHandlerImplementation>(
 	implementation: T,
@@ -133,7 +138,9 @@ export function createHostRequestHandler<T extends HostRequestHandlerImplementat
 	return Object.defineProperty(handler, hostRequestHandlerBrand, { value: true }) as HostRequestHandlerCapability;
 }
 
-/** Reject copied-symbol and raw-function forgeries before they observe authenticated payloads. */
+/** Reject copied-symbol and raw-function forgeries before they observe authenticated payloads.
+ * @param value - the candidate value to validate as a genuine dispatcher-created capability.
+ * @returns does not return a value; throws when `value` is not a genuine handler capability. */
 export function assertHostRequestHandler(value: unknown): asserts value is HostRequestHandlerCapability {
 	if (
 		typeof value !== "function" ||
@@ -161,6 +168,7 @@ export interface KernelSnapshotConfig {
 	debounceMs?: number;
 }
 
+/** Construction options for a {@link KernelManager} instance. */
 export interface KernelManagerOptions {
 	/** Python interpreter that has `ipykernel` available. Defaults to the auto-bootstrapped kernel. */
 	python?: string;
@@ -175,11 +183,13 @@ export interface KernelManagerOptions {
 	username?: string;
 }
 
+/** Options accepted by {@link KernelManager.start}. */
 export interface KernelStartOptions {
 	onBootstrapProgress?: KernelBootstrapProgressHandler;
 	signal?: AbortSignal;
 }
 
+/** Options controlling a single {@link KernelManager.execute} call. */
 export interface ExecuteOptions {
 	/** Aborting interrupts the kernel via the control channel. */
 	signal?: AbortSignal;
@@ -226,6 +236,7 @@ export interface KernelAttachment {
 	path?: string;
 }
 
+/** An agent message emitted from a kernel cell, captured from an agent-message display payload. */
 export interface KernelSentAgentMessage {
 	id: string;
 	message: string;
@@ -238,6 +249,7 @@ export interface KernelSentAgentMessage {
 	};
 }
 
+/** The captured outcome of one {@link KernelManager.execute} call. */
 export interface ExecuteResult {
 	stdout: string;
 	stderr: string;
@@ -574,6 +586,8 @@ let signalHandlersInstalled = false;
 // [local patch] `registerSessionResourceCleanup` (pi-ai) replaced with an
 // exported helper so the dsh plugin can dispose kernels on `session/disposed`.
 // `sessionId` undefined disposes every live kernel (process teardown path).
+/** Dispose every live kernel owned by a session, or every live kernel when none is named.
+ * @param sessionId - the owning session to dispose; omit to dispose all live kernels. */
 export function disposeKernelsForSession(sessionId?: string): void {
 	for (const k of liveKernels) {
 		if (!sessionId || k.ownerSessionId === sessionId) {
@@ -608,6 +622,7 @@ function installSignalHandlersOnce(): void {
 	});
 }
 
+/** Manages a Jupyter kernel subprocess: startup, execution, snapshots, and host-request dispatch. */
 export class KernelManager {
 	private readonly options: Pick<
 		KernelManagerOptions,
@@ -664,6 +679,7 @@ export class KernelManager {
 		};
 	}
 
+	/** The session id this kernel belongs to, or undefined when not scoped to a session. */
 	get ownerSessionId(): string | undefined {
 		return this.options.sessionId;
 	}
@@ -672,6 +688,8 @@ export class KernelManager {
 		this.kernelStderr += `[kernel] ${message.endsWith("\n") ? message : `${message}\n`}`;
 	}
 
+	/** Start the kernel, memoizing the in-flight startup so concurrent callers await the same bootstrap.
+	 * @param options - startup options, including an abort signal and bootstrap progress handler. */
 	async start(options: KernelStartOptions = {}): Promise<void> {
 		if (options.signal?.aborted) {
 			throw createKernelStartupAbortError();
@@ -912,6 +930,10 @@ export class KernelManager {
 		);
 	}
 
+	/** Execute one cell, returning its captured stdout/stderr/result, diffs, attachments, and messages.
+	 * @param code - the Python source to execute in the kernel.
+	 * @param opts - execution options such as an abort signal, stream handlers, and output caps.
+	 * @returns the {@link ExecuteResult} describing the completed, aborted, or errored execution. */
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
 		const result = await this.enqueueExecute(code, opts);
 		// Refresh the on-disk snapshot after real work so a later resume (or a
@@ -1477,6 +1499,8 @@ export class KernelManager {
 		}
 	}
 
+	/** Shut the kernel down, optionally flushing a final namespace snapshot before teardown.
+	 * @param opts - when `snapshot` is true, flush the on-disk namespace snapshot before closing. */
 	async shutdown(opts: { snapshot?: boolean } = {}): Promise<void> {
 		if (this.state === "shutdown") {
 			liveKernels.delete(this);
@@ -1506,6 +1530,7 @@ export class KernelManager {
 		this.cleanupResources();
 	}
 
+	/** Restart the kernel in place: shut it down and start a fresh kernel on the same manager. */
 	async restart(): Promise<void> {
 		const prev = this.executionQueue;
 		let resolveNext: () => void = () => {};
@@ -1524,6 +1549,7 @@ export class KernelManager {
 		}
 	}
 
+	/** Force-kill the kernel immediately with SIGKILL and release all resources. */
 	async kill(): Promise<void> {
 		this.state = "shutdown";
 		liveKernels.delete(this);
@@ -1533,12 +1559,14 @@ export class KernelManager {
 	/**
 	 * Serialize the user namespace to disk (best-effort, per-variable). No-op when
 	 * the kernel isn't running or no snapshot target was configured. Never throws.
+	 * @returns the snapshot result, or null when the kernel isn't running or snapshotting failed.
 	 */
 	async snapshotState(): Promise<SnapshotResult | null> {
 		return this.captureSnapshot();
 	}
 
-	/** Persist the namespace, then remove variables above the per-variable cap. */
+	/** Persist the namespace, then remove variables above the per-variable cap.
+	 * @returns the snapshot result, or null when the kernel isn't running or snapshotting failed. */
 	async pruneOversizedVariables(): Promise<SnapshotResult | null> {
 		return this.captureSnapshot({ executionTimeoutMs: SNAPSHOT_EXECUTION_TIMEOUT_MS, pruneOversized: true });
 	}
@@ -1578,6 +1606,7 @@ export class KernelManager {
 	 * Revive a previously snapshotted namespace into the kernel. Call right after
 	 * start() and before the runtime bootstrap, which then refreshes live handles
 	 * (rlm, skills) over anything restored. Never throws.
+	 * @returns the restore result, or null when no snapshot target was configured or restore failed.
 	 */
 	async restoreState(): Promise<RestoreResult | null> {
 		const cfg = this.options.snapshot;
@@ -1596,7 +1625,9 @@ export class KernelManager {
 		}
 	}
 
-	/** Live user-defined top-level names, or null if the kernel isn't running. Never throws. */
+	/** Live user-defined top-level names, or null if the kernel isn't running. Never throws.
+	 * @param signal - an optional abort signal to cancel the listing execution.
+	 * @returns the live top-level names, or null when the kernel isn't running or listing failed. */
 	async listNamespaceNames(signal?: AbortSignal): Promise<string[] | null> {
 		if (!this.isRunning) return null;
 		try {
@@ -1679,6 +1710,7 @@ export class KernelManager {
 		this.cleanupResources();
 	}
 
+	/** True once the kernel has finished booting and is ready to execute cells. */
 	get isRunning(): boolean {
 		return this.state === "running";
 	}

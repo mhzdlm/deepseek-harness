@@ -20,9 +20,14 @@
  * @module @deepseek-ai/dsh-plugin-rlm-verifier/tournament
  */
 
+/** Default pivot count for the second tournament round. */
 export const DEFAULT_PIVOTS = 2
 
-/** Minimal deterministic PRNG (mulberry32); sufficient for ring shuffling. */
+/**
+ * Minimal deterministic PRNG (mulberry32); sufficient for ring shuffling.
+ * @param seed - the 32-bit seed; the same seed yields the same sequence.
+ * @returns a function producing floats in [0, 1).
+ */
 export function mulberry32(seed: number): () => number {
   let a = seed >>> 0
   return () => {
@@ -33,7 +38,12 @@ export function mulberry32(seed: number): () => number {
   }
 }
 
-/** The N directed adjacent pairs of a random Hamiltonian cycle over `n`. */
+/**
+ * The N directed adjacent pairs of a random Hamiltonian cycle over `n`.
+ * @param n - candidate count.
+ * @param rand - the PRNG used to shuffle the cycle; reuse one across a run.
+ * @returns the directed pairs `[a, b]` in cycle order.
+ */
 export function ringCycle(n: number, rand: () => number): Array<[number, number]> {
   if (n <= 1) return []
   const perm = Array.from({ length: n }, (_, i) => i)
@@ -47,7 +57,12 @@ export function ringCycle(n: number, rand: () => number): Array<[number, number]
   return perm.map((candidate, t) => [candidate, perm[(t + 1) % n] ?? candidate] as [number, number])
 }
 
-/** p(a beats b) under Bradley-Terry on rewards in [0, 1]. */
+/**
+ * p(a beats b) under Bradley-Terry on rewards in [0, 1].
+ * @param ra - reward of candidate a.
+ * @param rb - reward of candidate b.
+ * @returns the probability that a beats b.
+ */
 export function bradleyTerry(ra: number, rb: number): number {
   return 1 / (1 + Math.exp(-(ra - rb)))
 }
@@ -56,6 +71,8 @@ export function bradleyTerry(ra: number, rb: number): number {
  * Score each directed pair and aggregate soft wins into `w`/`c` in place.
  * @param pairs - directed comparisons.
  * @param score - returns the judge scores with `a` in slot A.
+ * @param w - accumulated preference weights per candidate, mutated in place.
+ * @param c - comparison counts per candidate, mutated in place.
  */
 export function accumulate(
   pairs: ReadonlyArray<readonly [number, number]>,
@@ -79,7 +96,13 @@ export function accumulate(
   })
 }
 
-/** Top-k candidates by mean preference w/c, ties broken by lower index. */
+/**
+ * Top-k candidates by mean preference w/c, ties broken by lower index.
+ * @param w - accumulated preference weights per candidate.
+ * @param c - comparison counts per candidate.
+ * @param k - number of pivots to return.
+ * @returns the selected pivot indices, highest mean first.
+ */
 export function selectPivots(w: readonly number[], c: readonly number[], k: number): number[] {
   const mean = (i: number): number => (w[i] ?? 0) / (c[i] || 1)
   return [...w.keys()]
@@ -87,7 +110,12 @@ export function selectPivots(w: readonly number[], c: readonly number[], k: numb
     .slice(0, Math.min(k, w.length))
 }
 
-/** Directed pairs for step 3: non-pivot vs pivot, then pivot vs pivot (lower index takes slot A). */
+/**
+ * Directed pairs for step 3: non-pivot vs pivot, then pivot vs pivot (lower index takes slot A).
+ * @param n - total candidate count.
+ * @param pivots - the pivot indices selected for the second round.
+ * @returns directed comparison pairs `[a, b]` where `a` takes slot A.
+ */
 export function pivotRoundPairs(n: number, pivots: readonly number[]): Array<[number, number]> {
   const pivotSet = new Set(pivots)
   const nonPivots = [...Array(n).keys()].filter(i => !pivotSet.has(i))
@@ -106,6 +134,7 @@ export function pivotRoundPairs(n: number, pivots: readonly number[]): Array<[nu
   return pairs
 }
 
+/** Aggregated outcome of a full probabilistic pivot tournament. */
 export interface TournamentResult {
   bestIndex: number
   /** Mean preference w/c per candidate; the tool surfaces these as scores. */
@@ -114,9 +143,13 @@ export interface TournamentResult {
 }
 
 /**
- * Run the full PPT over a directed scoring callback.
- * @param scorePair - returns the averaged judge scores (R_a, R_b)
- *   with `a` in slot A; called once per directed comparison.
+ * Run the full Probabilistic Pivot Tournament over a directed scoring callback.
+ * @param n - number of candidates.
+ * @param seed - PRNG seed for the ring-cycle comparison order.
+ * @param pivots - number of pivot candidates for the second round.
+ * @param scorePair - returns the averaged judge scores (R_a, R_b) with `a` in
+ *   slot A; called once per directed comparison.
+ * @returns the tournament outcome with the winning index and mean preferences.
  */
 export async function runTournament(
   n: number,

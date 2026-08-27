@@ -35,7 +35,14 @@ function getWinEnvCache(): Map<string, string> {
   return winEnvCache
 }
 
-/** Read the first set environment variable among `names` (new name first). */
+/**
+ * Read the first set environment variable among `names` (new name first).
+ *
+ * @param names - Environment variable names to probe, in priority order; the
+ *   first one whose value is defined in `process.env` wins, with a
+ *   case-insensitive fallback on Windows.
+ * @returns The value of the first defined variable, or `undefined` if none are set.
+ */
 export function rlmEnv(...names: readonly string[]): string | undefined {
   for (const name of names) {
     const value = process.env[name]

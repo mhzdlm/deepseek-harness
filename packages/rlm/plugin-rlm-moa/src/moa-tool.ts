@@ -53,6 +53,7 @@ export type MoaCallSubagent = (
   owner: unknown,
 ) => Promise<MoaModelResult>
 
+/** Wiring and observability knobs for {@link createMoaTool}; resolved presets, injected transport, and trace hooks. */
 export interface MoaToolOptions {
   /** Layered preset resolver (Config + managed store); throws on unknown names. */
   resolvePreset: (name?: string) => MoaResolvedPreset
@@ -95,8 +96,9 @@ const AGGREGATOR_SYSTEM =
 /**
  * Build the `moa` tool around the given options.
  * @param options - resolved presets, injected transport, and observability knobs.
+ * @returns the configured `moa` tool instance for registration on a plugin context.
  */
-export function createMoaTool(options: MoaToolOptions) {
+export function createMoaTool(options: MoaToolOptions): ReturnType<typeof defineTool> {
   const now = options.now ?? Date.now
   return defineTool({
     name: 'moa',

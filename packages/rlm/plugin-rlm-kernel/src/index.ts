@@ -24,9 +24,21 @@ import { collectPythonSkills, upsertPythonSkillEntry } from './skill-source.ts'
 // specifier, which plain Node cannot load from node_modules.
 export { redactReferenceText } from './redact.ts'
 
+/**
+ * Plugin name registered with the Cordis loader; also the package identity.
+ */
 export const name = 'plugin-rlm-kernel'
+/**
+ * Cordis services this plugin requires: the tool registry, the subagent
+ * capability, the session store, and the agent registry.
+ */
 export const inject = ['tools', 'subagents', 'sessions', 'agents']
 
+/**
+ * Configuration for the persistent IPython-kernel plugin: the Python
+ * interpreter and venv, kernel lifecycle limits, idle reclamation, snapshot
+ * rotation, and the `rlm.run` fan-out bounds.
+ */
 export interface Config {
   /** Python interpreter with ipykernel + prime-agent-runtime. Omitted → auto-bootstrapped venv. */
   python?: string
@@ -77,6 +89,10 @@ export interface Config {
   maxRunPromptChars?: number
 }
 
+/**
+ * Schema for {@link Config}: validates the plugin's optional tuning fields
+ * (interpreter, data dir, idle/snapshot/reclaim bounds, and run fan-out caps).
+ */
 export const Config: z<Config> = z.object({
   python: z.string(),
   dataDir: z.string(),
@@ -92,6 +108,13 @@ export const Config: z<Config> = z.object({
   maxRunPromptChars: z.natural(),
 })
 
+/**
+ * Cordis plugin entry point: wires the per-session kernel registry, registers
+ * the `ipython` and `create_python_skill` tools, schedules idle reclamation,
+ * and disposes kernels on `session/disposed`.
+ * @param ctx - the Cordis context this plugin mounts into.
+ * @param config - the resolved {@link Config} tuning the kernel lifecycle and run bounds.
+ */
 export function apply(ctx: Context, config: Config): void {
   const dataDir = config.dataDir ?? path.join(homedir(), '.dsh', 'rlm')
   const hostHandlers = createHostHandlers(ctx, config.subagentProvider ?? 'spawn', dataDir, {

@@ -328,6 +328,8 @@ declare class BlockAssembler {
   interruptedBlocks(): ContentBlock[];
   /** Usage from the `usage` chunk; undefined until one arrives. */
   get usage(): TokenUsage | undefined;
+  /** Chosen-token logprobs from the `logprobs` chunk, in stream order; empty until one arrives. */
+  get logprobs(): readonly TokenLogprob[];
   /** Finish reason from the `finish` chunk; `{kind: 'stop'}` when the stream ended without one. */
   get finish(): FinishReason;
   /**

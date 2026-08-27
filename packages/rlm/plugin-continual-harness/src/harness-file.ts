@@ -29,7 +29,11 @@ import path from 'node:path'
 /** How many `.corrupt-*` backups to keep before pruning (FIX-11). */
 const CORRUPT_BACKUP_KEEP = 5
 
-/** FIX-7: the state file changed on disk between a read and the CAS write. */
+/**
+ * Error thrown when a harness state CAS write detects that the on-disk file
+ * moved underneath a read-modify-write (FIX-7). Surfaces retryable conflicts
+ * to callers that can re-read and retry.
+ */
 export class HarnessConflictError extends Error {
   constructor(filePath: string) {
     super(`harness state changed on disk during read-modify-write: ${filePath}`)
@@ -37,9 +41,12 @@ export class HarnessConflictError extends Error {
   }
 }
 
+/** The categories of content a harness state entry can hold. */
 export type HarnessKind = 'prompt' | 'memory' | 'skill' | 'subagent'
+/** Whether a harness entry belongs to a single session or to every session. */
 export type HarnessScope = 'local' | 'global'
 
+/** One persisted harness item (prompt, memory, skill, or subagent) in state. */
 export interface HarnessEntry {
   id: string
   kind: HarnessKind
@@ -56,6 +63,7 @@ export interface HarnessEntry {
   version: number
 }
 
+/** A single /refine edit event plus the post-apply snapshot used for rollback. */
 export interface RefinementEvent {
   id: string
   trigger: string
@@ -71,6 +79,7 @@ export interface RefinementEvent {
   after?: Record<string, HarnessEntry | null> | null
 }
 
+/** The full persisted harness state: schema version, entries, and refinements. */
 export interface HarnessStateFile {
   schema: number
   entries: Partial<Record<HarnessKind, Record<string, HarnessEntry>>>
@@ -84,6 +93,12 @@ export interface HarnessStateWithMeta {
   mtimeMs: number | null
 }
 
+/**
+ * Resolve the per-session harness state file path.
+ * @param baseDir - the harness base directory (`ctx.baseDir`).
+ * @param sessionId - the session whose artifacts directory to target.
+ * @returns the absolute path to that session's `harness_state.json`.
+ */
 export function harnessStatePath(baseDir: string, sessionId: string): string {
   return path.join(baseDir, 'session-artifacts', sessionId, 'harness', 'harness_state.json')
 }
@@ -92,6 +107,8 @@ export function harnessStatePath(baseDir: string, sessionId: string): string {
  * Cross-session global harness state file. The kernel writes `global_=True`
  * entries here via `RLM_GLOBAL_HARNESS_STATE_DIR` (see the kernel plugin);
  * this is the one file that makes the harness "continual" across sessions.
+ * @param baseDir - the harness base directory (`ctx.baseDir`).
+ * @returns the absolute path to the global `harness_state.json`.
  */
 export function globalHarnessStatePath(baseDir: string): string {
   return path.join(baseDir, 'global', 'harness', 'harness_state.json')
@@ -128,7 +145,11 @@ async function backupCorrupt(filePath: string): Promise<void> {
   }
 }
 
-/** Read state plus observed mtime; missing or corrupt files yield empty state. */
+/**
+ * Read state plus observed mtime; missing or corrupt files yield empty state.
+ * @param filePath - the state file to read.
+ * @returns the parsed state plus the on-disk mtime observed at read (`null` if absent).
+ */
 export async function readHarnessStateDetailed(filePath: string): Promise<HarnessStateWithMeta> {
   let mtimeMs: number | null = null
   try {
@@ -159,6 +180,11 @@ export async function readHarnessStateDetailed(filePath: string): Promise<Harnes
   }
 }
 
+/**
+ * Read a harness state file, returning its parsed state (no mtime metadata).
+ * @param filePath - the state file to read.
+ * @returns the parsed {@link HarnessStateFile}, or an empty state if missing/corrupt.
+ */
 export async function readHarnessState(filePath: string): Promise<HarnessStateFile> {
   return (await readHarnessStateDetailed(filePath)).state
 }
@@ -174,6 +200,10 @@ export async function readHarnessState(filePath: string): Promise<HarnessStateFi
  * same event as an mtime conflict — the file changed underneath this writer —
  * so it is surfaced as the retryable {@link HarnessConflictError} (with the
  * temp file cleaned up) rather than as a raw fs error callers cannot retry on.
+ * @param filePath - the state file to write.
+ * @param state - the harness state to serialize.
+ * @param expectedMtimeMs - when provided, the mtime observed at read for CAS; `null` matches an absent file.
+ * @returns void; rejects with {@link HarnessConflictError} on a stale mtime or Windows sharing violation.
  */
 export async function writeHarnessState(
   filePath: string,
@@ -212,7 +242,12 @@ export interface HarnessStatesWithMeta {
   local: HarnessStateWithMeta
 }
 
-/** Read global + per-session state in parallel, each with its observed mtime. */
+/**
+ * Read global + per-session state in parallel, each with its observed mtime.
+ * @param baseDir - the harness base directory (`ctx.baseDir`).
+ * @param sessionId - the session whose local artifacts directory to target.
+ * @returns both files' parsed states, each with the mtime observed at read.
+ */
 export async function readHarnessStatesDetailed(
   baseDir: string,
   sessionId: string,
@@ -233,6 +268,12 @@ export async function readHarnessStatesDetailed(
  * BEFORE the local half lands, and the compensating write CASes against the mtime
  * that write produced, so the restore actually applies instead of conflicting
  * with itself.
+ * @param baseDir - the harness base directory (`ctx.baseDir`).
+ * @param sessionId - the session whose local artifacts directory to target.
+ * @param global - the global state file to write.
+ * @param local - the per-session state file to write.
+ * @param expected - the mtimes observed at read for CAS; `null` matches an absent file.
+ * @returns void; rejects with {@link HarnessConflictError} on a stale mtime or torn write.
  */
 export async function writeHarnessStates(
   baseDir: string,
@@ -274,6 +315,9 @@ const HARNESS_KINDS = ['prompt', 'memory', 'skill', 'subagent'] as const
  * Merge global + local into one working view for rendering and /refine.
  * Entries carry their own `scope` field, so renderers can distinguish
  * `[global]`-marked lines; refinements come from the session (local) file.
+ * @param global - the global state file.
+ * @param local - the per-session state file.
+ * @returns the merged working view with local refinements preserved.
  */
 export function mergeHarnessStates(global: HarnessStateFile, local: HarnessStateFile): HarnessStateFile {
   const entries: HarnessStateFile['entries'] = {}
@@ -292,6 +336,9 @@ export function mergeHarnessStates(global: HarnessStateFile, local: HarnessState
  * Split a merged working state back into global/local files by each entry's
  * `scope` field. `globalRefinements` is preserved from the pre-merge global
  * read so kernel-side global ops' events are never dropped on rewrite.
+ * @param merged - the merged working state to split by entry `scope`.
+ * @param globalRefinements - refinements to carry into the global file (preserved from its pre-merge read).
+ * @returns the separated global and local state files.
  */
 export function splitHarnessStateByScope(
   merged: HarnessStateFile,
@@ -315,6 +362,8 @@ export function splitHarnessStateByScope(
 
 /**
  * Synchronous read for system-prompt sections (their `text` provider is sync).
+ * @param filePath - the state file to read.
+ * @returns the parsed {@link HarnessStateFile}, or an empty state if missing/corrupt.
  */
 export function readHarnessStateSync(filePath: string): HarnessStateFile {
   try {

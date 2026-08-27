@@ -649,7 +649,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 'session/kernel-snapshot': KernelSnapshotEventData
 ```
 
-来源：[`packages/rlm/plugin-rlm-kernel/src/events.ts:46`](../packages/rlm/plugin-rlm-kernel/src/events.ts)
+来源：[`packages/rlm/plugin-rlm-kernel/src/events.ts:46`](../packages/rlm/plugin-rlm-loop/src/events.ts)
 
 <a id="sessiontitle--log-only"></a>
 

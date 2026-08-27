@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-26-rlm-compaction-silent-failure.zh.md)
+
 - **Date**: 2026-08-26
 - **Area**: `packages/compaction/*`, rlm 长会话经济性
 - **Status**: 测量完成；根因明确；persona 引导已落地；静默失败修复移交 T4.5/T4.9

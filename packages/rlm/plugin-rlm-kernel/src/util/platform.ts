@@ -70,6 +70,7 @@ export function killSignalSafe(pid: number, signal: NodeJS.Signals = 'SIGTERM'):
  * zombie handles.  When the result is ambiguous (EPERM/EINVAL), we fall back
  * to `tasklist` for a definitive answer.
  *
+ * @param pid - Process id to probe for liveness.
  * @returns `true` if the process appears to be alive, `false` otherwise.
  */
 export function isPidAlive(pid: number): boolean {
@@ -147,6 +148,8 @@ function isPidAliveTasklist(pid: number): boolean {
  * junction points outside the intended tree (e.g., pnpm's node_modules links).
  * This function checks each entry with `lstat` and unlinks symlinks/junctions
  * instead of recursing into them.
+ *
+ * @param dirPath - Absolute or relative path of the directory to remove.
  */
 export function safeRmDirSync(dirPath: string): void {
   let entries
@@ -193,6 +196,10 @@ export function safeRmDirSync(dirPath: string): void {
  * parameter is ignored by the Node.js runtime, so we create the file with
  * default permissions and rely on the containing directory's ACL for access
  * control.
+ *
+ * @param filePath - Destination path of the file to write.
+ * @param data - File contents as a string or buffer-like view.
+ * @param mode - POSIX mode bits applied on non-Windows platforms (default `0o600`).
  */
 export function writeFileSecureSync(
   filePath: string,

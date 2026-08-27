@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-27-rlm-desktop-install-mechanism.md
+2026-08-27-rlm-desktop-install-mechanism.md: 83008ea9f46b084ddf7723ec260aac56254f1866
+2026-08-27-rlm-desktop-install-mechanism.zh.md: 818d872ce6daca0b8f287233e9805436aedde2b4
