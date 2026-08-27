@@ -1534,6 +1534,227 @@ export interface PlanModeConfig {
 
 Source: [`packages/plan/plan-mode/src/index.ts:70`](../packages/plan/plan-mode/src/index.ts)
 
+<a id="deepseek-aidsh-plugin-continual-harness"></a>
+
+## `@deepseek-ai/dsh-plugin-continual-harness`
+
+Requires: `systemPrompt` · `commands` · `sessions` · `agents` · `subagents`
+
+```ts config-catalog
+export interface Config {
+  /** Root directory for harness state. Defaults to `~/.dsh/rlm` — must match plugin-rlm-kernel. */
+  dataDir?: string
+  /** Per-kind cap when rendering the harness overview into the prompt. */
+  maxEntriesPerKind?: number
+  /** Per-entry content cap when rendering the harness overview (FIX-10). */
+  maxCharsPerEntry?: number
+  /** Total character ceiling for the whole harness overview section (FIX-10). */
+  maxTotalChars?: number
+  /**
+	 * Subagent provider used by `/refine`. Must name a registered provider
+	 * (FIX-1: this used to be the hard-coded string `'refine'`, which no
+	 * provider is registered under). Defaults to `'spawn'`, matching
+	 * plugin-rlm-kernel's `subagentProvider`.
+	 */
+  refineProvider?: string
+  /**
+	 * How many `RefinementEvent`s (and their snapshot files) are retained per
+	 * session before the oldest are pruned (item-10). Defaults to 100.
+	 */
+  maxRefinementEvents?: number
+}
+```
+
+Source: [`packages/rlm/plugin-continual-harness/src/index.ts:38`](../packages/rlm/plugin-continual-harness/src/index.ts)
+
+<a id="deepseek-aidsh-plugin-rlm-kernel"></a>
+
+## `@deepseek-ai/dsh-plugin-rlm-kernel`
+
+Requires: `tools` · `subagents` · `sessions` · `agents`
+
+```ts config-catalog
+export interface Config {
+  /** Python interpreter with ipykernel + prime-agent-runtime. Omitted → auto-bootstrapped venv. */
+  python?: string
+  /** Root directory for kernel artifacts. Defaults to `~/.dsh/rlm`. */
+  dataDir?: string
+  /** Subagent provider name used by `rlm.run`. Defaults to `spawn` (in-process). */
+  subagentProvider?: string
+  /**
+   * item-4: idle timeout (ms) before a session's kernel is reclaimed. State is
+   * preserved by the dill snapshot, so a later ipython call re-provisions from
+   * it. `0` disables reclamation. Defaults to 10 minutes.
+   */
+  idleTimeoutMs?: number
+  /** item-13: cap on cell output text returned to the model. Defaults to 65536. */
+  maxOutputChars?: number
+  /** item-13: auto-snapshot debounce after a successful cell (ms). Defaults to 1500. */
+  snapshotDebounceMs?: number
+  /**
+   * T4.1: how many prior dill snapshots to retain as `kernel-state.<n>.dill`.
+   * `0` disables rotation. Defaults to 3; each copy is at most one payload size.
+   */
+  snapshotHistory?: number
+  /**
+   * item-7: provision a session's kernel at session/created instead of at the
+   * first ipython call, moving the ~5s cold start off the critical path.
+   * Defaults to off (each session pays a kernel process until idle reclamation).
+   */
+  warmupOnSessionCreate?: boolean
+  /**
+   * T3.2 (C semantics): cap on concurrently live kernels (0 = unlimited).
+   * When exceeded, the oldest non-busy kernels are disposed LRU-first:
+   * unleased ones outright; leased ones only after a forced snapshot succeeds
+   * (failure defers eviction to a later sweep). Defaults to 4.
+   */
+  maxLiveKernels?: number
+  /** T3.2 (C semantics): grace (ms) before a leased over-cap kernel retries its forced eviction snapshot. Defaults to 5000. */
+  reclaimSnapshotGraceMs?: number
+  /**
+   * Outstanding one-shot `rlm.run` children allowed per parent session before
+   * further spawns fail loud (retained children are exempt — they idle cheaply
+   * until messaged). Bounds the fan-out a looping model can create. Defaults to 8.
+   */
+  maxChildrenPerSession?: number
+  /**
+   * Character cap on a single `rlm.run` prompt; larger prompts fail loud with
+   * actionable text instead of silently inflating a child's context. Defaults to 24000.
+   */
+  maxRunPromptChars?: number
+}
+```
+
+Source: [`packages/rlm/plugin-rlm-kernel/src/index.ts:30`](../packages/rlm/plugin-rlm-kernel/src/index.ts)
+
+<a id="deepseek-aidsh-plugin-rlm-loop"></a>
+
+## `@deepseek-ai/dsh-plugin-rlm-loop`
+
+Requires: `tools`
+
+```ts config-catalog
+export interface Config {
+  /**
+   * Harness base dir for landing verified progress. Must match
+   * plugin-continual-harness's `dataDir` so landed entries reach the injected
+   * overview. Defaults to `~/.dsh/rlm`, the family default.
+   */
+  dataDir?: string
+  /** Soft per-run round ceiling; exceeding it warns but never blocks. Default 32. */
+  maxRounds?: number
+}
+```
+
+Source: [`packages/rlm/plugin-rlm-loop/src/index.ts:18`](../packages/rlm/plugin-rlm-loop/src/index.ts)
+
+<a id="deepseek-aidsh-plugin-rlm-moa"></a>
+
+## `@deepseek-ai/dsh-plugin-rlm-moa`
+
+Requires: `tools` · `llm` · `commands` · `subagents`
+
+```ts config-catalog
+export interface Config {
+  /** Artifact root for traces and the managed preset store; defaults to `~/.dsh/rlm`. */
+  dataDir?: string
+  /** Named MoA preset definitions, keyed by preset id; the active one is chosen by `defaultPreset`. */
+  presets?: Record<string, MoaPresetConfig>
+  /** Preset id applied when a cell does not name one (default: none → built-in default panel). */
+  defaultPreset?: string
+  /**
+   * `''` (off), `'display'` (render provenance labels), or `'full'` (also
+   * mask credential/PII material in advisor text before aggregation).
+   */
+  privacyFilter?: string
+  /** Write JSONL traces under `<dataDir>/moa-traces/` (default true). */
+  trace?: boolean
+  /** Subagent provider used by `mode:'subagent'` slots without their own provider (default 'spawn'). */
+  subagentProvider?: string
+  /** Per-child captured text ceiling for subagent reference slots (default 20000). */
+  maxChildChars?: number
+}
+
+/** One named panel: reference slots plus an aggregator slot. */
+export interface MoaPresetConfig {
+  /**
+   * Reference slots; every enabled entry answers independently. A slot with
+   * `mode:'subagent'` runs as a spawned tool-capable child instead of a plain
+   * completion (`provider` names the subagent provider).
+   */
+  referenceModels?: Array<{
+    /** Subagent provider for `mode:'subagent'` slots; other modes ignore it. */
+    provider?: string
+    /** Model id this reference slot queries. */
+    model?: string
+    /** Whether the slot answers this round (default true). */
+    enabled?: boolean
+    /** `'completion'` (plain model call) or `'subagent'` (tool-capable spawned child). */
+    mode?: string
+  }>
+  /** The synthesizing slot. */
+  aggregator?: {
+    /** Provider for the synthesizing slot; omitted inherits the default LLM provider. */
+    provider?: string
+    /** Model id for the synthesizing slot. */
+    model?: string
+  }
+  /** Per-reference token ceiling (default 4096). Never applied to the aggregator or subagent slots. */
+  referenceMaxTokens?: number
+  /** Per-reference wall-clock budget in ms (default 120000). */
+  referenceTimeoutMs?: number
+  /** Whether failed references are announced to the aggregator (default loud). */
+  degradedPolicy?: string
+}
+```
+
+Source: [`packages/rlm/plugin-rlm-moa/src/index.ts:59`](../packages/rlm/plugin-rlm-moa/src/index.ts)
+
+<a id="deepseek-aidsh-plugin-rlm-verifier"></a>
+
+## `@deepseek-ai/dsh-plugin-rlm-verifier`
+
+Requires: `tools` · `llm` · `subagents`
+
+```ts config-catalog
+export interface Config {
+  /**
+   * Default provider route for scoring calls. Defaults to
+   * `deepseek-official` (the harness's own DeepSeek adapter).
+   */
+  provider?: string
+  /** Verifier model name. Defaults to deepseek-v4-flash. */
+  model?: string
+  /** Subagent provider name used by auto_spawn. Defaults to 'spawn'. */
+  subagentProvider?: string
+  /** Max characters captured from each spawned child's result. Default 20000. */
+  maxChildChars?: number
+  /**
+   * `''` (off), `'display'` (render judge provenance), or `'full'` (mask
+   * credential/PII material in candidate digests and text before scoring).
+   */
+  privacyFilter?: string
+  /** Named multi-judge profiles addressable via the tool's `judges` argument. */
+  judgeProfiles?: Record<string, JudgeProfileConfig>
+  /**
+   * T2.6: root directory for session artifacts. When set, every verify run
+   * writes a full-detail JSON under `<dataDir>/session-artifacts/<sid>/verify/`
+   * and the result event carries the path. Defaults to `~/.dsh/rlm`.
+   */
+  dataDir?: string
+}
+
+/** A named judge entry for multi-judge panels. */
+export interface JudgeProfileConfig {
+  /** Verifier model id. */
+  model?: string
+  /** Provider route; defaults to the plugin-level provider. */
+  provider?: string
+}
+```
+
+Source: [`packages/rlm/plugin-rlm-verifier/src/index.ts:32`](../packages/rlm/plugin-rlm-verifier/src/index.ts)
+
 <a id="deepseek-aidsh-pwsh-local"></a>
 
 ## `@deepseek-ai/dsh-pwsh-local`

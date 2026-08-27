@@ -105,7 +105,7 @@ const retry = (seq: number): ModelRetryNode => ({
 })
 const turnError = (seq: number, code?: string): TurnErrorNode => ({
   kind: 'turn-error', seq, time: seq * 1_000, turn: 1, step: 0,
-  message: seq === 2 ? 'API key is invalid' : 'plugin exploded',
+  message: seq === 2 ? 'API key 无效或已过期，请检查凭据设置' : 'plugin exploded',
   ...(code === undefined ? {} : { code }),
 })
 const turnMaxTokens = (seq: number): TurnMaxTokensNode => ({
@@ -585,7 +585,7 @@ describe('ChatView', () => {
     const view = render(<h.ChatView {...h.props} />)
     const statuses = view.getAllByRole('status')
     expect(statuses.map(status => status.textContent)).toEqual([
-      '本轮运行失败API key is invalidAUTH',
+      '本轮运行失败API key 无效或已过期，请检查凭据设置AUTH',
       '本轮运行失败plugin exploded',
     ])
   })

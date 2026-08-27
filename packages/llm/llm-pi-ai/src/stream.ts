@@ -8,7 +8,7 @@
  * @module dsh-llm-pi-ai/stream
  */
 
-import { CallId, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, isContextWindowExceededError, isQuotaExceededError, LlmError, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
+import { CallId, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, isContextWindowExceededError, isQuotaExceededError, LlmError, MODEL_UNAVAILABLE_CODE, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type { FinishReason, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import { isContextOverflow } from '@earendil-works/pi-ai'
 import type { AssistantMessage, AssistantMessageEvent, Usage as PiUsage } from '@earendil-works/pi-ai'
@@ -36,7 +36,23 @@ export function mapUsage(usage: PiUsage): TokenUsage {
 // wrapper a bare `terminated`, so we are left pattern-matching terse words here.
 // If pi-ai ever forwards the original Error (or a fetch/dispatcher hook that lets
 // us capture the cause ourselves), classify on `code`/`cause` instead of text.
+// Model-unavailability wording carried by a 401/403. opencode-style gateways
+// answer 401 both for bad credentials and for a model that no longer exists on
+// the route; the Anthropic-flavored body distinguishes them with
+// `{"type":"ModelError","message":"Model X is not supported"}`. A 401 that
+// carries this structure or wording is a route/model problem, not a credential
+// one, so it must surface as MODEL_UNAVAILABLE instead of "API key is invalid".
+// (A separate function rather than `regex || regex`: `||` on regex literals
+// collapses to the first truthy operand, silently dropping the others.)
+function isModelUnavailableMessage(message: string): boolean {
+  return /"type"\s*:\s*"ModelError"/i.test(message)
+    || /\bmodel\b[^"]{0,80}\b(?:is\s+)?not\s+supported\b/i.test(message)
+    || /\b(?:model\s+not\s+found|unknown\s+model|model\s+does\s+not\s+exist)\b/i.test(message)
+    || /\b(?:no\s+longer\s+available|is\s+deprecated|not\s+available)\b/i.test(message)
+}
+
 function classifyPiAiError(message: string): string {
+  if (/\b(?:401|403)\b/.test(message) && isModelUnavailableMessage(message)) return MODEL_UNAVAILABLE_CODE
   if (/\b(?:401|403)\b/.test(message)) return 'AUTH'
   if (isQuotaExceededError(message)) return QUOTA_EXCEEDED_CODE
   if (/\b429\b|rate.?limit/i.test(message)) return 'RATE_LIMIT'

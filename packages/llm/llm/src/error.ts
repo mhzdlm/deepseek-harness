@@ -47,6 +47,18 @@ export const EMPTY_RESPONSE_CODE = 'EMPTY_RESPONSE'
  */
 export const INVALID_CREDENTIAL_CODE = 'INVALID_CREDENTIAL'
 
+/**
+ * Canonical provider-neutral code for a requested model that this route cannot
+ * serve — missing, unknown, or deprecated. Distinct from `AUTH` (a credential
+ * problem): opencode-style gateways answer HTTP 401 both for bad credentials
+ * and for a model that no longer exists on the route, and the two must not be
+ * conflated in the UI. The adapter recognizes the model-availability wording
+ * (e.g. `{"type":"ModelError","message":"Model X is not supported"}`) and
+ * classifies it here instead of `AUTH`. Like `AUTH`, it is terminal — resending
+ * the same request cannot succeed — so it stays out of the default retryable set.
+ */
+export const MODEL_UNAVAILABLE_CODE = 'MODEL_UNAVAILABLE'
+
 /** Structured codes and plain phrases that explicitly name a context bound being exceeded. */
 const STRUCTURED_CONTEXT_OVERFLOW = new RegExp(
   String.raw`(?:^|[^a-z0-9])context[\s_-](?:length|window)[\s_-]`

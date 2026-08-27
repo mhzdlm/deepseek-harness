@@ -94,7 +94,7 @@ describe('verify seam engine', () => {
     expect(Math.abs((value.scores[0] ?? 0) - 0.5)).toBeLessThan(1e-9)
   })
 
-  it('scores failed calls as neutral ties instead of failing the run', async () => {
+  it('scores failed calls as neutral ties while surfacing the degraded judge', async () => {
     const callModel: VerifyCallModel = async () => {
       throw new Error('route down')
     }
@@ -102,10 +102,13 @@ describe('verify seam engine', () => {
     const value = (await tool.execute(
       { problem: 'p', candidates: ['a', 'b'] },
       execStub,
-    )) as { scores: number[]; nComparisons: number }
+    )) as { scores: number[]; nComparisons: number; failedJudges?: string[]; text: string }
     expect(value.scores[0]).toBeCloseTo(0.5)
     expect(value.scores[1]).toBeCloseTo(0.5)
     expect(value.nComparisons).toBeGreaterThan(0)
+    // Every scoring call failed: the judge is degraded, not silently healthy.
+    expect(value.failedJudges).toEqual(['deepseek-v4-flash'])
+    expect(value.text).toContain('scoring degraded')
   })
 
   it('fuses two judge panels and records request/result events', async () => {
@@ -149,6 +152,47 @@ describe('verify seam engine', () => {
     const result = appended.at(-1)?.payload as { failedJudges?: string[]; scores: number[] }
     expect(result.failedJudges).toBeUndefined()
     expect(result.scores).toHaveLength(2)
+  })
+
+  it('surfaces a partially failing judge as degraded in status, text, return, and event', async () => {
+    const appended: Array<{ name: string; payload: Record<string, unknown> }> = []
+    const session = {
+      id: 'sess-degraded',
+      append: (name: string, payload: unknown) => { appended.push({ name, payload: payload as Record<string, unknown> }) },
+    }
+    // judge-b's scoring calls throw; scorePairOnSeam scores them as neutral
+    // ties but counts the failures, so judge-b must surface as degraded.
+    const callModel: VerifyCallModel = async (request) => {
+      if (request.route.model === 'model-b') throw new Error('judge-b route down')
+      const tokens: TokenLogprob[] = [
+        { token: TAGS[0], logprob: -0.01 },
+        { token: 'A', logprob: -0.02 },
+        { token: TAGS[1], logprob: -0.03 },
+        { token: 'T', logprob: -2 },
+      ]
+      return { text: `${TAGS[0]}\n${TAGS[1]}`, logprobs: tokens }
+    }
+    const tool = createVerifyTool(baseOptions({
+      callModel,
+      judgeProfiles: {
+        'judge-a': { model: 'model-a' },
+        'judge-b': { model: 'model-b' },
+      },
+    }))
+    const value = (await tool.execute(
+      { problem: 'p', candidates: ['cand-A', 'cand-B'], judges: ['judge-a', 'judge-b'] },
+      { signal: new AbortController().signal, agent: { session } } as never,
+    )) as { text: string; failedJudges?: string[]; judges: Array<{ status: string }> }
+
+    expect(value.judges.map(j => j.status)).toEqual(['ok', 'degraded'])
+    expect(value.failedJudges).toEqual(['judge-b'])
+    expect(value.text).toContain('1 judge(s) degraded or failed (judge-b)')
+    const result = appended.find(a => a.name === 'session/verify-result')?.payload as {
+      failedJudges?: string[]
+      judges?: Array<{ status: string }>
+    }
+    expect(result?.failedJudges).toEqual(['judge-b'])
+    expect(result?.judges?.map(j => j.status)).toEqual(['ok', 'degraded'])
   })
 
   it('caps manual candidates before they reach scoring prompts', async () => {

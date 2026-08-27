@@ -691,7 +691,7 @@ describe('built-in conversation node Definitions', () => {
     expect(node(snapshot(retry), 'turn-error')?.data).toMatchObject({
       kind: 'turn-error',
       turn: 1,
-      message: 'failed',
+      message: '网络或连接异常，请检查网络后重试',
       code: 'TRANSPORT',
     })
 
@@ -903,7 +903,7 @@ describe('built-in conversation node Definitions', () => {
       kind: 'turn-error',
       seq: 7,
       turn: 1,
-      message: 'failed',
+      message: '网络或连接异常，请检查网络后重试',
       code: 'TRANSPORT',
     })
 
@@ -934,7 +934,7 @@ describe('built-in conversation node Definitions', () => {
       kind: 'turn-error',
       seq: 7,
       turn: 1,
-      message: 'failed',
+      message: '网络或连接异常，请检查网络后重试',
       code: 'TRANSPORT',
     })
   })

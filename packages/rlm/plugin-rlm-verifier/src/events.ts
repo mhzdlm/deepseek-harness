@@ -38,7 +38,10 @@ export interface VerifyRequestEventData {
 /** One judge's fused-input record: everything needed to recompute the fusion. */
 export interface VerifyJudgeOutcomeData {
   model: string
-  status: 'ok' | 'failed'
+  /** `ok` = every scoring call succeeded; `degraded` = some calls failed and were
+   *  scored as neutral ties but the tournament still completed; `failed` = the
+   *  tournament itself threw (no preference vector produced). */
+  status: 'ok' | 'degraded' | 'failed'
   /** Judge preference vector over candidates (Borda input). */
   meanPreference: number[]
   nComparisons: number

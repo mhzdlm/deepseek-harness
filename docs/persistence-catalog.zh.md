@@ -640,6 +640,17 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 来源：[`packages/core/session/src/types.ts:336`](../packages/core/session/src/types.ts)
 
+<a id="sessionkernel-snapshot--log-only"></a>
+
+#### `session/kernel-snapshot` — log-only
+
+```ts persistence-catalog
+/** 一次内核 dill 快照 flush 的仅日志记录。 */
+'session/kernel-snapshot': KernelSnapshotEventData
+```
+
+来源：[`packages/rlm/plugin-rlm-kernel/src/events.ts:46`](../packages/rlm/plugin-rlm-kernel/src/events.ts)
+
 <a id="sessiontitle--log-only"></a>
 
 #### `session/title` — log-only

@@ -638,6 +638,17 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 
 Source: [`packages/core/session/src/types.ts:336`](../packages/core/session/src/types.ts)
 
+<a id="sessionkernel-snapshot--log-only"></a>
+
+#### `session/kernel-snapshot` — log-only
+
+```ts persistence-catalog
+/** Log-only record of one kernel dill snapshot flush. */
+'session/kernel-snapshot': KernelSnapshotEventData
+```
+
+Source: [`packages/rlm/plugin-rlm-kernel/src/events.ts:46`](../packages/rlm/plugin-rlm-kernel/src/events.ts)
+
 <a id="sessionloop-round-done--log-only"></a>
 
 #### `session/loop-round-done` — log-only

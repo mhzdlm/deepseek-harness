@@ -34,7 +34,7 @@ function internals(registry: SessionKernelRegistry) {
   }
 }
 
-function fakeManager(snapshot: () => Promise<unknown> = async () => ({})) {
+function fakeManager(snapshot: () => Promise<unknown> = async () => ({ saved: [], skipped: [], bytes: 0, path: 'p' })) {
   return { dispose: () => undefined, snapshotState: snapshot }
 }
 
@@ -197,7 +197,7 @@ describe('live-kernel cap eviction of leased kernels (T3.2 C semantics)', () => 
     let healthy = false
     const registry = makeRegistry({ reclaimSnapshotGraceMs: 400, now: () => now })
     const k = internals(registry)
-    k.kernels.set('s1', fakeManager(() => { calls += 1; return healthy ? Promise.resolve({}) : Promise.resolve(null) }))
+    k.kernels.set('s1', fakeManager(() => { calls += 1; return healthy ? Promise.resolve({ saved: [], skipped: [], bytes: 0, path: 'p' }) : Promise.resolve(null) }))
     registry.pin('s1', 'schedule')
 
     const gate = registry as unknown as {

@@ -31,9 +31,23 @@ export interface MoaPresetConfig {
    * `mode:'subagent'` runs as a spawned tool-capable child instead of a plain
    * completion (`provider` names the subagent provider).
    */
-  referenceModels?: Array<{ provider?: string; model?: string; enabled?: boolean; mode?: string }>
+  referenceModels?: Array<{
+    /** Subagent provider for `mode:'subagent'` slots; other modes ignore it. */
+    provider?: string
+    /** Model id this reference slot queries. */
+    model?: string
+    /** Whether the slot answers this round (default true). */
+    enabled?: boolean
+    /** `'completion'` (plain model call) or `'subagent'` (tool-capable spawned child). */
+    mode?: string
+  }>
   /** The synthesizing slot. */
-  aggregator?: { provider?: string; model?: string }
+  aggregator?: {
+    /** Provider for the synthesizing slot; omitted inherits the default LLM provider. */
+    provider?: string
+    /** Model id for the synthesizing slot. */
+    model?: string
+  }
   /** Per-reference token ceiling (default 4096). Never applied to the aggregator or subagent slots. */
   referenceMaxTokens?: number
   /** Per-reference wall-clock budget in ms (default 120000). */
@@ -45,7 +59,9 @@ export interface MoaPresetConfig {
 export interface Config {
   /** Artifact root for traces and the managed preset store; defaults to `~/.dsh/rlm`. */
   dataDir?: string
+  /** Named MoA preset definitions, keyed by preset id; the active one is chosen by `defaultPreset`. */
   presets?: Record<string, MoaPresetConfig>
+  /** Preset id applied when a cell does not name one (default: none → built-in default panel). */
   defaultPreset?: string
   /**
    * `''` (off), `'display'` (render provenance labels), or `'full'` (also

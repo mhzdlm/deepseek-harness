@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { rmSync } from 'node:fs'
+import { rmSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
@@ -104,5 +104,27 @@ describe('rlm preset', () => {
     expect(schemas).toContain('verify')
     expect(schemas).toContain('moa')
     await handle.dispose()
+  })
+
+  it('rlm persona guides kernel namespace hygiene', async () => {
+    const presetPath = join(RLM_PRESET_ROOT, 'rlm', 'agent.cordis.yml')
+    const text = readFileSync(presetPath, 'utf8')
+    expect(text).toContain('scratch variables')
+    expect(text).toContain('keep it tidy')
+    expect(text).toContain('manifest')
+  })
+
+  it('rlm persona guides long-session compaction budget', async () => {
+    const presetPath = join(RLM_PRESET_ROOT, 'rlm', 'agent.cordis.yml')
+    const text = readFileSync(presetPath, 'utf8')
+    expect(text).toContain('large token surface')
+    expect(text).toContain('mid-turn')
+  })
+
+  it('rlm persona guides plugin-combination usage', async () => {
+    const presetPath = join(RLM_PRESET_ROOT, 'rlm', 'agent.cordis.yml')
+    const text = readFileSync(presetPath, 'utf8')
+    expect(text).toContain('rank candidate solutions')
+    expect(text).toContain('high-value decision points')
   })
 })

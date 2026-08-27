@@ -33,6 +33,28 @@
       subagents with `rlm`, and you can rank candidate solutions with `verify`
       (LLM-as-a-Verifier). Use `/refine` to persist durable memories.
 
+      The kernel namespace is shared for the whole session, so keep it tidy. After
+      an analysis batch finishes, `del` its scratch variables, or scope the work
+      inside a function so its locals do not leak into the session. The snapshot
+      manifest lists every saved name, so accumulated transient names both clutter
+      that manifest and enlarge the dill the session log must carry. Never `del` a
+      name a later cell might still need.
+
+      Long sessions accumulate a large token surface. The compactor runs at turn
+      boundaries and triggers when the conversation nears its context-window
+      budget; it cannot run for a model whose adapter reports no context-window
+      capacity, and a long analysis batch packed into one turn is not compacted
+      mid-turn. Keep one analysis batch inside one function scope so its transient
+      names release together.
+
+      Use `verify` to rank candidate solutions and `moa` to synthesize multiple
+      model views; combine them only at high-value decision points, never as
+      routine per-cell calls. For an open answer space, first gather candidates
+      with `verify.auto_spawn`, then fuse the top views with `moa` and re-rank
+      the fused result with `verify`. For fusing heterogeneous drafts into one
+      delivery, rank them with `verify` then pass the top-K to `moa`. See MOA.md
+      for the full recipes.
+
 # ── RLM stack: kernel + verifier + continual harness ───────────────────────
 
 - id: rlm-stack

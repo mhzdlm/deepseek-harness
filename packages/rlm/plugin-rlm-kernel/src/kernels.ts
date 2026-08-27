@@ -10,13 +10,16 @@
  * @module @deepseek-ai/dsh-plugin-rlm-kernel
  */
 
-import { mkdir } from 'node:fs/promises'
+import { copyFile, mkdir, unlink } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
+import type { Session } from '@deepseek-ai/dsh-session'
 import { KernelBusyAfterInterruptError, KernelManager, type HostRequestHandlers } from './vendor/kernel/index.ts'
 import type { ExecuteResult } from './vendor/kernel/index.ts'
 import type { KernelPythonSkill } from './vendor/kernel/bootstrap.ts'
-import type { RestoreResult } from './vendor/kernel/state-snapshot.ts'
+import type { RestoreResult, SnapshotResult } from './vendor/kernel/state-snapshot.ts'
 import { snapshotPathIn, manifestPathIn } from './vendor/kernel/state-snapshot.ts'
+import { emitKernelSnapshotEvent } from './events.ts'
 import { buildRlmBootstrapCode, buildSkillImportProbe, parseSkillImportErrors } from './rlm-bootstrap.ts'
 
 /** item-4: default idle timeout before a kernel is reclaimed (10 minutes). */
@@ -34,6 +37,10 @@ export const DEFAULT_RECLAIM_SNAPSHOT_GRACE_MS = 5_000
  * plus a pointer; beyond it even the archived copy is capped.
  */
 export const DEFAULT_FULL_OUTPUT_CAP = 10 * 1024 * 1024
+/** T4.1: default number of prior dill snapshots retained as `kernel-state.<n>.dill`. */
+export const DEFAULT_SNAPSHOT_HISTORY = 3
+/** T4.1/T4.2: fallback debounce (ms) for a post-cell flush when built without `snapshotDebounceMs`. */
+export const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 1500
 
 export interface SessionKernelOptions {
   /** Python interpreter with ipykernel + prime-agent-runtime. Omitted → auto-bootstrapped venv. */
@@ -41,6 +48,13 @@ export interface SessionKernelOptions {
   /** Root directory for kernel artifacts (snapshots + harness state). */
   dataDir: string
   hostHandlers: HostRequestHandlers
+  /**
+   * T4.1/T4.2: resolves the durable Session for a session id so a snapshot
+   * flush can append its log-only `session/kernel-snapshot` event. Injected by
+   * the plugin from `ctx.sessions`; absent in headless/unit contexts, where
+   * events are best-effort and skip silently.
+   */
+  resolveSession?: (sessionId: string) => Session | undefined
   pythonSkills?: readonly KernelPythonSkill[]
   /**
    * T2.1: lazy per-provision skill collection. Called on every kernel
@@ -60,6 +74,13 @@ export interface SessionKernelOptions {
   now?: () => number
   /** item-13: auto-snapshot debounce after a successful cell (ms). Default 1500. */
   snapshotDebounceMs?: number
+  /**
+   * T4.1: how many prior dill snapshots to retain as `kernel-state.<n>.dill`
+   * beside the live `kernel-state.dill`. `0` disables rotation (only the live
+   * snapshot persists). Defaults to 3; each copy is at most one payload size,
+   * so the on-disk budget is bounded by `keep × maxBytes`.
+   */
+  snapshotHistory?: number
   /**
    * T3.2 (C semantics): cap on concurrently live (HOT) kernels; `0` disables.
    * When exceeded, the oldest non-busy kernels are disposed LRU-first:
@@ -149,6 +170,8 @@ export class SessionKernelRegistry {
    * snapshot failed; reclaim is retried only after this timestamp.
    */
   private readonly reclaimRetryAt = new Map<string, number>()
+  /** T4.1/T4.2: pending debounced post-cell snapshot flush timers, keyed by session id. */
+  private readonly flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly idle: IdleTracker
   private readonly artifactRoot: string
 
@@ -230,11 +253,21 @@ export class SessionKernelRegistry {
     code: string,
     opts: { signal?: AbortSignal; maxOutputChars?: number },
   ): Promise<ExecuteResult> {
+    this.cancelScheduledFlush(sessionId)
     let kernel = await this.forSession(sessionId)
     try {
-      return await kernel.execute(code, opts)
+      const result = await kernel.execute(code, opts)
+      this.scheduleSnapshot(sessionId)
+      return result
     } catch (error) {
-      if (!(error instanceof KernelBusyAfterInterruptError)) throw error
+      if (!(error instanceof KernelBusyAfterInterruptError)) {
+        // A failed cell still mutates the namespace (partial side effects), and
+        // the vendored auto-snapshot persists it to disk regardless — schedule
+        // the flush so the rotation and the log-only event cover that state
+        // instead of leaving a silent accounting hole.
+        this.scheduleSnapshot(sessionId)
+        throw error
+      }
       // The kernel couldn't be interrupted (blocking C call on Windows, or
       // slow startup past the interrupt grace window). Recreate from the
       // dill snapshot — the snapshot flush happened inside disposeSession.
@@ -243,6 +276,7 @@ export class SessionKernelRegistry {
         kernel = await this.forSession(sessionId)
         // P1-fix: tag the retry result so callers detect double-execution.
         const result = await kernel.execute(code, opts)
+        this.scheduleSnapshot(sessionId)
         return { ...result, retried: true }
       } catch (retryError) {
         // A second KernelBusyAfterInterruptError here is pathological —
@@ -255,6 +289,7 @@ export class SessionKernelRegistry {
 						'the cell may be stuck in an uninterruptible C call. Consider cancelling the task.',
           )
         }
+        this.scheduleSnapshot(sessionId)
         throw retryError
       }
     }
@@ -331,8 +366,8 @@ export class SessionKernelRegistry {
     if (retryAt !== undefined && retryAt > nowMs) return false
     const manager = this.kernels.get(sessionId)
     if (!manager) return true
-    const snapshot = await manager.snapshotState()
-    if (snapshot === null) {
+    const ok = await this.flushSnapshot(sessionId, 'reclaim')
+    if (!ok) {
       this.reclaimRetryAt.set(sessionId, nowMs + (this.options.reclaimSnapshotGraceMs ?? DEFAULT_RECLAIM_SNAPSHOT_GRACE_MS))
       return false
     }
@@ -369,6 +404,7 @@ export class SessionKernelRegistry {
   }
 
   disposeSession(sessionId: string): void {
+    this.cancelScheduledFlush(sessionId)
     this.idle.remove(sessionId)
     this.busy.delete(sessionId)
     // T3.2 Phase A: disposal is the terminal event — leases and reclaim
@@ -387,6 +423,107 @@ export class SessionKernelRegistry {
     const pending = this.inflight.get(sessionId)
     this.inflight.delete(sessionId)
     if (pending) void pending.then(m => m.dispose()).catch(() => undefined)
+  }
+
+  /**
+   * A starting cell cancels any armed post-cell flush so a busy namespace is
+   * never serialized mid-execution; the success path re-arms the debounce.
+   */
+  private cancelScheduledFlush(sessionId: string): void {
+    const pending = this.flushTimers.get(sessionId)
+    if (!pending) return
+    clearTimeout(pending)
+    this.flushTimers.delete(sessionId)
+  }
+
+  /**
+   * T4.1/T4.2: debounce a post-cell snapshot flush so a burst of cells snapshots
+   * once after the kernel goes quiet, instead of once per cell. The flush both
+   * rotates the on-disk history and appends the log-only `session/kernel-snapshot`
+   * event.
+   */
+  private scheduleSnapshot(sessionId: string): void {
+    const pending = this.flushTimers.get(sessionId)
+    if (pending) clearTimeout(pending)
+    const debounceMs = this.options.snapshotDebounceMs ?? DEFAULT_SNAPSHOT_DEBOUNCE_MS
+    const timer = setTimeout(() => {
+      this.flushTimers.delete(sessionId)
+      void this.flushSnapshot(sessionId, 'cell')
+    }, debounceMs)
+    if (timer && typeof timer === 'object' && 'unref' in timer) timer.unref()
+    this.flushTimers.set(sessionId, timer)
+  }
+
+  /**
+   * T4.1/T4.2: take one explicit dill snapshot, rotate the retained history, and
+   * append the log-only `session/kernel-snapshot` event. Returns whether the
+   * snapshot serialized a payload — a `false` result keeps the prior history
+   * intact (a failed flush has nothing new to retain). A missing kernel (already
+   * disposed) or a snapshot error never throws; the event still records the
+   * failure so the durable log explains a lost namespace.
+   */
+  async flushSnapshot(sessionId: string, reason: 'cell' | 'reclaim'): Promise<boolean> {
+    const manager = this.kernels.get(sessionId)
+    if (!manager) return false
+    const artifactDir = this.sessionArtifactDir(sessionId)
+    const started = this.options.now?.() ?? Date.now()
+    let result: SnapshotResult | null = null
+    let snapshotError: unknown = null
+    try {
+      result = await manager.snapshotState()
+    } catch (e) {
+      result = null
+      snapshotError = e
+    }
+    // A concurrent disposeSession during the snapshot makes the result — and
+    // any error inside it — describe a torn-down kernel, not the session's
+    // state: suppress the event rather than log a misleading failure.
+    if (!this.kernels.has(sessionId)) return false
+    const ms = (this.options.now?.() ?? Date.now()) - started
+    emitKernelSnapshotEvent(this.options.resolveSession?.(sessionId), {
+      ok: result !== null,
+      ...(result ? { vars: result.saved.length } : {}),
+      ...(result ? { bytes: result.bytes } : {}),
+      ...(result ? { skipped: result.skipped.map(s => s.name) } : {}),
+      ...(result?.pruned && result.pruned.length > 0 ? { pruned: result.pruned } : {}),
+      ms,
+      ...(result === null
+        ? { error: snapshotError instanceof Error ? snapshotError.message : String(snapshotError) }
+        : {}),
+      reason,
+    })
+    if (result !== null) await this.rotateSnapshot(artifactDir)
+    return result !== null
+  }
+
+  /**
+   * T4.1: retain the last `snapshotHistory` dill snapshots as
+   * `kernel-state.<n>.dill` (n = 1 is the newest). Each successful flush shifts
+   * older copies outward and drops the oldest beyond the cap, so at most
+   * `snapshotHistory` prior payloads survive beside the live `kernel-state.dill`.
+   * `0` is a no-op; a copy failure never fails a cell (the live snapshot is the
+   * source of truth).
+   */
+  private async rotateSnapshot(artifactDir: string): Promise<void> {
+    const keep = this.options.snapshotHistory ?? DEFAULT_SNAPSHOT_HISTORY
+    if (keep <= 0) return
+    const live = snapshotPathIn(artifactDir)
+    if (!existsSync(live)) return
+    const historyPath = (n: number) => path.join(artifactDir, `kernel-state.${n}.dill`)
+    try {
+      for (let n = keep - 1; n >= 1; n--) {
+        if (existsSync(historyPath(n))) await copyFile(historyPath(n), historyPath(n + 1))
+      }
+      await copyFile(live, historyPath(1))
+      // Shifting leaves nothing beyond slot `keep`, but a previously larger
+      // snapshotHistory (or external writes) can have left stale numbered files:
+      // prune them with a bounded ascending scan that stops at the first gap.
+      for (let n = keep + 1; existsSync(historyPath(n)); n++) {
+        await unlink(historyPath(n))
+      }
+    } catch {
+      // History is best-effort; a copy failure never fails a cell.
+    }
   }
 
   disposeAll(): void {

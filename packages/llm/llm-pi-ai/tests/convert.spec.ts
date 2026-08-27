@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AttachmentId, ImageVariantId } from '@deepseek-ai/dsh-attachment'
 import type { AttachmentStore, ImageAttachmentRef, ImageRequestPolicy, RequestImageAttachment } from '@deepseek-ai/dsh-attachment'
-import { createUserMessage, CallId, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, createMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, CallId, CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, createMessage, MODEL_UNAVAILABLE_CODE } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { AssistantMessage, AssistantMessageEvent, Usage } from '@earendil-works/pi-ai'
 import { toPiContext } from '../src/context.ts'
@@ -786,6 +786,16 @@ describe('mapStopReason / mapUsage', () => {
   it('maps routable HTTP-ish error messages to stable codes', () => {
     expect(mapStopReason(assistant({ stopReason: 'error', errorMessage: 'HTTP 401: bad key' })))
       .toMatchObject({ kind: 'error', failure: { code: 'AUTH' } })
+    // Captured from a real opencode gateway: a 401 whose Anthropic-flavored body
+    // names an unavailable model is a route/model problem, not a key problem.
+    expect(mapStopReason(assistant({
+      stopReason: 'error',
+      errorMessage: '401: {"type":"ModelError","message":"Model ox-alpha-free is not supported"}',
+    }))).toMatchObject({ kind: 'error', failure: { code: MODEL_UNAVAILABLE_CODE } })
+    expect(mapStopReason(assistant({
+      stopReason: 'error',
+      errorMessage: '401: model "claude-3" is deprecated',
+    }))).toMatchObject({ kind: 'error', failure: { code: MODEL_UNAVAILABLE_CODE } })
     expect(mapStopReason(assistant({ stopReason: 'error', errorMessage: 'HTTP 429: rate limit' })))
       .toMatchObject({ kind: 'error', failure: { code: 'RATE_LIMIT' } })
     expect(mapStopReason(assistant({ stopReason: 'error', errorMessage: 'HTTP 429: insufficient_quota' })))

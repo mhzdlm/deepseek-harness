@@ -28,7 +28,7 @@ import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-sub
 import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
 import { buildJudgePrompt, extractScore, type JudgeCriterion } from './scoring.ts'
 import { runTournament } from './tournament.ts'
-import { emitVerifyEvent } from './events.ts'
+import { emitVerifyEvent, type VerifyJudgeOutcomeData } from './events.ts'
 /** One teed bypass scoring call, archived in the run's detail file (T2.6). */
 export interface VerifyCallRecord {
   model: string
@@ -347,35 +347,42 @@ export function createVerifyTool(options: VerifyToolOptions) {
         })
 
         const outcomes = await Promise.all(selected.map(async ({ name, profile }) => {
+          const failures = { count: 0 }
           try {
             const scored = await runTournament(candidates.length, seed, pivotsArg, async (a, b) =>
               scorePairOnSeam(callModelTee, {
                 provider: profile.provider ?? options.provider ?? 'deepseek-official',
                 model: profile.model,
-              }, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens))
-            return { name, model: profile.model, status: 'ok' as const, ...scored }
+              }, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens, failures))
+            return { name, model: profile.model, status: failures.count > 0 ? 'degraded' as const : 'ok' as const, ...scored }
           } catch {
             return { name, model: profile.model, status: 'failed' as const, bestIndex: -1, meanPreference: [], nComparisons: 0 }
           }
         }))
-        const okOutcomes = outcomes.filter(o => o.status === 'ok')
-        if (okOutcomes.length === 0) {
+        // A degraded judge still produced a preference vector (its failures
+        // scored as ties), so it participates in fusion; only a judge whose
+        // tournament threw has no vector.
+        const fusable = outcomes.filter(o => o.status !== 'failed')
+        if (fusable.length === 0) {
           throw new Error(`verify: all ${outcomes.length} judges failed (${outcomes.map(o => o.model).join(', ')})`)
         }
-        const fused = fuseMeanPreferences(okOutcomes.map(o => ({ model: o.model, status: o.status, meanPreference: o.meanPreference })))
+        const fused = fuseMeanPreferences(fusable.map(o => ({ model: o.model, status: o.status, meanPreference: o.meanPreference })))
         // Scores are per-CANDIDATE in candidate order, averaged across the
-        // judges that succeeded — same order/semantics as the single-judge
-        // path's meanPreference. Ranking stays the Borda-fused ordering.
-        const okVectors = okOutcomes.map(o => o.meanPreference)
+        // judges that produced a vector — same order/semantics as the
+        // single-judge path's meanPreference. Ranking stays the Borda-fused
+        // ordering.
+        const okVectors = fusable.map(o => o.meanPreference)
         const scoresByCandidate = candidates.map((_, candidateIndex) => {
           if (okVectors.length === 0) return 0
           let sum = 0
           for (const vector of okVectors) sum += vector[candidateIndex] ?? 0
           return sum / okVectors.length
         })
-        const failedJudgeNames = outcomes.filter(o => o.status === 'failed').map(o => o.name)
+        // Any judge that is not fully healthy (degraded or failed) is named:
+        // the run still settles, but the degradation must not be silent.
+        const failedJudgeNames = outcomes.filter(o => o.status !== 'ok').map(o => o.name)
 
-        const judgeOutcomes = outcomes.map(o => ({
+        const judgeOutcomes = outcomes.map((o): VerifyJudgeOutcomeData => ({
           model: o.model,
           status: o.status,
           meanPreference: o.meanPreference,
@@ -393,7 +400,7 @@ export function createVerifyTool(options: VerifyToolOptions) {
           index: fused.bestIndex,
           scores: scoresByCandidate,
           ranking: fused.fusedRanking,
-          nComparisons: okOutcomes.reduce((sum, o) => sum + o.nComparisons, 0),
+          nComparisons: fusable.reduce((sum, o) => sum + o.nComparisons, 0),
           durationMs: Date.now() - startedAt,
           judges: judgeOutcomes,
           ...(failedJudgeNames.length > 0 ? { failedJudges: failedJudgeNames } : {}),
@@ -401,13 +408,21 @@ export function createVerifyTool(options: VerifyToolOptions) {
           ...(detailPath !== undefined ? { detailPath } : {}),
         })
 
+        // Degraded or failed judges are named in the result text so the model —
+        // and the user, through the rendered result — sees the degradation
+        // instead of an unexplained preference shift.
+        const baseText = renderFused(fused, candidates, fusable.length)
+        const text = failedJudgeNames.length > 0
+          ? `${baseText}\n\nverify: ${failedJudgeNames.length} judge(s) degraded or failed (${failedJudgeNames.join(', ')})`
+          : baseText
         return {
-          text: renderFused(fused, candidates, okOutcomes.length),
+          text,
           index: fused.bestIndex,
           scores: scoresByCandidate,
           ranking: fused.fusedRanking,
-          nComparisons: okOutcomes.reduce((sum, o) => sum + o.nComparisons, 0),
+          nComparisons: fusable.reduce((sum, o) => sum + o.nComparisons, 0),
           judges: outcomes.map(o => ({ model: o.model, status: o.status })),
+          ...(failedJudgeNames.length > 0 ? { failedJudges: failedJudgeNames } : {}),
         }
       }
 
@@ -422,11 +437,13 @@ export function createVerifyTool(options: VerifyToolOptions) {
         candidatesDigest: digestCandidates(candidates, options.privacyFilter, options.redactReference),
       })
       const startedSingle = Date.now()
+      const failures = { count: 0 }
       const tournament = await runTournament(candidates.length, seed, Math.min(pivotsArg, candidates.length), async (a, b) =>
-        scorePairOnSeam(callModelTee, route, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens))
+        scorePairOnSeam(callModelTee, route, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens, failures))
+      const judgeStatus = failures.count > 0 ? 'degraded' as const : 'ok' as const
       const detailPathSingle = writeDetail({
         childSessionIds,
-        judges: [{ model, status: 'ok', meanPreference: tournament.meanPreference, nComparisons: tournament.nComparisons }],
+        judges: [{ model, status: judgeStatus, meanPreference: tournament.meanPreference, nComparisons: tournament.nComparisons }],
       })
       emitVerifyEvent(session, 'session/verify-result', {
         engine: 'seam',
@@ -436,7 +453,8 @@ export function createVerifyTool(options: VerifyToolOptions) {
         ranking: rankByMean(tournament.meanPreference),
         nComparisons: tournament.nComparisons,
         durationMs: Date.now() - startedSingle,
-        judges: [{ model, status: 'ok' as const, meanPreference: tournament.meanPreference, nComparisons: tournament.nComparisons }],
+        judges: [{ model, status: judgeStatus, meanPreference: tournament.meanPreference, nComparisons: tournament.nComparisons }],
+        ...(judgeStatus !== 'ok' ? { failedJudges: [model] } : {}),
         ...(childSessionIds.length > 0 ? { childSessionIds } : {}),
         ...(detailPathSingle !== undefined ? { detailPath: detailPathSingle } : {}),
       })
@@ -452,12 +470,14 @@ export function createVerifyTool(options: VerifyToolOptions) {
         '',
         best,
       ]
+      if (judgeStatus !== 'ok') lines.push(`verify: scoring degraded — ${failures.count} call(s) failed and were scored as ties`)
       return {
         text: lines.join('\n'),
         index: tournament.bestIndex,
         scores,
         ranking,
         nComparisons: tournament.nComparisons,
+        ...(judgeStatus !== 'ok' ? { failedJudges: [model] } : {}),
       }
     },
   })
@@ -544,6 +564,25 @@ function writeVerifyDetail(
   }
 }
 
+/**
+ * Score one pair of candidates through one judge model. Each evaluation
+ * repetition runs the scoring prompt with slot-bias cancellation; a call
+ * that throws is scored as a neutral tie (0.5/0.5) and the throw is counted
+ * in `failures` if provided, so the caller can surface the degradation.
+ * @param callModel - the model invocation function.
+ * @param route - provider and model identity.
+ * @param problem - the task description.
+ * @param traceA - first candidate's trajectory.
+ * @param traceB - second candidate's trajectory.
+ * @param criteria - judge criteria to evaluate against.
+ * @param nEvaluations - how many scoring repetitions per pair.
+ * @param signal - cancellation signal.
+ * @param maxTokens - max tokens per scoring call.
+ * @param failures - optional mutable counter incremented on each scoring
+ *   failure (the call is still scored as a tie, but the degradation is
+ *   no longer silent).
+ * @returns [score_A, score_B] averaged over all evaluations.
+ */
 async function scorePairOnSeam(
   callModel: VerifyCallModel,
   route: { provider: string; model: string },
@@ -554,6 +593,7 @@ async function scorePairOnSeam(
   nEvaluations: number,
   signal: AbortSignal,
   maxTokens: number,
+  failures?: { count: number },
 ): Promise<[number, number]> {
   let raSum = 0
   let rbSum = 0
@@ -586,7 +626,10 @@ async function scorePairOnSeam(
         rb = extractScore(out.text, tokens, positions, '<score_B>')
       } catch {
         // on_error "tie": a failed call contributes a neutral 0.5/0.5 for this
-        // repetition instead of failing the whole comparison.
+        // repetition instead of failing the whole comparison. The failure is
+        // still counted so the judge surfaces as degraded instead of silently
+        // skewing the preference vector.
+        if (failures) failures.count += 1
         ra = 0.5
         rb = 0.5
       }

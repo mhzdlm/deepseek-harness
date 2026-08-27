@@ -12,6 +12,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import { createHostHandlers } from './host-handlers.ts'
 import { createIpythonTool } from './ipython-tool.ts'
 import { createSkillCreateTool } from './skill-create.ts'
@@ -43,6 +44,11 @@ export interface Config {
   maxOutputChars?: number
   /** item-13: auto-snapshot debounce after a successful cell (ms). Defaults to 1500. */
   snapshotDebounceMs?: number
+  /**
+   * T4.1: how many prior dill snapshots to retain as `kernel-state.<n>.dill`.
+   * `0` disables rotation. Defaults to 3; each copy is at most one payload size.
+   */
+  snapshotHistory?: number
   /**
    * item-7: provision a session's kernel at session/created instead of at the
    * first ipython call, moving the ~5s cold start off the critical path.
@@ -78,6 +84,7 @@ export const Config: z<Config> = z.object({
   idleTimeoutMs: z.natural(),
   maxOutputChars: z.natural(),
   snapshotDebounceMs: z.natural(),
+  snapshotHistory: z.natural(),
   warmupOnSessionCreate: z.boolean(),
   maxLiveKernels: z.natural(),
   reclaimSnapshotGraceMs: z.natural(),
@@ -115,6 +122,10 @@ export function apply(ctx: Context, config: Config): void {
     },
     ...(config.idleTimeoutMs !== undefined ? { idleTimeoutMs: config.idleTimeoutMs } : {}),
     ...(config.snapshotDebounceMs !== undefined ? { snapshotDebounceMs: config.snapshotDebounceMs } : {}),
+    ...(config.snapshotHistory !== undefined ? { snapshotHistory: config.snapshotHistory } : {}),
+    // T4.1/T4.2: resolve the durable Session so a flush can append its log-only
+    // `session/kernel-snapshot` event.
+    resolveSession: (sessionId: string) => ctx.sessions?.get(sessionId as SessionId),
     // T3.2 Phase A: live-kernel cap and reclaim-snapshot grace (defaults live
     // in kernels.ts and apply when the config keys are absent).
     ...(config.maxLiveKernels !== undefined ? { maxLiveKernels: config.maxLiveKernels } : {}),
@@ -156,7 +167,7 @@ export function apply(ctx: Context, config: Config): void {
   const sweepTimer = idleTimeoutMs > 0
     ? setInterval(() => {
       kernels.disposeIdle().catch((error) => {
-        console.warn('[rlm-kernel] idle sweep failed:', error)
+        ctx.logger.warn('[rlm-kernel] idle sweep failed; next sweep retries', { error })
       })
     }, IDLE_SWEEP_INTERVAL_MS)
     : undefined

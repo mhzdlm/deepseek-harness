@@ -160,6 +160,11 @@ export function createMoaTool(options: MoaToolOptions) {
             lines.push(`  ${r.status === 'ok' ? '✓' : '✗'} ${r.label}`)
           }
         }
+        // Name the failed references in the rendered output so the model and
+        // the user see the degradation instead of an unexplained shortfall.
+        if (value.failedLabels.length > 0) {
+          lines.push(`moa: ${value.failedLabels.length} reference(s) failed (${value.failedLabels.join(', ')})`)
+        }
         if (value.truncated) lines.push('(aggregator output hit the token cap)')
         lines.push('', value.synthesis)
         return [{ type: 'text', text: lines.join('\n') }]
