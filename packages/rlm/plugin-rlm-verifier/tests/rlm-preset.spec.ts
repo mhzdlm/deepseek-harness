@@ -17,6 +17,9 @@ import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import AgentPresets from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-agent-presets/types'
+import TokenMeter from '@deepseek-ai/dsh-token-meter'
+import SessionPersistence from '@deepseek-ai/dsh-session-persistence'
+import Goal from '@deepseek-ai/dsh-goal'
 
 // The rlm preset composition lives under docs/recipes (dev-mode assembly
 // recipe, deliberately outside the shipped app config roster).
@@ -75,6 +78,9 @@ async function setup() {
   await ctx.plugin(SubagentRuntime)
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(CommandRuntime)
+  await ctx.plugin(TokenMeter)
+  await ctx.plugin(SessionPersistence)
+  await ctx.plugin(Goal)
   await ctx.plugin(AgentPresets, {
     default: 'standard',
     roots: [{ path: RLM_PRESET_ROOT, trust: 'system' }],
@@ -122,6 +128,9 @@ describe('rlm preset', () => {
     expect(schemas).toContain('ipython')
     expect(schemas).toContain('verify')
     expect(schemas).toContain('moa')
+    expect(schemas).toContain('schedule_create')
+    expect(ctx.agentPresets.serviceFor(handle.agent, 'compaction')).toBeDefined()
+    expect(ctx.get('goals')).toBeDefined()
     await handle.dispose()
   })
 
