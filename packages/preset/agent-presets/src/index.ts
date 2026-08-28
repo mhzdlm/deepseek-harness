@@ -164,6 +164,7 @@ export class AgentPresets extends TypertRemoteService {
     })).default([]),
     includeShippedRoot: z.boolean().default(true),
     includeUserRoot: z.boolean().default(true),
+    resolveModule: z.any().default(undefined),
   }) as z<Config>
 
   /**
@@ -303,7 +304,7 @@ export class AgentPresets extends TypertRemoteService {
    * @returns the presets, first-root-wins per id.
    */
   async list(): Promise<AgentPreset[]> {
-    return await discoverPresets(this.resolvedRoots, this.harnessBase)
+    return await discoverPresets(this.resolvedRoots, this.harnessBase, this.config.resolveModule)
   }
 
   /**

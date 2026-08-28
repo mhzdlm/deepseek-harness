@@ -52,7 +52,12 @@ async function setup() {
         try {
           return await internal.import(specifier, base, {})
         } catch {
-          return import(/* @vite-ignore */ specifier)
+          // Fall back through Vite's resolver (tsconfig paths), which is how
+          // every other `@deepseek-ai/dsh-*` specifier in this suite resolves.
+          // Omit @vite-ignore so the module runner rewrites the bare name to
+          // its source path instead of a raw Node import that cannot see the
+          // non-hoisted pnpm workspace packages.
+          return import(specifier)
         }
       }
       return internal.import(specifier, base, {})
@@ -74,6 +79,20 @@ async function setup() {
     default: 'standard',
     roots: [{ path: RLM_PRESET_ROOT, trust: 'system' }],
     includeUserRoot: false,
+    // The harness root's node_modules does not hoist the rlm workspace packages
+    // (pnpm links them into each consumer's own node_modules), so the discovery
+    // disk walk cannot see them. Resolve through Vite's tsconfig paths — the
+    // same resolver every other `@deepseek-ai/dsh-*` specifier in this suite
+    // uses — as the secondary health check. Omit @vite-ignore so the module
+    // runner rewrites the bare name to its source path.
+    resolveModule: async (name: string) => {
+      try {
+        await import(name)
+        return true
+      } catch {
+        return false
+      }
+    },
   })
   return { ctx }
 }

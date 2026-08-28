@@ -152,9 +152,40 @@ function packageInstalled(name: string, base: string): boolean {
  * @param harnessBase - base URL a package name resolves against.
  * @returns true when the row names something that can be imported.
  */
-async function rowResolves(row: RowSpecifier, presetBase: string, harnessBase: string): Promise<boolean> {
+/**
+ * Secondary resolver for a bare package name, consulted only when the
+ * `node_modules` disk walk (`packageInstalled`) misses.
+ *
+ * The walk is authoritative for an installed harness, where every preset row's
+ * package is hoisted beside the roster, so this resolver is never reached
+ * there. A dev checkout run through a workspace package manager that does not
+ * hoist workspace packages leaves the walk empty even though the same bare name
+ * resolves through the host module resolver — Vite's tsconfig paths in this
+ * suite. A caller that knows such a resolver passes it here; it runs only after
+ * the walk fails, so a real install is unaffected and a genuinely uninstalled
+ * package still reports broken.
+ * @param name - the package specifier, possibly carrying a subpath.
+ * @param base - the base URL the package name resolves against.
+ * @returns true when the resolver can locate the module.
+ */
+export type ModuleResolver = (name: string, base: string) => boolean | Promise<boolean>
+
+async function rowResolves(
+  row: RowSpecifier,
+  presetBase: string,
+  harnessBase: string,
+  moduleResolver?: ModuleResolver,
+): Promise<boolean> {
   if (row.kind === 'builtin') return true
-  if (row.kind === 'package') return isBuiltin(row.specifier) || packageInstalled(row.specifier, harnessBase)
+  if (row.kind === 'package') {
+    if (isBuiltin(row.specifier)) return true
+    if (packageInstalled(row.specifier, harnessBase)) return true
+    // Secondary path for dev layouts whose package manager does not hoist the
+    // workspace package to a `node_modules` the walk reaches, but whose host
+    // resolver still locates it. Runs only after the authoritative walk misses.
+    if (moduleResolver) return !!(await moduleResolver(row.specifier, harnessBase))
+    return false
+  }
   const url = row.kind === 'file' ? new URL(row.specifier) : new URL(row.specifier, presetBase)
   return await isFile(fileURLToPath(url))
 }
@@ -193,6 +224,7 @@ async function unresolvableRows(
   presetBase: string,
   harnessBase: string,
   at = '',
+  moduleResolver?: ModuleResolver,
 ): Promise<UnresolvableRow[]> {
   const found: UnresolvableRow[] = []
   for (const [index, entry] of rows.entries()) {
@@ -200,10 +232,10 @@ async function unresolvableRows(
     if (Boolean(row.disabled)) continue
     const positional = at === '' ? `row ${String(index + 1)}` : `${at} row ${String(index + 1)}`
     if (row.group === true) {
-      found.push(...await unresolvableRows(row.config as readonly unknown[], presetBase, harnessBase, positional))
+      found.push(...await unresolvableRows(row.config as readonly unknown[], presetBase, harnessBase, positional, moduleResolver))
       continue
     }
-    if (await rowResolves(classifyRowSpecifier(row.name), presetBase, harnessBase)) continue
+    if (await rowResolves(classifyRowSpecifier(row.name), presetBase, harnessBase, moduleResolver)) continue
     const label = typeof row.id === 'string' && row.id !== '' ? `row "${row.id}"` : positional
     found.push({ label, name: row.name })
   }
@@ -219,7 +251,7 @@ async function unresolvableRows(
  * @param harnessBase - base URL a row's package name resolves against.
  * @returns one human-readable reason, or undefined when the file is loadable.
  */
-async function compositionProblem(path: string, harnessBase: string): Promise<string | undefined> {
+async function compositionProblem(path: string, harnessBase: string, moduleResolver?: ModuleResolver): Promise<string | undefined> {
   let content: string
   try {
     content = await readFile(path, 'utf8')
@@ -243,7 +275,7 @@ async function compositionProblem(path: string, harnessBase: string): Promise<st
   // The composition's own directory, exactly as `Include` derives it, so a
   // row naming a file the preset ships resolves the way the mount will.
   const presetBase = new URL('.', pathToFileURL(path)).href
-  const unresolvable = await unresolvableRows(rows as readonly unknown[], presetBase, harnessBase)
+  const unresolvable = await unresolvableRows(rows as readonly unknown[], presetBase, harnessBase, '', moduleResolver)
   const [first] = unresolvable
   if (first === undefined) return undefined
   if (unresolvable.length === 1) {
@@ -286,7 +318,7 @@ async function isFile(path: string): Promise<boolean> {
  * caller's own `ctx.baseUrl`, which is where the installed harness lives.
  * @returns the root's presets ordered by id.
  */
-export async function scanRoot(root: PresetRoot, harnessBase: string): Promise<AgentPreset[]> {
+export async function scanRoot(root: PresetRoot, harnessBase: string, moduleResolver?: ModuleResolver): Promise<AgentPreset[]> {
   const dir = resolve(expandHomePath(root.path))
   let children
   try {
@@ -301,7 +333,7 @@ export async function scanRoot(root: PresetRoot, harnessBase: string): Promise<A
     const directory = join(dir, child.name)
     const path = join(directory, COMPOSITION_FILE)
     const broken = await isFile(path)
-      ? await compositionProblem(path, harnessBase)
+      ? await compositionProblem(path, harnessBase, moduleResolver)
       : `the composition file ${COMPOSITION_FILE} is missing — the directory still occupies the id; delete it or restore the file`
     // Display text only, and never fatal: a preset with unreadable metadata
     // still mounts, it just shows its id.
@@ -328,10 +360,11 @@ export async function scanRoot(root: PresetRoot, harnessBase: string): Promise<A
 export async function discoverPresets(
   roots: readonly PresetRoot[],
   harnessBase: string,
+  moduleResolver?: ModuleResolver,
 ): Promise<AgentPreset[]> {
   const byId = new Map<string, AgentPreset>()
   for (const root of roots) {
-    for (const preset of await scanRoot(root, harnessBase)) {
+    for (const preset of await scanRoot(root, harnessBase, moduleResolver)) {
       if (byId.has(preset.id)) continue
       byId.set(preset.id, preset)
     }

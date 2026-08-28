@@ -1,6 +1,7 @@
 /** Agent-preset vocabulary shared by discovery, mounting, and consumers. */
 
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { ModuleResolver } from './discovery.ts'
 
 /**
  * Where a preset's composition came from. A `system` preset ships with the
@@ -69,6 +70,15 @@ export interface Config {
    * configured root. False mounts a roster without the derived writable root.
    */
   includeUserRoot: boolean
+  /**
+   * Optional secondary resolver for bare package rows, used only when the
+   * `node_modules` disk walk misses. Omit in production: an installed harness
+   * hoists every preset row's package, so the walk is authoritative. A dev
+   * checkout whose package manager does not hoist workspace packages supplies a
+   * host-resolver fallback (Vite tsconfig paths) so health does not report the
+   * preset broken. Type-only here; see {@link ModuleResolver}.
+   */
+  resolveModule?: ModuleResolver
 }
 
 /**
