@@ -3,8 +3,11 @@
 // model believing it still has access to variables/imports it defined earlier.
 //
 // Snapshotting is best-effort and per-variable: each top-level name is pickled
-// with `dill` independently, so a single unpicklable object (open file, socket,
-// GPU tensor, …) is skipped and reported rather than aborting the whole snapshot.
+// with `dill` independently, so a single unpicklable object (socket, GPU tensor,
+// …) is skipped and reported rather than aborting the whole snapshot. Live
+// `io.IOBase` handles are skipped explicitly: dill serializes them as
+// reopen-instructions (path + mode), so loading the payload would reopen the
+// file — truncating it again for write modes.
 import { join } from "node:path";
 
 /** Default ceiling on a snapshot payload. Over-cap variables are skipped + reported. */
@@ -72,6 +75,8 @@ function pyStr(value: string): string {
 /**
  * Python that serializes the user namespace to `outPath` (atomic write) and a
  * sibling `.json` manifest, then prints a single marker line with the result.
+ * Live `io.IOBase` handles are skipped and reported: dill would otherwise store
+ * reopen-instructions that truncate write-mode files when the payload is loaded.
  * @param outPath - Absolute destination for the dill payload.
  * @param manifestPath - Absolute destination for the JSON manifest.
  * @param maxBytes - Aggregate snapshot size ceiling in bytes.
@@ -134,6 +139,12 @@ def _prime_agent_snapshot_state():
         if name.startswith("_") or name in hidden or name in always_skip:
             continue
         value = ns[name]
+        # dill serializes live file handles as reopen-instructions (path + mode),
+        # not as dead data: loading the payload reopens the file, and write modes
+        # truncate it. Skip io.IOBase values like the other live handles above.
+        if _b.isinstance(value, io.IOBase):
+            skipped.append({"name": name, "reason": "live io.IOBase handle: dill reopens the file on load (write modes truncate)"})
+            continue
         remaining = ${maxBytes} - total
         buffer_limit = ${maxVariableBytes} if identify_oversized else _b.min(${maxVariableBytes}, remaining)
         buffer = SnapshotBuffer(buffer_limit)
