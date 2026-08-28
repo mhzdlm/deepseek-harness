@@ -75,3 +75,6 @@ export const ENV_MAX_CONCURRENT_BOOTS = ['DSH_RLM_MAX_CONCURRENT_BOOTS', 'PRIME_
 export const ENV_FORKSERVER = ['DSH_RLM_KERNEL_FORKSERVER', 'PRIME_AGENT_KERNEL_FORKSERVER'] as const
 /** Coding-agent root dir read by the vendored `harness.py` fallback path. */
 export const ENV_CODING_AGENT_DIR = ['DSH_RLM_CODING_AGENT_DIR', 'PRIME_AGENT_CODING_AGENT_DIR', 'PI_CODING_AGENT_DIR'] as const
+
+/** Journal file for orphaned-kernel pid bookkeeping (vendored orphan-process-journal). */
+export const ENV_ORPHAN_PROCESS_JOURNAL = ['DSH_RLM_ORPHAN_PROCESS_JOURNAL', 'PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL'] as const

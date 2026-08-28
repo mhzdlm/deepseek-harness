@@ -71,16 +71,19 @@ const AUDITS: FileAudit[] = [
 		file: "index.ts",
 		checks: [
 			{
-				label: "#13 platform helpers imported (killSignalSafe/safeRmDirSync/writeFileSecureSync)",
-				mustContain: [/import\s*\{[^}]*killSignalSafe[^}]*safeRmDirSync[^}]*writeFileSecureSync[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform\.ts["']/],
+				// 2026-08-28 (prime v0.8.1): killSignalSafe moved out of index.ts — upstream
+				// routes forked-kernel kill through the forkserver protocol; index.ts keeps
+				// the junction-safe dir removal + secure file write helpers.
+				label: "#13 platform helpers imported (safeRmDirSync/writeFileSecureSync)",
+				mustContain: [/import\s*\{[^}]*safeRmDirSync[^}]*writeFileSecureSync[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform\.ts["']/],
 			},
 			{
 				label: "#1/#4 disposeKernelsForSession exported (pi-ai cleanup replacement)",
 				mustContain: [/export function disposeKernelsForSession/],
 			},
 			{
-				label: "#7 port/ready timeouts bumped to 30s (Windows cold start)",
-				mustContain: [/PORTS_RESOLVE_TIMEOUT_MS = 30000/, /READY_TIMEOUT_MS = 30000/],
+				label: "#7 port/ready timeouts bumped to 30s (Windows cold start; upstream absorbed this as 30_000)",
+				mustContain: [/PORTS_RESOLVE_TIMEOUT_MS = 30(?:000|_000)/, /READY_TIMEOUT_MS = 30(?:000|_000)/],
 			},
 			{
 				label: "#13b junction-safe dir removal",
@@ -95,8 +98,12 @@ const AUDITS: FileAudit[] = [
 				mustNotContain: [/process\.kill\([^)]*,\s*killSignal\)/],
 			},
 			{
-				label: "#13f forked-liveness probe via isPidAlive (no bare zero-signal)",
-				mustContain: [/\[local patch #13f\]/, /return !isPidAlive\(/],
+				// 2026-08-28 (prime v0.8.1): forked-kernel liveness moved onto the
+				// forkserver kill/alive protocol (forkedKernelDead / checkForkedKernelDeath);
+				// the pid-poll probe (#13f isPidAlive) is retired with it. Windows never
+				// runs the forkserver, so the Windows EPERM concern is structurally gone.
+				label: "#13f forked-liveness via the forkserver protocol (supersedes isPidAlive poll)",
+				mustContain: [/checkForkedKernelDeath/, /forkedKernelDead/],
 				mustNotContain: [/process\.kill\([^)]*,\s*0\s*\)/],
 			},
 			{
@@ -155,8 +162,11 @@ const AUDITS: FileAudit[] = [
 				mustContain: [/rlmEnv\(\.\.\.ENV_FORKSERVER\)/],
 			},
 			{
-				label: "#13a killSignalSafe imported and used for orphan kill",
-				mustContain: [/import\s*\{[^}]*killSignalSafe[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform\.ts["']/, /killSignalSafe\(msg\.pid/],
+				// 2026-08-28 (prime v0.8.1): forked-child kill goes through the forkserver
+				// kill protocol (fork-id keyed); killSignalSafe now covers the warm
+				// template proc's SIGTERM on the teardown path.
+				label: "#13a killSignalSafe imported and used for the template-proc kill",
+				mustContain: [/import\s*\{[^}]*killSignalSafe[^}]*\}\s*from\s*["']\.\.\/\.\.\/util\/platform\.ts["']/, /killSignalSafe\(proc\.pid/],
 			},
 			{
 				label: "#13a no direct POSIX signal kill",

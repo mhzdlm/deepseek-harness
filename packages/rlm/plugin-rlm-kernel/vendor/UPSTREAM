@@ -6,6 +6,20 @@
 #   override + httpx2 + is_error/structured_content compat), + NEW mcp.py (kernel-owned
 #   generic MCP client registry; stdlib-only module imports, SDK imports lazy).
 #   harness.py kept locally patched (#9 atomic write); kernel TS layer still at af0b8e0.
+# UPSTREAM_KERNEL_FOLLOWUP: v0.8.1 (514633727b) 2026-08-28 — kernel TS layer re-vendored:
+#   - ORIGINAL/kernel/* updated to v0.8.1 pristine (bootstrap/fork-server-script/fork-server/
+#     index/state-snapshot); boot-gate unchanged between v0.7.4 and v0.8.1 (kept as-is).
+#   - Re-applied local patches: #1 (imports/inline Semaphore), #6 (strict-mode: TS2412/TS2379
+#     field+call sites on the new baseline), #11 (DSH_RLM_* via rlmEnv), #13/#13a/#13b/#13f
+#     (platform helpers; #13f liveness + #13a forked-kill RETIRED — upstream v0.8.1 moved
+#     forked-kernel kill/liveness onto the forkserver protocol, so pid signaling is gone),
+#     #14 (env scrubbing via buildKernelEnv), #15 (state-snapshot io.IOBase skip).
+#   - ORPHAN-PROCESS-JOURNAL: new module vendored slim at src/vendor/kernel/
+#     (orphan-process-journal.ts, [local patch #17] without prime's session-lease tree;
+#     getProcessStartId pruned; DSH_RLM_ORPHAN_PROCESS_JOURNAL via rlmEnv).
+#   - audit-vendor.mts updated: #7 accepts 30_000 (upstream absorbed 30s), #13f/#13a
+#     re-targeted at the forkserver protocol, #13 index.ts import set (safeRmDirSync/
+#     writeFileSecureSync only).
 # vendor date: 2026-08-22
 # vendored components:
 #  - kernel TS: packages/coding-agent/src/core/kernel/*.ts

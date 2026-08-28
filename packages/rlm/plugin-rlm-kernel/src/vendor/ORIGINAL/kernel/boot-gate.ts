@@ -19,14 +19,6 @@ const FORKSERVER_KERNEL_BOOT_CONCURRENCY = Math.min(
 	Math.max(32, (cpus().length || 4) * 4),
 );
 
-/**
- * Resolves the maximum number of kernels that may boot concurrently.
- * Reads the PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS env override, falling back
- * to a platform-specific default when unset or malformed, and clamps explicit
- * overrides to a contention cap.
- *
- * @returns The resolved kernel boot concurrency limit.
- */
 export function resolveKernelBootConcurrency(): number {
 	const raw = process.env.PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS;
 	const fallback = isForkServerEnabled() ? FORKSERVER_KERNEL_BOOT_CONCURRENCY : DEFAULT_KERNEL_BOOT_CONCURRENCY;
@@ -50,15 +42,6 @@ export function resolveKernelBootConcurrency(): number {
 // happened to be set at import time.
 let kernelBootSemaphore: Semaphore | undefined;
 
-/**
- * Runs a kernel boot function under the shared boot concurrency semaphore.
- * Lazily constructs the semaphore on first use so the fork-server flag is
- * honored at first boot rather than at module load.
- *
- * @param boot - The kernel boot function to run, returning its result.
- * @param signal - Optional abort signal to cancel the permit wait or run.
- * @returns A promise resolving to the value returned by `boot`.
- */
 export function withKernelBootPermit<T>(boot: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 	if (!kernelBootSemaphore) {
 		kernelBootSemaphore = new Semaphore(resolveKernelBootConcurrency());

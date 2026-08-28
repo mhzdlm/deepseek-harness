@@ -32,11 +32,8 @@ const DEFAULT_RLM_EXTRA_PACKAGES = [
 	{ uvArg: "pydantic", importName: "pydantic", promptLabel: "pydantic" },
 	{ uvArg: "tyro", importName: "tyro", promptLabel: "tyro" },
 ];
-/** The uv argument names for the default extra Python packages installed into the kernel venv. */
 export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.uvArg);
-/** The import names for the default extra Python packages installed into the kernel venv. */
 export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
-/** The human-facing labels for the default extra Python packages offered during kernel setup. */
 export const DEFAULT_RLM_EXTRA_IMPORT_LABELS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.promptLabel);
 const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 const REQUIRED_HARNESS_METHODS = [
@@ -54,7 +51,7 @@ const REQUIRED_HARNESS_METHODS = [
 	"delete_prompt_note",
 	"record_refinement",
 ];
-const RUNTIME_READY_CHECK = `import inspect; import rlm; from rlm import McpIntegration; from rlm.harness import HarnessEntry; _harness_methods = ${JSON.stringify(REQUIRED_HARNESS_METHODS)}; assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background')`;
+const RUNTIME_READY_CHECK = `import inspect; import rlm; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = ${JSON.stringify(REQUIRED_HARNESS_METHODS)}; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background')`;
 const BOOTSTRAP_VERSION_FILE = ".bootstrap-version";
 const BOOTSTRAP_LOCK_NAME = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS = 100;
@@ -62,16 +59,11 @@ const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS = 30_000;
 
 let inFlightEnsureKernelPython: { key: string; promise: Promise<string> } | null = null;
 
-/** A Python skill available to the kernel, surfaced from the runtime skill registry. */
 export type KernelPythonSkill = PythonSkillRuntimeInfo;
-/** Callback invoked with progress messages while the kernel Python environment is set up. */
 export type KernelBootstrapProgressHandler = (message: string) => void;
 
-/** Options controlling how the kernel Python environment is ensured. */
 export interface EnsureKernelPythonOptions {
-	/** Python skills to make importable in the kernel, if any. */
 	pythonSkills?: readonly KernelPythonSkill[];
-	/** Optional progress handler; defaults to writing messages to stderr when omitted. */
 	onProgress?: KernelBootstrapProgressHandler;
 }
 
@@ -344,12 +336,6 @@ function ensureKernelPythonKey(pythonSkills: readonly BootstrapPythonSkill[]): s
 	].join("\0");
 }
 
-/**
- * Returns the directory used for the kernel Python virtual environment.
- * Honors PRIME_AGENT_KERNEL_VENV when set, otherwise falls back to a default under the user home.
- *
- * @returns The resolved absolute path to the kernel venv directory.
- */
 export function getKernelVenvDir(): string {
 	const override = process.env.PRIME_AGENT_KERNEL_VENV;
 	if (override) return path.resolve(expandHome(override));
@@ -693,15 +679,10 @@ async function resolveRuntimeSourceDir(): Promise<string | null> {
 	return null;
 }
 
-/**
- * Resolves a stable identity string for the prime-agent-runtime to be installed.
- * For a local source checkout this is a content hash of every rlm/*.py file plus
- * pyproject.toml, so any runtime code or dependency change invalidates an existing
- * venv automatically. Falls back to the bare package name when the runtime resolves
- * to a registry install (no local source).
- *
- * @returns The runtime identity: a sha256 hash string for local source, or the package name otherwise.
- */
+// Identity of the runtime to be installed. For a local source checkout this is a
+// content hash of every rlm/*.py file plus pyproject.toml, so any runtime code or
+// dependency change invalidates an existing venv automatically. Falls back to the
+// bare package name when the runtime resolves to a registry install (no local source).
 export async function resolveRuntimeIdentity(): Promise<string> {
 	const sourceDir = await resolveRuntimeSourceDir();
 	if (!sourceDir) return RUNTIME_REQUIREMENT;
@@ -935,14 +916,6 @@ async function ensureKernelPythonUncached(
 	return python;
 }
 
-/**
- * Ensures a Python interpreter with ipykernel, prime-agent-runtime, default extra
- * packages, and the requested Python skills is available, bootstrapping a venv on
- * first use. Concurrent calls with identical options share a single in-flight promise.
- *
- * @param options - Kernel setup options such as Python skills and a progress handler.
- * @returns A promise that resolves to the absolute path of the ready Python interpreter.
- */
 export function ensureKernelPython(options: EnsureKernelPythonOptions = {}): Promise<string> {
 	const pythonSkills = normalizePythonSkills(options.pythonSkills);
 	const key = ensureKernelPythonKey(pythonSkills);
