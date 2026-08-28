@@ -73,10 +73,14 @@ function fail(message: string): never {
   process.exit(1)
 }
 
-/** robocopy-free recursive copy; refuses to descend into node_modules. */
-function copyPackage(fromPkgDir: string, deployNodeModules: string): void {
-  const name = path.basename(fromPkgDir)
-  const to = path.join(deployNodeModules, SCOPED + name)
+/**
+ * robocopy-free recursive copy; refuses to descend into node_modules.
+ * `targetName` is the deployed package name (e.g. `dsh-plugin-rlm-kernel`), which
+ * differs from the source directory basename (`plugin-rlm-kernel`): copying under
+ * the wrong name silently lands the package where the loader never reads it.
+ */
+function copyPackage(fromPkgDir: string, targetName: string, deployNodeModules: string): void {
+  const to = path.join(deployNodeModules, SCOPED + targetName)
   if (!existsSync(path.join(fromPkgDir, 'package.json'))) fail(`source package missing: ${fromPkgDir}`)
   rmSync(to, { recursive: true, force: true })
   cpSync(fromPkgDir, to, {
@@ -124,7 +128,7 @@ if (!options.skipBuild) {
 console.log('[2/4] copying five packages into the deployment tree')
 for (const name of PACKAGES) {
   const pkgDir = path.join(REPO_ROOT, 'packages', 'rlm', name.replace('dsh-plugin-', 'plugin-'))
-  copyPackage(pkgDir, deployNodeModules)
+  copyPackage(pkgDir, name, deployNodeModules)
 }
 
 console.log('[3/4] runtime dependencies')
