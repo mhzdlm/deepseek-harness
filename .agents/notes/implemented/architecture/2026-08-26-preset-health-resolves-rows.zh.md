@@ -22,7 +22,9 @@ Status: implemented
 
 用磁盘查找而不是 `import.meta.resolve`，有两个理由。它便宜：只要注册了 ESM loader hook，每一次解析器调用就变成一次到 hooks 线程的同步往返，在源码启动所用的 `tsx` hook 下实测命中 2ms、未命中 5ms，而裸 Node 分别是 0.055ms 与 0.032ms——每次名单读取要背上 238ms 的解析器时间，而同样这 135 行磁盘走法只要 0.7ms。它也是唯一问得到「宿主」的：`import.meta.resolve` 的 `parentURL` 参数只在 `--experimental-import-meta-resolve` 下生效，而没有任何启动方式传它，因此它是相对调用方模块解析的，回答的是关于本包而不是关于部署的问题。真正认显式 parent 的是 Loader 的内部解析器，而它的 `resolveSync` 在 Node 22 与 24 上签名不同。Node 内建模块在磁盘查找之前直接短路。
 
-磁盘走法放弃了什么：只有经由 loader hook 才能解析的包——import map，或根本没有 `node_modules` 的目录树——会被报为损坏。任何受支持的安装都不会产出这种情况，因为 `dsh plugin install` 会把每个插件装在名单旁边。
+磁盘走法放弃了什么：只有经由 loader hook 才能解析的包——import map，或根本没有 `node_modules` 的目录树——会被报为损坏。已安装的宿主满足这一点：`dsh plugin install` 会把每个插件装在名单旁边。但 pnpm 开发检出不会把 workspace 包提升到根 `node_modules`，于是即便宿主解析器仍能找到它们，磁盘走法也会漏掉——下面的钩子覆盖这种情况。
+
+**可选解析器为开发布局兜底。** `AgentPresets` 接受一个 `resolveModule` 配置钩子，串接进 `discoverPresets`，仅在 `packageInstalled` 返回 false 时才被问到。生产不传它，于是磁盘走法仍是权威、行为不变。rlm 验证套件注入一个 Vite tsconfig paths 解析器——与套件里其它 `@deepseek-ai/dsh-*` 说明符用的是同一个——于是把 workspace 包符号链接进各自消费方 `node_modules` 而非提升到根的 pnpm 检出也能解析该 preset 的行，套件 40/40 全绿。该钩子在发现阶段不 import 任何东西、只返回布尔值，且只在落空路径上运行，因此不会重新引入本决策否决掉的 import 副作用开销。
 
 **只有一个分类器决定一行在哪里解析。** `src/specifier.ts` 拥有这个划分——`cordis:` 内建、preset 相对、绝对文件、包名——挂载的 import 覆写与发现过程的检查都读它。若发现过程按一个基准解析、而挂载按另一个基准 import，那一行会被报告为健康，然后加载失败。
 
