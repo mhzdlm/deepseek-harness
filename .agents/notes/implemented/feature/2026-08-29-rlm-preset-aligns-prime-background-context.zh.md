@@ -54,10 +54,10 @@ Status: implemented
 - 代价：preset 的挂载闭包多引入了三个 host 服务（`tokenMeter`、`sessionPersistence`、
   `goals`）；挂载测试现在要供给它们。除这些服务在 `standard` 里本就花费的成本外，无额外
   运行时开销。
-- 已知边界：压缩必须跨压缩保留 IPython kernel 状态。架构上它确实保留——kernel 变量活在
-  dill snapshot（`plugin-rlm-kernel` 的 state-snapshot）里，独立于被压缩总结的对话 transcript——
-  但这一路径目前仅由单元挂载测试断言；真实会话 e2e 应确认 kernel 变量在飞行中压缩后存活。
-  同理，`schedule`/`goal` 的 re-wake 与内核支撑的 agent loop 交互也需真实会话核查。
+- 已在真实会话 headless e2e 中验证
+  （`packages/rlm/plugin-rlm-verifier/tests/rlm-headless-real.e2e.ts`）：压缩保留 IPython
+  kernel 状态——dill snapshot 独立于被压缩的 transcript，播种的 `x = 42` 在飞行中压力压缩
+  后存活；schedule 到点重新进入会话；goal 驱动同会话自主 continuation。
 - 交叉引用：扩展了
   [rlm persona 对齐 prime base prompt 精神](../feature/2026-08-29-rlm-persona-prime-base-spirit.zh.md)
   引入的对齐；compaction 接线遵循

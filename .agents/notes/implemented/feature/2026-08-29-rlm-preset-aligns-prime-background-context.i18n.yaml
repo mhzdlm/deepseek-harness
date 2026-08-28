@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-29-rlm-preset-aligns-prime-background-context.md
-2026-08-29-rlm-preset-aligns-prime-background-context.md: f1a84fea41d3d69ba2a2bffcd35a0a3ad7339612
-2026-08-29-rlm-preset-aligns-prime-background-context.zh.md: cbb6a1a1d4424ee76c1aa28c4841928faf4ecfb7
+2026-08-29-rlm-preset-aligns-prime-background-context.md: ef6585cbf52926a56cf3c7f05621b7a320ffe8e2
+2026-08-29-rlm-preset-aligns-prime-background-context.zh.md: b93a226d3f3d1a22ea7c4a71195eeee0512baa7a

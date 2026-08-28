@@ -79,12 +79,13 @@ async function setup() {
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(CommandRuntime)
   await ctx.plugin(TokenMeter)
-  await ctx.plugin(SessionPersistence)
+  await ctx.plugin(SessionPersistence, [])
   await ctx.plugin(Goal)
   await ctx.plugin(AgentPresets, {
     default: 'standard',
     roots: [{ path: RLM_PRESET_ROOT, trust: 'system' }],
     includeUserRoot: false,
+    includeShippedRoot: false,
     // The harness root's node_modules does not hoist the rlm workspace packages
     // (pnpm links them into each consumer's own node_modules), so the discovery
     // disk walk cannot see them. Resolve through Vite's tsconfig paths — the

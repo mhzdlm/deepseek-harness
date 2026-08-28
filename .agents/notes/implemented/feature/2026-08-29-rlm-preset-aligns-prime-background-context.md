@@ -70,13 +70,12 @@ and the `goals` service are live after mounting.
 - Cost: the preset pulls three more host services into its mount closure
   (`tokenMeter`, `sessionPersistence`, `goals`); the mount test now provisions
   them. No runtime cost beyond what those services already cost in `standard`.
-- Known boundary: compaction must preserve the IPython kernel state across a
-  compress. Architecturally it does — kernel variables live in the dill snapshot
-  (`plugin-rlm-kernel`'s state-snapshot), independent of the conversation
-  transcript that compaction summarizes — but this path is asserted only by unit
-  mount tests so far; a real-session e2e should confirm kernel variables survive
-  a mid-flight compaction. Likewise the `schedule`/`goal` re-wake interacting
-  with a kernel-backed agent loop wants a real-session check.
+- Verified in a real-session headless e2e
+  (`packages/rlm/plugin-rlm-verifier/tests/rlm-headless-real.e2e.ts`): compaction
+  preserves the IPython kernel state — the dill snapshot is independent of the
+  compacted transcript, and a seeded `x = 42` survives a mid-flight pressure
+  compaction; schedule re-enters the session at its due time; and a goal drives
+  same-session autonomous continuation.
 - Cross-reference: extends the persona-spirit alignment in
   [rlm persona aligns with prime base-prompt spirit](../feature/2026-08-29-rlm-persona-prime-base-spirit.md);
   the compaction wiring follows the
