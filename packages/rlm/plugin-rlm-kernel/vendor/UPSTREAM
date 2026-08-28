@@ -1,6 +1,11 @@
 # vendored from Prime Intellect prime-agent
 # UPSTREAM: https://github.com/PrimeIntellect-ai/prime-agent
 # UPSTREAM_COMMIT: af0b8e0 chore(release): prepare v0.7.4 (#1569)
+# UPSTREAM_RUNTIME_FOLLOWUP: v0.8.1 (514633727b) 2026-08-28 — prime-agent-runtime/src/rlm only:
+#   __init__.py (host_request finally cleanup), mcp_base.py (security: no mcpServers
+#   override + httpx2 + is_error/structured_content compat), + NEW mcp.py (kernel-owned
+#   generic MCP client registry; stdlib-only module imports, SDK imports lazy).
+#   harness.py kept locally patched (#9 atomic write); kernel TS layer still at af0b8e0.
 # vendor date: 2026-08-22
 # vendored components:
 #  - kernel TS: packages/coding-agent/src/core/kernel/*.ts
