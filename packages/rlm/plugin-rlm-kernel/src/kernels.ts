@@ -235,7 +235,8 @@ export class SessionKernelRegistry {
   }
 
   /**
-	 *  surfaced as a prefix on the next `ipython` tool result.
+   * Claim one pending restore notice so its revival/lost lists can be
+   * surfaced as a prefix on the next `ipython` tool result.
    * @param sessionId - Session whose restore notice is claimed.
    * @returns The restore notice, or `undefined` if none was pending.
    */

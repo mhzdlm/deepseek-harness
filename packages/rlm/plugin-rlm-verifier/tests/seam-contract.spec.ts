@@ -56,6 +56,8 @@ interface VerifyToolShape {
   }>
 }
 
+const execStub = { signal: new AbortController().signal } as never
+
 function mountSeam(winner: 'sol-a' | 'sol-b', verdictLogprob: number) {
   const calls: GenerateOptions[] = []
   const registered: unknown[] = []
@@ -89,7 +91,7 @@ function mountSeam(winner: 'sol-a' | 'sol-b', verdictLogprob: number) {
 describe('mounted verify tool over a realistic seam stream', () => {
   it('extracts verdict letters from chosen-token logprobs and ranks the winner first', async () => {
     const { tool } = mountSeam('sol-a', -0.05)
-    const result = await tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, {})
+    const result = await tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, execStub)
     expect(result.index).toBe(0)
     expect(result.ranking[0]).toBe(0)
     expect(result.scores).toHaveLength(2)
@@ -99,7 +101,7 @@ describe('mounted verify tool over a realistic seam stream', () => {
 
   it('requests chosen-token logprobs on every scoring call and routes through the configured seam', async () => {
     const { calls, tool } = mountSeam('sol-a', -0.05)
-    await tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, {})
+    await tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, execStub)
     expect(calls.length).toBeGreaterThan(0)
     for (const options of calls) {
       expect(options.logprobs).toEqual({ topLogprobs: 20 })
@@ -110,7 +112,7 @@ describe('mounted verify tool over a realistic seam stream', () => {
 
   it('flips the winner when the judge prefers the other candidate', async () => {
     const { tool } = mountSeam('sol-b', -0.05)
-    const result = await tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, {})
+    const result = await tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, execStub)
     expect(result.index).toBe(1)
     expect(result.scores[1]).toBeGreaterThan(result.scores[0] ?? Number.NEGATIVE_INFINITY)
   })
@@ -118,8 +120,8 @@ describe('mounted verify tool over a realistic seam stream', () => {
   it('keeps scores identical under wildly different verdict logprobs (v1 single-alternative degeneration)', async () => {
     const quiet = mountSeam('sol-a', -0.01)
     const loud = mountSeam('sol-a', -4)
-    const a = await quiet.tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, {})
-    const b = await loud.tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, {})
+    const a = await quiet.tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, execStub)
+    const b = await loud.tool.execute({ problem: 'p', candidates: ['sol-a', 'sol-b'] }, execStub)
     // One alternative per position: p = exp(logprob) normalizes away, so the
     // expectation collapses to the chosen letter's scale value either way.
     expect(b.scores).toEqual(a.scores)

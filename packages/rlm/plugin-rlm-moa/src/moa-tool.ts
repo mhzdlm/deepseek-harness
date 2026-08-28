@@ -256,8 +256,11 @@ export function createMoaTool(options: MoaToolOptions): ReturnType<typeof define
       // pipeline ('full' → masked), so the log answers "what did each advisor
       // actually say" without bypassing the confidentiality tier.
       const session = exec.agent?.session ?? null
-      for (const slot of preset.references) {
-        const outcome = settled.find(r => r.label === slot.label)
+      // Index-correlated with `settled` on purpose: duplicate slots (the
+      // built-in default panel ships two identical flash references) share one
+      // label, so a label lookup would record slot 0's outcome twice.
+      for (const [slotIndex, slot] of preset.references.entries()) {
+        const outcome = settled[slotIndex]
         if (!outcome) continue
         const text = outcome.status === 'ok'
           ? (options.privacyFilter === 'full' && options.redactReference !== undefined ? options.redactReference(outcome.text) : outcome.text)

@@ -17,6 +17,7 @@
  * @module @deepseek-ai/dsh-plugin-continual-harness
  */
 
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
@@ -394,7 +395,7 @@ export async function applyProposals(
     // upsert: resolve the target id first so the reverse snapshot keys on the
     // id that will actually exist on disk — a freshly created entry must be
     // removable by rollback (it keys a null tombstone on its real id).
-    const id = existing?.id ?? crypto.randomUUID()
+    const id = existing?.id ?? randomUUID()
     const entryKey = `${scope}:${proposal.kind}:${id}`
     if (!touched.has(entryKey)) {
       touched.add(entryKey)
@@ -491,7 +492,7 @@ export async function runRefine(
               content: { type: 'string' },
               evidence: { type: 'string' },
             },
-            required: ['kind', 'action', 'title', 'content', 'evidence'],
+            required: ['kind', 'action', 'title', 'evidence'],
           },
         },
       },
@@ -606,7 +607,7 @@ export async function applyProposalsAndPersist(
     }
     writtenSnapshotPath = snapshotPath
 
-    const eventId = crypto.randomUUID()
+    const eventId = randomUUID()
     merged.refinements ??= []
     merged.refinements.push({
       id: eventId,
@@ -632,7 +633,12 @@ export async function applyProposalsAndPersist(
         local: local.mtimeMs,
       })
     } catch (error) {
-      if (!(error instanceof HarnessConflictError) || attempt >= 1) throw error
+      if (!(error instanceof HarnessConflictError) || attempt >= 1) {
+        // This attempt's snapshot is referenced by no event (the write failed) —
+        // never leave it orphaned on disk.
+        if (writtenSnapshotPath) await rm(writtenSnapshotPath, { force: true }).catch(() => undefined)
+        throw error
+      }
       continue // FIX-7: one retry with a fresh read
     }
 
@@ -739,7 +745,7 @@ export async function rollbackRefine(
     }
 
     localState.refinements.push({
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       trigger: 'rollback',
       changes: [`rollback of ${eventId}`],
       evidence: '',
@@ -756,7 +762,11 @@ export async function rollbackRefine(
         local: local.mtimeMs,
       })
     } catch (error) {
-      if (!(error instanceof HarnessConflictError) || attempt >= 1) throw error
+      if (!(error instanceof HarnessConflictError) || attempt >= 1) {
+        // This attempt's forward snapshot is referenced by no event — clean it.
+        if (forwardPath) await rm(forwardPath, { force: true }).catch(() => undefined)
+        throw error
+      }
       continue // FIX-7: one retry with a fresh read
     }
 

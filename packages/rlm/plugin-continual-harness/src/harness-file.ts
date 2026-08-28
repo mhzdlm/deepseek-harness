@@ -294,7 +294,14 @@ export async function writeHarnessStates(
   } catch (globalError) {
     // Global write failed — roll local back to its pre-write value
     // (best-effort; if rollback also fails the two files are still torn).
-    if (localPrev.mtimeMs !== null) {
+    if (localPrev.mtimeMs === null) {
+      // The local file did not exist before this call, so the write created
+      // it: the true inverse is removing it again. Restoring via an
+      // empty-state write would leave a file where the read path observed
+      // none, and skipping the rollback entirely leaves a local-new +
+      // global-old torn view (2026-08-28 review fix).
+      await rm(localPath, { force: true }).catch(() => undefined)
+    } else {
       try {
         const written = await readHarnessStateDetailed(localPath)
         if (written.mtimeMs !== null) {

@@ -17,11 +17,16 @@ import type { HarnessEntry } from '@deepseek-ai/dsh-plugin-continual-harness'
 /** Entry/package-name rule: lowercase slug (`^[a-z][a-z0-9-]*$`). Shared with the collector's path-safety check. */
 export const SLUG_PATTERN = /^[a-z][a-z0-9-]*$/
 const IMPORT_PATTERN = /^[a-z_][a-z0-9_]*$/
+/** Title cap, matching the refine proposal limit so a model cannot inflate a harness entry. */
+const TITLE_MAX = 200
+/** Description cap, matching the refine proposal content limit. */
+const DESCRIPTION_MAX = 100_000
 
 /** The CAS upsert the host assembly injects; owned by continual-harness. */
 export type UpsertPythonSkillEntry = (
   baseDir: string,
   spec: { id: string; title: string; description: string; importName: string; callable?: string },
+  sessionId?: string,
 ) => Promise<HarnessEntry>
 
 /**
@@ -114,12 +119,20 @@ export function createSkillCreateTool(options: SkillCreateToolOptions): ReturnTy
       },
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       if (!SLUG_PATTERN.test(args.name)) {
         throw new Error(`create_python_skill: name must match ${SLUG_PATTERN.source}`)
       }
       if (!IMPORT_PATTERN.test(args.import_name)) {
         throw new Error('create_python_skill: import_name must be a python identifier')
+      }
+      const title = typeof args.title === 'string' ? args.title : ''
+      if (title.length === 0 || title.length > TITLE_MAX) {
+        throw new Error(`create_python_skill: title must be a 1..${TITLE_MAX} char string`)
+      }
+      const description = typeof args.description === 'string' ? args.description : ''
+      if (description.length === 0 || description.length > DESCRIPTION_MAX) {
+        throw new Error(`create_python_skill: description must be a 1..${DESCRIPTION_MAX} char string`)
       }
       const problems = validateSkillPackage(dataDir, args.name, args.import_name)
       if (problems.length > 0) {
@@ -127,13 +140,16 @@ export function createSkillCreateTool(options: SkillCreateToolOptions): ReturnTy
           `create_python_skill: package on disk does not match the request:\n${problems.map(p => `  - ${p}`).join('\n')}`,
         )
       }
+      // The owning session's id routes the rollbackable refinement event into
+      // that session's log; undefined falls back to the pseudo-session.
+      const sessionId = exec?.agent?.session?.id !== undefined ? String(exec.agent.session.id) : undefined
       const entry = await options.upsert(dataDir, {
         id: args.name,
-        title: args.title,
-        description: args.description,
+        title,
+        description,
         importName: args.import_name,
         ...(args.callable !== undefined ? { callable: args.callable } : {}),
-      })
+      }, sessionId)
       const text =
         `Registered python skill "${entry.id}" v${entry.version} (global scope). `
         + `It becomes callable as await ${args.import_name}(...) at the next kernel provision `

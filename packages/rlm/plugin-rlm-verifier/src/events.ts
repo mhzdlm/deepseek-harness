@@ -30,8 +30,6 @@ export interface VerifyRequestEventData {
   candidateCount: number
   /** First 120 chars of each candidate, after privacy masking when active. */
   candidatesDigest: string[]
-  /** Per-candidate character length, after privacy masking when active. */
-  candidatesChars?: number[]
   judgeProfiles?: string[]
 }
 

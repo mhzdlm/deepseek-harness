@@ -369,6 +369,35 @@ describe('moa orchestration', () => {
     expect(firstRef?.payload.status).toBe('ok')
   })
 
+  it('records per-slot outcomes for duplicate-slot labels (identical default-panel slots)', async () => {
+    // The built-in default panel ships two identical flash references — same
+    // model@provider label. The durable events must still record each slot's
+    // own outcome, not slot 0's twice.
+    const appended: Array<{ name: string; payload: Record<string, unknown> }> = []
+    const exec = {
+      signal: new AbortController().signal,
+      agent: { session: { id: 'sess-dup', append: (name: string, payload: unknown) => { appended.push({ name, payload: payload as Record<string, unknown> }) } } },
+    }
+    const duplicated = twoSlotPreset({
+      references: [
+        { provider: 'p', model: 'same', label: 'same@p', mode: 'llm', providerFromDefault: false },
+        { provider: 'p', model: 'same', label: 'same@p', mode: 'llm', providerFromDefault: false },
+      ],
+    })
+    let call = 0
+    const tool = createMoaTool({
+      ...singlePreset(duplicated),
+      privacyFilter: '',
+      callModel: async slot => ({ text: `advice-${(call += 1)} [by ${slot.label}]` }),
+    })
+    await tool.execute({ problem: 'p' }, exec as never)
+    const refs = appended.filter(a => a.name === 'session/moa-reference')
+    expect(refs).toHaveLength(2)
+    const texts = refs.map(r => String(r.payload.text))
+    expect(texts[0]).toContain('advice-1')
+    expect(texts[1]).toContain('advice-2')
+  })
+
   it('render annotates provenance under the display privacy filter', async () => {
     const tool = createMoaTool({
       ...singlePreset(twoSlotPreset()),

@@ -17,14 +17,18 @@
  */
 
 import { existsSync } from 'node:fs'
+import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import {
   globalHarnessStatePath,
+  harnessStatePath,
   readHarnessStateDetailed,
   readHarnessStatesDetailed,
   writeHarnessStates,
   type HarnessEntry,
+  type HarnessStateFile,
+  type RefinementEvent,
 } from '@deepseek-ai/dsh-plugin-continual-harness'
 import type { PythonSkillRuntimeInfo } from './vendor/kernel/bootstrap.ts'
 import { SLUG_PATTERN } from './skill-create.ts'
@@ -109,14 +113,23 @@ export interface PythonSkillEntrySpec {
 /**
  * Create or update the global-scope harness entry for one python-backed skill
  * (T2.3). Read-modify-write under mtime CAS on both state files, recording a
- * `skill-create` refinement event whose `after` snapshot enables rollback.
+ * `skill-create` refinement event in the creating session's local refinement
+ * log together with a reverse-snapshot file, so `/refine-rollback <eventId>`
+ * in that session restores the previous entry (or removes a freshly created
+ * one) from the global store.
  * @param dataDir - the rlm data dir the harness state lives under.
  * @param spec - the python-backed skill registration request to create or update.
+ * @param sessionId - the session whose refinement log records the registration;
+ *   defaults to the `skill-create` pseudo-session, whose log no interactive
+ *   rollback reads — callers should pass the tool's owning session.
  * @returns the stored entry as written.
  * @throws HarnessConflictError when either state file moved mid-operation.
  */
-export async function upsertPythonSkillEntry(dataDir: string, spec: PythonSkillEntrySpec): Promise<HarnessEntry> {
-  const sessionId = 'skill-create'
+export async function upsertPythonSkillEntry(
+  dataDir: string,
+  spec: PythonSkillEntrySpec,
+  sessionId = 'skill-create',
+): Promise<HarnessEntry> {
   const states = await readHarnessStatesDetailed(dataDir, sessionId)
   const global = states.global.state
   const local = states.local.state
@@ -139,26 +152,37 @@ export async function upsertPythonSkillEntry(dataDir: string, spec: PythonSkillE
     version: (existing?.version ?? 0) + 1,
   }
 
+  // Reverse snapshot for /refine-rollback: the pre-write value of the touched
+  // global key, keyed in the standard `scope:kind:id` format the rollback
+  // parser understands (null = the registration creates the entry).
+  const reverseSnapshot = { [`global:skill:${spec.id}`]: existing ?? null }
+  const snapshotDir = path.join(path.dirname(harnessStatePath(dataDir, sessionId)), 'refinements')
+  await mkdir(snapshotDir, { recursive: true })
+  const snapshotPath = path.join(snapshotDir, `skill-create-${timestamp.replace(/[:.]/g, '-')}.snapshot.json`)
+  const tmp = `${snapshotPath}.tmp`
+  await writeFile(tmp, JSON.stringify(reverseSnapshot, null, 2), 'utf8')
+  await rename(tmp, snapshotPath)
+
+  const event: RefinementEvent = {
+    id: randomUUID(),
+    trigger: 'skill-create',
+    changes: [`upsert global:skill:${spec.id}`],
+    evidence: `python package <dataDir>/skills/${spec.id}`,
+    outcome: existing === undefined ? 'created' : 'updated',
+    snapshot: { path: snapshotPath },
+    after: reverseSnapshot,
+  }
+
   const nextGlobal = {
     ...global,
     entries: {
       ...global.entries,
       skill: { ...(global.entries.skill ?? {}), [spec.id]: entry },
     },
-    refinements: [
-      ...global.refinements,
-      {
-        id: randomUUID(),
-        trigger: 'skill-create',
-        changes: [`skill/${spec.id}`],
-        evidence: `python package <dataDir>/skills/${spec.id}`,
-        outcome: existing === undefined ? 'created' : 'updated',
-        after: { [`skill/${spec.id}`]: entry },
-      },
-    ],
   }
+  const nextLocal: HarnessStateFile = { ...local, refinements: [...local.refinements, event] }
 
-  await writeHarnessStates(dataDir, sessionId, nextGlobal, local, {
+  await writeHarnessStates(dataDir, sessionId, nextGlobal, nextLocal, {
     global: states.global.mtimeMs,
     local: states.local.mtimeMs,
   })

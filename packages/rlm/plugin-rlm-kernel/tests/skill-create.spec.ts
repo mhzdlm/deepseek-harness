@@ -9,8 +9,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSkillCreateTool, validateSkillPackage } from '../src/skill-create.ts'
-import { globalHarnessStatePath } from '@deepseek-ai/dsh-plugin-continual-harness'
+import { globalHarnessStatePath, harnessStatePath } from '@deepseek-ai/dsh-plugin-continual-harness'
 import type { HarnessStateFile } from '@deepseek-ai/dsh-plugin-continual-harness'
+import { rollbackRefine } from '@deepseek-ai/dsh-plugin-continual-harness/src/refine.ts'
 import { upsertPythonSkillEntry } from '../src/skill-source.ts'
 
 const dirs: string[] = []
@@ -52,7 +53,7 @@ describe('create_python_skill tool', () => {
   function tool(dataDir: string) {
     // The real CAS upsert is injected exactly as the host assembly does.
     return createSkillCreateTool({ dataDir, upsert: upsertPythonSkillEntry }) as unknown as {
-      execute: (args: Record<string, unknown>) => Promise<{ text?: string }>
+      execute: (args: Record<string, unknown>, exec?: unknown) => Promise<{ text?: string }>
     }
   }
 
@@ -81,5 +82,22 @@ describe('create_python_skill tool', () => {
     const raw = JSON.parse(await readFile(globalHarnessStatePath(dir), 'utf8')) as HarnessStateFile
     const entry = raw.entries.skill?.['demo-audit']
     expect(entry?.reference).toEqual({ type: 'python', import: 'demo_audit', callable: 'run' })
+  })
+
+  it('lands a rollbackable refinement event in the creating session', async () => {
+    const dir = makeDataDir()
+    writeGoodPackage(dir, 'demo-audit', 'demo_audit')
+    const sessionId = 'creator-session'
+    const exec = { agent: { session: { id: sessionId } } }
+    await tool(dir).execute({
+      name: 'demo-audit', import_name: 'demo_audit', title: 'Demo audit', description: 'Audits demos.',
+    }, exec)
+    const localRaw = JSON.parse(await readFile(harnessStatePath(dir, sessionId), 'utf8')) as HarnessStateFile
+    const eventId = localRaw.refinements.at(-1)?.id
+    expect(eventId).toBeDefined()
+    const summary = await rollbackRefine(dir, sessionId, eventId!)
+    expect(summary).toContain('Rolled back')
+    const globalRaw = JSON.parse(await readFile(globalHarnessStatePath(dir), 'utf8')) as HarnessStateFile
+    expect(globalRaw.entries.skill?.['demo-audit']).toBeUndefined()
   })
 })

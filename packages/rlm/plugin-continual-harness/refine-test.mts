@@ -630,5 +630,37 @@ console.log('== renderHarnessOverview char budget (FIX-10) ==')
 	check('total char budget enforced', tiny.length <= 62, `len=${tiny.length}`)
 }
 
+console.log('== writeHarnessStates absent-local rollback (2026-08-28) ==')
+{
+	// The local file does not exist before the composite write: a failed global
+	// half must REMOVE the freshly created local file, not skip the rollback —
+	// otherwise the next prompt render sees local-new + global-old as a torn pair.
+	const absentDir = mkdtempSync(path.join(os.tmpdir(), 'dsh-rlm-rollback-absent-'))
+	const absentSid = 'absent-session'
+	const absentLocalPath = harnessStatePath(absentDir, absentSid)
+	check('precondition: local file absent', !existsSync(absentLocalPath))
+
+	const absentGlobalMeta = await readHarnessStateDetailed(globalHarnessStatePath(absentDir))
+	await new Promise((resolve) => setTimeout(resolve, 20))
+	await writeHarnessState(
+		globalHarnessStatePath(absentDir),
+		{ schema: 1, entries: { memory: { g9: makeEntry('memory', 'g9', 'kernel-absent-won') } }, refinements: [] },
+	)
+	let absentThrew = false
+	try {
+		await writeHarnessStates(
+			absentDir,
+			absentSid,
+			{ schema: 1, entries: {}, refinements: [] },
+			{ schema: 1, entries: { memory: { n1: makeEntry('memory', 'n1', 'local-new') } }, refinements: [] },
+			{ global: absentGlobalMeta.mtimeMs, local: null },
+		)
+	} catch (error) {
+		absentThrew = error instanceof HarnessConflictError
+	}
+	check('absent-local composite write throws on global conflict', absentThrew)
+	check('freshly created local file removed on global failure', !existsSync(absentLocalPath))
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

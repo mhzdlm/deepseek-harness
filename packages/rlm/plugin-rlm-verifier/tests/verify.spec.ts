@@ -50,6 +50,24 @@ function baseOptions(overrides: Partial<VerifyToolOptions> = {}): VerifyToolOpti
 const execStub = { signal: new AbortController().signal } as never
 
 describe('verify seam engine', () => {
+  it('stops issuing scoring calls and fails aborted once the caller cancels mid-tournament', async () => {
+    const controller = new AbortController()
+    let calls = 0
+    const callModel: VerifyCallModel = async () => {
+      calls += 1
+      if (calls === 2) controller.abort()
+      return { text: `${TAGS[0]}\n${TAGS[1]}`, logprobs: [] }
+    }
+    const tool = createVerifyTool(baseOptions({ callModel }))
+    // Without the abort short-circuit the tournament would keep issuing every
+    // remaining call (K×criteria×pairs) and settle as a degraded success.
+    await expect(tool.execute(
+      { problem: 'p', candidates: ['a', 'b', 'c'], n_evaluations: 4 },
+      { signal: controller.signal } as never,
+    )).rejects.toThrow(/aborted/i)
+    expect(calls).toBeLessThanOrEqual(6)
+  })
+
   it('selects the logprobs-favored candidate via the PPT', async () => {
     const { callModel, prompts } = biasedToA()
     const tool = createVerifyTool(baseOptions({ callModel }))

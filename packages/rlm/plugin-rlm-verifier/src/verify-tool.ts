@@ -267,7 +267,8 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
               prompt: [{ type: 'text', text: problem }],
               parent: owner,
               label: `verify-child-${i + 1}`,
-              signal: controller.signal,
+              // Caller cancellation aborts the spawn too, not just session disposal.
+              signal: AbortSignal.any([controller.signal, exec.signal]),
             }
             try {
               const run = await subagents.start(options.subagentProvider ?? 'spawn', request)
@@ -360,7 +361,10 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
                 model: profile.model,
               }, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens, failures))
             return { name, model: profile.model, status: failures.count > 0 ? 'degraded' as const : 'ok' as const, ...scored }
-          } catch {
+          } catch (error) {
+            // An aborted caller re-throws so the run fails as aborted instead of
+            // masquerading as a failed judge panel.
+            if (exec.signal.aborted) throw error
             return { name, model: profile.model, status: 'failed' as const, bestIndex: -1, meanPreference: [], nComparisons: 0 }
           }
         }))
@@ -608,6 +612,8 @@ async function scorePairOnSeam(
     // rewards are mapped back so score_A always means candidate a.
     const swapped = rep % 2 === 1
     for (const criterion of criteria) {
+      // Abort short-circuits the tournament instead of degrading into ties.
+      if (signal.aborted) throw new Error('verify scoring aborted')
       const prompt = buildJudgePrompt({
         problem,
         traceA: swapped ? traceB : traceA,
