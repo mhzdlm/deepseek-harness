@@ -194,6 +194,13 @@ type StreamChunk =
   | { type: 'text-delta'; index: number; text: string }
   | { type: 'reasoning-delta'; index: number; text: string }
   | { type: 'tool-call-delta'; index: number; id: CallId; name?: string; argumentsDelta: string }
+  /**
+   * Chosen-token logprobs for the text segment at `index`, emitted only when
+   * {@link GenerateOptions.logprobs} opted in and the provider serves them.
+   * Consumers reading token distributions (e.g. scoring engines) accumulate
+   * these instead of parsing provider-specific wire formats.
+   */
+  | { type: 'logprobs'; index: number; tokens: readonly TokenLogprob[] }
   | { type: 'block-end'; index: number; block: ContentBlock }
   | { type: 'usage'; usage: TokenUsage }
   | {
@@ -328,7 +335,11 @@ declare class BlockAssembler {
   interruptedBlocks(): ContentBlock[];
   /** Usage from the `usage` chunk; undefined until one arrives. */
   get usage(): TokenUsage | undefined;
-  /** Chosen-token logprobs from the `logprobs` chunk, in stream order; empty until one arrives. */
+  /**
+   * Chosen-token logprobs accumulated from every `logprobs` chunk, in stream
+   * order. Empty unless the request opted in via the `GenerateOptions`
+   * `logprobs` switch and the adapter serves them.
+   */
   get logprobs(): readonly TokenLogprob[];
   /** Finish reason from the `finish` chunk; `{kind: 'stop'}` when the stream ended without one. */
   get finish(): FinishReason;
@@ -524,6 +535,13 @@ interface GenerateOptions {
    * `stop`). The stop string itself is not included in the output.
    */
   stop?: string[]
+  /**
+   * Opt into chosen-token logprobs on the text stream. Adapters that cannot
+   * serve them leave the stream unchanged; supporting adapters emit
+   * {@link StreamChunk}'s `logprobs` variant. `topLogprobs` bounds the
+   * provider's per-position variant list (adapters may clamp).
+   */
+  logprobs?: { topLogprobs: number }
   signal?: AbortSignal
   /**
    * Session identity stamped by the loop for request routing. Replay uses it
@@ -535,7 +553,7 @@ interface GenerateOptions {
    * map the purpose to model-hidden transport metadata or purpose-specific
    * generation policy. Ordinary conversation requests leave it unset.
    */
-  purpose?: 'compaction' | 'session-title'
+  purpose?: 'compaction' | 'session-title' | 'moa'
 }
 ```
 

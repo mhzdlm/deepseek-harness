@@ -38,6 +38,13 @@ const FAILURE_COPY: Readonly<Record<string, string>> = {
   INVALID_CREDENTIAL: '凭据格式无效，请更正后重试',
 }
 
+/**
+ * Render one model-reported failure as user-facing copy: a known failure code
+ * maps to its fixed Chinese message; otherwise the record's `message` (or the
+ * JSON form of the whole value) is shown verbatim.
+ * @param failure - A failure record carrying optional `code`/`message`, or any value.
+ * @returns The display message for the failure.
+ */
 export function displayFailureMessage(failure: unknown): string {
   if (failure === null || typeof failure !== 'object') return String(failure)
   const record = failure as { code?: unknown; message?: unknown }
