@@ -12,7 +12,7 @@ LongHorizon-Harness analysis (see the operator's `docs/LOOP.md`) suggested porti
 
 - The main session plans each round itself; executor/auditor episodes ride composition-level named instances of `dsh-tool-subagent` (`toolName: executor` / `auditor`, one-shot). The plugin never spawns children.
 - The `loop` tool owns only what must not depend on model compliance: strict three-line audit-header parsing, the clean/complete/aligned trust gate, `session/loop-start|round-done` log-only events, and CAS landing of contract + verified progress into continual-harness state.
-- Verified progress rides the existing `memory` kind under `loop/<runId>/...` entry ids. No new `HarnessKind` values.
+- Verified progress rides the existing `memory` kind under `loop_<runId>/...` entry ids. No new `HarnessKind` values.
 
 ## Why
 

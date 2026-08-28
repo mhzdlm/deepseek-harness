@@ -7,7 +7,7 @@ Loop Engineering bookkeeping for the rlm family. Registers a `loop` tool that ma
 - **Deterministic audit parsing** — `parseAuditHeader` reads the auditor's ordered three-line verdict (`Status` / `Integrity` / `Contract audit`) or fails loudly; prose bodies are never guessed into facts.
 - **Trust gate** — only a `complete/clean/aligned` verdict counts as verified progress; every other outcome is recorded as failure evidence for the next planning round.
 - **Durable process record** — `session/loop-start` and `session/loop-round-done` log-only events follow the `session/title-llm-request` precedent.
-- **State landing** — verified progress and the task contract upsert into the [continual-harness](../plugin-continual-harness) state through its CAS pipeline as session-local `memory` entries under the `loop/<runId>/...` id convention, so overview injection, `/refine`, and rollback apply unchanged.
+- **State landing** — verified progress and the task contract upsert into the [continual-harness](../plugin-continual-harness) state through its CAS pipeline as session-local `memory` entries under the `loop_<runId>/...` id convention, so overview injection, `/refine`, and rollback apply unchanged.
 
 The joining session stays the Manager; executor/auditor episodes ride the composition-provided delegation tools (see `docs/recipes/agent-presets/loop/`). Design rationale: `.agents/notes/implemented/architecture/2026-08-24-rlm-loop-recording-tool.md`.
 

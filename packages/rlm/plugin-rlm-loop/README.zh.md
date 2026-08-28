@@ -7,7 +7,7 @@
 - **确定性审计解析** — `parseAuditHeader` 读取审计方有序的三行 verdict（`Status` / `Integrity` / `Contract audit`），否则直接报错；正文内容从不臆测为事实。
 - **信任闸门** — 只有 `complete/clean/aligned` 的 verdict 才算已验证进度；其余结果都作为下一轮规划失败的证据记录。
 - **持久化流程记录** — `session/loop-start` 与 `session/loop-round-done` 仅日志事件，沿用 `session/title-llm-request` 先例。
-- **状态落地** — 已验证进度与任务契约通过 continual-harness 的 CAS 管道，以 `loop/<runId>/...` id 约定作为会话级 `memory` 条目 upsert 进 [continual-harness](../plugin-continual-harness) 状态，使概览注入、`/refine` 与回滚无需改动即可生效。
+- **状态落地** — 已验证进度与任务契约通过 continual-harness 的 CAS 管道，以 `loop_<runId>/...` id 约定作为会话级 `memory` 条目 upsert 进 [continual-harness](../plugin-continual-harness) 状态，使概览注入、`/refine` 与回滚无需改动即可生效。
 
 加入的会话保持 Manager 角色；executor/auditor 片段借用组合提供的委派工具（见 `docs/recipes/agent-presets/loop/`）。设计理由见 `.agents/notes/implemented/architecture/2026-08-24-rlm-loop-recording-tool.md`。
 

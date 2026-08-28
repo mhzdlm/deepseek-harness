@@ -227,11 +227,10 @@ describe('live-kernel cap eviction of leased kernels (T3.2 C semantics)', () => 
  * the same sweep reclaims it and the namespace still revives from the dill
  * snapshot. Self-skips when the shared venv is missing.
  */
-import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
+import { isKernelVenvReady } from './venv-gate.ts'
 
-const venvReady = existsSync(venvPythonPath(getKernelVenvDir()))
+const venvReady = isKernelVenvReady()
 const rIt = venvReady ? it : it.skip
 
 describe('pinned kernel vs real idle sweep', () => {

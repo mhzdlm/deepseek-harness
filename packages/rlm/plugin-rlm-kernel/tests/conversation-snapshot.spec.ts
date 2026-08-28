@@ -10,16 +10,16 @@
  * so it is deferred. What changes at the tool layer are argument marshalling and
  * the caller loop, not the accounting that these assertions pin.
  */
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, it, expect } from 'vitest'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { SessionKernelRegistry } from '../src/kernels.ts'
 import type { SessionKernelOptions } from '../src/kernels.ts'
-import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
+import { isKernelVenvReady } from './venv-gate.ts'
 
-const venvReady = existsSync(venvPythonPath(getKernelVenvDir()))
+const venvReady = isKernelVenvReady()
 const rIt = venvReady ? it : it.skip
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 

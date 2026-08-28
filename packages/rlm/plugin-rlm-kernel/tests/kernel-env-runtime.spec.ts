@@ -8,14 +8,13 @@
  * so machines without the venv stay green in the default suite. No LLM key.
  */
 import { describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { isKernelVenvReady } from './venv-gate.ts'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { KernelManager } from '../src/vendor/kernel/index.ts'
-import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
 
-const venvPython = venvPythonPath(getKernelVenvDir())
-const venvReady = existsSync(venvPython)
+const venvReady = isKernelVenvReady()
 const dIt = venvReady ? it : it.skip
 
 let planted: string | undefined

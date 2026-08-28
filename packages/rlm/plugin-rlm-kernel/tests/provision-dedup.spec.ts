@@ -5,13 +5,13 @@
  * processes. Real kernel required; self-skips when the venv is missing.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
+import { isKernelVenvReady } from './venv-gate.ts'
 import { SessionKernelRegistry } from '../src/kernels.ts'
 
-const venvReady = existsSync(venvPythonPath(getKernelVenvDir()))
+const venvReady = isKernelVenvReady()
 const dIt = venvReady ? it : it.skip
 
 const roots: string[] = []

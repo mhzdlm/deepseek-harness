@@ -8,17 +8,17 @@
  * No LLM key required; needs the kernel venv.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { KernelManager } from '../src/vendor/kernel/index.ts'
-import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
+import { isKernelVenvReady } from './venv-gate.ts'
 import { SessionKernelRegistry } from '../src/kernels.ts'
 
 // Real kernel required; self-skip when the venv is missing so machines
 // without it stay green in the default suite (same pattern as
 // kernel-env-runtime.spec.ts).
-const venvReady = existsSync(venvPythonPath(getKernelVenvDir()))
+const venvReady = isKernelVenvReady()
 const dIt = venvReady ? it : it.skip
 
 const roots: string[] = []

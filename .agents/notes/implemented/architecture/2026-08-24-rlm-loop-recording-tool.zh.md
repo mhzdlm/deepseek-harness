@@ -12,7 +12,7 @@ LongHorizon-Harness 的分析（见 operator 的 `docs/LOOP.md`）建议将其 M
 
 - 主会话自行规划每一轮；executor/auditor 环节复用组合级别的具名 `dsh-tool-subagent` 实例（`toolName: executor` / `auditor`，一次性）。该插件绝不派生子进程。
 - `loop` 工具只持有那些不能依赖模型合规性的部分：严格的三行审计头解析、clean/complete/aligned 信任门、`session/loop-start|round-done` 仅记录日志的事件，以及将契约 + 已验证进度以 CAS 落盘到 continual-harness 状态。
-- 已验证进度复用 `loop/<runId>/...` 条目 id 下的既有 `memory` 种类。不引入新的 `HarnessKind` 值。
+- 已验证进度复用 `loop_<runId>/...` 条目 id 下的既有 `memory` 种类。不引入新的 `HarnessKind` 值。
 
 ## Why
 

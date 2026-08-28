@@ -76,11 +76,11 @@ describe('rlm bootstrap code', () => {
  */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync } from 'node:fs'
 import { getKernelVenvDir, venvPythonPath } from '../src/vendor/kernel/bootstrap.ts'
+import { isKernelVenvReady } from './venv-gate.ts'
 
 const execFileAsync = promisify(execFile)
-const venvReadyBootstrapSpec = existsSync(venvPythonPath(getKernelVenvDir()))
+const venvReadyBootstrapSpec = isKernelVenvReady()
 const dIt = venvReadyBootstrapSpec ? it : it.skip
 
 /**
