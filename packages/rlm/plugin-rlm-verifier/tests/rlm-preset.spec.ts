@@ -146,4 +146,15 @@ describe('rlm preset', () => {
     expect(text).toContain('rank candidate solutions')
     expect(text).toContain('high-value decision points')
   })
+
+  it('rlm persona aligns with prime base-prompt spirit', async () => {
+    const presetPath = join(RLM_PRESET_ROOT, 'rlm', 'agent.cordis.yml')
+    const text = readFileSync(presetPath, 'utf8')
+    // IPython is the agent's control surface, not the studied system's native runtime.
+    expect(text).toContain('not the native runtime')
+    // Long-running work uses a non-blocking control loop, not polling or a blocking await.
+    expect(text).toContain('non-blocking control loop')
+    // rlm() admits a child and returns only a handle; the answer never comes back.
+    expect(text).toContain('returns immediately with a handle')
+  })
 })
