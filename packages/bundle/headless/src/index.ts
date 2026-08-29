@@ -130,6 +130,7 @@ function streamReasoning(
         if (chunk.block.type !== 'reasoning') close()
         return
       case 'usage':
+      case 'logprobs':
         return
       case 'text-delta':
       case 'tool-call-delta':
