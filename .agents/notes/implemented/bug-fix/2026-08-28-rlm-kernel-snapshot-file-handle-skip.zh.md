@@ -6,7 +6,7 @@ Status: implemented
 
 ## 问题
 
-dill 序列化打开的文件对象时，保存的是"重新打开指令"（`dill._dill._create_filehandle(path, mode)`），而不是死数据。因此内核命名空间里活跃的写模式句柄能被快照成功保存，而之后每一次对 payload 的 `dill.loads`——内核重建后的会话恢复，或会话外对产物的分析——都会按存储的模式重新打开目标文件；写模式会截断。快照设计原本依赖 `dill.dump` 对打开文件抛错（头部注释把它们列入"不可序列化"），但 dill 对句柄从不抛错，所以防线从未生效。实际观测：分析先前会话的 `kernel-state.dill` 时，反序列化一个指向 `packages/rlm/plugin-rlm-loop/README.zh.md` 的 `BufferedWriter` blob，在加载瞬间把工作区文件截断为零字节（外围机制见[快照历史 note](../feature/2026-08-26-rlm-kernel-snapshot-history.md)）。
+dill 序列化打开的文件对象时，保存的是"重新打开指令"（`dill._dill._create_filehandle(path, mode)`），而不是死数据。因此内核命名空间里活跃的写模式句柄能被快照成功保存，而之后每一次对 payload 的 `dill.loads`——内核重建后的会话恢复，或会话外对产物的分析——都会按存储的模式重新打开目标文件；写模式会截断。快照设计原本依赖 `dill.dump` 对打开文件抛错（头部注释把它们列入"不可序列化"），但 dill 对句柄从不抛错，所以防线从未生效。实际观测：分析先前会话的 `kernel-state.dill` 时，反序列化一个指向 `packages/rlm/plugin-rlm-loop/README.zh.md` 的 `BufferedWriter` blob，在加载瞬间把工作区文件截断为零字节（外围机制见[快照历史 note](../feature/2026-08-26-rlm-kernel-snapshot-history.zh.md)）。
 
 ## 决策
 

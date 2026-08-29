@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-28-rlm-kernel-snapshot-file-handle-skip.md
+2026-08-28-rlm-kernel-snapshot-file-handle-skip.md: 3cbdfc3b45cedbaeea8bbda7e86e51c7ccb37337
+2026-08-28-rlm-kernel-snapshot-file-handle-skip.zh.md: 600065ba17c47da9fe93a005c157f2b42edb4175
