@@ -12,7 +12,7 @@
   "main": "lib/types/index.js",
   "types": "lib/types/index.d.ts",
   "scripts": {
-    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-memory/tests/sanitize.spec.ts packages/rlm/plugin-rlm-memory/tests/frontmatter.spec.ts packages/rlm/plugin-rlm-memory/tests/evidence.spec.ts packages/rlm/plugin-rlm-memory/tests/memory-cmd.spec.ts packages/rlm/plugin-rlm-memory/tests/persistence-catalog.spec.ts packages/rlm/plugin-rlm-memory/tests/search.spec.ts packages/rlm/plugin-rlm-memory/tests/memory-search-tool.spec.ts packages/rlm/plugin-rlm-memory/tests/consolidate.spec.ts packages/rlm/plugin-rlm-memory/tests/rollback.spec.ts packages/rlm/plugin-rlm-memory/tests/budget.spec.ts packages/rlm/plugin-rlm-memory/tests/retire.spec.ts",
+    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-memory/tests/sanitize.spec.ts packages/rlm/plugin-rlm-memory/tests/frontmatter.spec.ts packages/rlm/plugin-rlm-memory/tests/evidence.spec.ts packages/rlm/plugin-rlm-memory/tests/memory-cmd.spec.ts packages/rlm/plugin-rlm-memory/tests/persistence-catalog.spec.ts packages/rlm/plugin-rlm-memory/tests/search.spec.ts packages/rlm/plugin-rlm-memory/tests/memory-search-tool.spec.ts packages/rlm/plugin-rlm-memory/tests/consolidate.spec.ts packages/rlm/plugin-rlm-memory/tests/rollback.spec.ts packages/rlm/plugin-rlm-memory/tests/budget.spec.ts packages/rlm/plugin-rlm-memory/tests/retire.spec.ts packages/rlm/plugin-rlm-memory/tests/embedding.spec.ts packages/rlm/plugin-rlm-memory/tests/hybrid-search.spec.ts",
     "test:e2e": "vitest run --root ../../../ --config vitest.e2e.config.ts packages/rlm/plugin-rlm-memory/tests/rlm-memory-real.e2e.ts"
   },
   "exports": {

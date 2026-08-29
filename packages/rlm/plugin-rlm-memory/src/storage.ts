@@ -324,6 +324,66 @@ export function listPublished(memoryDir: string): string[] {
 }
 
 /**
+ * Embedding cache (Phase E, REME.md §12.1). Embeddings are a DERIVED artifact cached
+ * beside the lexical `index/` — NOT persisted inside the human-readable note Markdown,
+ * and stored under `index/embeddings/` so no `SUBDIRS`/persistence-catalog change is
+ * needed. Keyed by published relPath. The lexical `search` path never reads these; only
+ * `hybridSearch` does, and a missing cache degrades to lexical-only.
+ */
+
+/** Path of the embedding cache directory (`memoryDir/index/embeddings`). */
+export function embeddingCacheDir(memoryDir: string): string {
+  return join(memoryDir, 'index', 'embeddings')
+}
+
+/** Map a published relPath to a filesystem-safe cache key (slashes -> underscores). */
+function embeddingKey(relPath: string): string {
+  return relPath.replace(/[\\/]/g, '_')
+}
+
+/**
+ * Cache one note's embedding vector. Best-effort store; callers must never fail because
+ * caching failed.
+ * @param memoryDir - resolved memory root.
+ * @param relPath - the published note relPath (e.g. `published/wiki/x.md`).
+ * @param vector - the embedding vector.
+ */
+export function writeEmbedding(memoryDir: string, relPath: string, vector: number[]): void {
+  const dir = embeddingCacheDir(memoryDir)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `${embeddingKey(relPath)}.json`), JSON.stringify({ dim: vector.length, vector }), 'utf8')
+}
+
+/**
+ * Read a cached embedding vector, or null when absent (the note predates embeddings or
+ * was written directly). `hybridSearch` treats null as "no semantic signal".
+ * @param memoryDir - resolved memory root.
+ * @param relPath - the published note relPath.
+ * @returns the cached vector, or null.
+ */
+export function readEmbedding(memoryDir: string, relPath: string): number[] | null {
+  const p = join(embeddingCacheDir(memoryDir), `${embeddingKey(relPath)}.json`)
+  if (!existsSync(p)) return null
+  try {
+    const j = JSON.parse(readFileSync(p, 'utf8')) as { dim: number; vector: number[] }
+    return j.vector
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Remove a cached embedding (e.g. when a note is retired). Best-effort; a missing cache
+ * is not an error.
+ * @param memoryDir - resolved memory root.
+ * @param relPath - the published note relPath.
+ */
+export function deleteEmbedding(memoryDir: string, relPath: string): void {
+  const p = join(embeddingCacheDir(memoryDir), `${embeddingKey(relPath)}.json`)
+  if (existsSync(p)) rmSync(p, { force: true })
+}
+
+/**
  * Read one note by its relative path under `memoryDir` (e.g. `published/wiki/x.md`).
  * Thin wrapper over {@link parseNote} that prepends `memoryDir` when given a
  * relative path. Returns null for an absent or frontmatter-less file.

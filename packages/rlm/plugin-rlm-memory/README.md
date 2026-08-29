@@ -1,24 +1,28 @@
 # @deepseek-ai/dsh-plugin-rlm-memory
 
 RLM cross-session memory layer — Phase A (write path) + Phase B (recall) + Phase C
-(evolution) + Phase D (retire/archive). ReMe's file-authoritative form, the Continual
-Harness paper's evidence/audit discipline, dsh's host-owned sovereignty. Phase A captures
-completed root sessions, sanitizes the transcript (tool results stripped), writes
-`dialog/<id>.jsonl`, spawns a host-owned extraction subagent whose draft notes pass
-an evidence-locator gate before landing in `drafts/`, and appends a log-only
-`session/memory-captured` session event. Phase B adds the `memory_search` tool over
-`published/` (an in-memory keyword/BM25-ish index rebuilt from files each call, so
-it can never drift), updates each hit's `use_count`/`last_accessed` aging signal, and
-injects a hints-only `agent/session-start` guidance message. Phase C (REME.md §5.3)
-adds the publish gate (`gateMode` off|observe|enforce), a deterministic consolidation
-that promotes drafts to `published/` under a growth budget, a single-flight lock
-preventing concurrent clobbers, and reverse-snapshot rollback (`/memory rollback`)
-with a harness-style override-warning. Phase D (REME.md §5.4) adds an aging scan that
-scores `published/` notes by `use_count` + recency and a reversible `archive/` move
-(`/memory retire` / `/memory unretire`, gated by `exitMode` off|observe|enforce) — the
-knowledge base never grows stale, and retirement is never a deletion. Exposes
-`/memory list | show | delete | consolidate | rollback <noteId> [force] | retire <noteId>
-[force] | archived | unretire <noteId>`.
+(evolution) + Phase D (retire/archive) + Phase E (embeddings seam). ReMe's
+file-authoritative form, the Continual Harness paper's evidence/audit discipline,
+dsh's host-owned sovereignty. Phase A captures completed root sessions, sanitizes the
+transcript (tool results stripped), writes `dialog/<id>.jsonl`, spawns a host-owned
+extraction subagent whose draft notes pass an evidence-locator gate before landing in
+`drafts/`, and appends a log-only `session/memory-captured` session event. Phase B adds
+the `memory_search` tool over `published/` (an in-memory keyword/BM25-ish index rebuilt
+from files each call, so it can never drift), updates each hit's `use_count`/
+`last_accessed` aging signal, and injects a hints-only `agent/session-start` guidance
+message. Phase C (REME.md §5.3) adds the publish gate (`gateMode` off|observe|enforce),
+a deterministic consolidation that promotes drafts to `published/` under a growth budget,
+a single-flight lock preventing concurrent clobbers, and reverse-snapshot rollback
+(`/memory rollback`) with a harness-style override-warning. Phase D (REME.md §5.4) adds
+an aging scan that scores `published/` notes by `use_count` + recency and a reversible
+`archive/` move (`/memory retire` / `/memory unretire`, gated by `exitMode`
+off|observe|enforce) — the knowledge base never grows stale, and retirement is never a
+deletion. Phase E (REME.md §12.1) adds an opt-in embeddings seam: an `EmbeddingService`
+interface with an OpenAI-compatible `ExternalEmbeddingProvider` (default `off`); when
+`embeddingsProvider: 'external'`, `memory_search` blends cached cosine similarity with
+the keyword index (`hybridSearch`) and consolidation caches each promoted note's vector
+under `index/embeddings/`. Exposes `/memory list | show | delete | consolidate | rollback
+<noteId> [force] | retire <noteId> [force] | archived | unretire <noteId>`.
 
 ## Config
 
@@ -41,6 +45,13 @@ are resolved explicitly in `apply`, never hidden behind `??`.
 | `exitMode` | `off \| observe \| enforce` | `off` | Phase D retirement exit mode (REME.md §5.4 D12): `off` no-op (notes never retire); `observe` logs retire intent but does NOT move the note; `enforce` moves `published/` → `archived/` (reversible via `unretire`). Default `off` is deliberately conservative — nothing retires unless the deployer explicitly enables it. |
 | `agingMinAgeDays` | natural | `180` | Phase D aging scan: a `published/` note must be older than this many days (by `last_accessed`/`updated_at`) to be a retire candidate (REME.md §5.4/§9 — deliberately high so normal use never triggers retirement). |
 | `agingMinUseCount` | natural | `1` | Phase D aging scan: a note with `use_count` below this is a retire candidate (REME.md §5.4/§9 — a note used even once is never retired). |
+| `embeddingsProvider` | `off \| external` | `off` | Phase E embeddings seam (REME.md §12.1): `off` keeps keyword/BM25 recall only (default; no network, no cache). `external` enables the OpenAI-compatible `ExternalEmbeddingProvider`: `memory_search` runs `hybridSearch` (lexical + cached cosine), and consolidation caches each promoted note's vector under `index/embeddings/`. Requires `embeddingsBaseURL`, `embeddingsModel`, and `embeddingsApiKey`/`embeddingsApiKeyEnv`; missing any fails loud at load. |
+| `embeddingsBaseURL` | string | — (required if `external`) | OpenAI-compatible base URL (e.g. `https://api.openai.com/v1`); the `embeddings` path is appended, so do NOT include `/embeddings` here. |
+| `embeddingsApiKey` | string | — | Provider API key. Prefer `embeddingsApiKeyEnv` to keep secrets out of cordis.yml; exactly one of the two is required for `external`. |
+| `embeddingsApiKeyEnv` | string | — | Name of an env var holding the provider key (e.g. `EMBEDDINGS_API_KEY`); read once at load. |
+| `embeddingsModel` | string | — (required if `external`) | Embedding model id passed as the OpenAI `model` field. |
+| `embeddingsDim` | natural | inferred | Expected vector dimension; if omitted the first provider response's length is used. Supply it to skip the warm-up inference when caching the first note. |
+| `embeddingsBatchSize` | natural | `32` | Texts per provider request; `hybridSearch`/`consolidate` chunk inputs to this size. |
 
 ## Events
 
@@ -83,7 +94,7 @@ D12, "retirement is reversible"); clears `retired_at` and re-enters the recall i
   archive/<kind>/<slug>.md     # Phase D retire target: moved (never deleted) published notes, reversible via /memory unretire (REME.md §5.4 D12)
   dialog/<sessionId>.jsonl     # sanitized captured conversation (tool results stripped)
   snapshots/<relPath>/<iso>.md # Phase C reverse-snapshot store; one timestamped prior version per published note, restored by /memory rollback (REME.md §5.3 D11)
-  index/                       # intentionally NOT written — the keyword index is rebuilt from published/ each call (REME.md §5.2)
+  index/                       # keyword index is NOT persisted — rebuilt from published/ each call (REME.md §5.2). `index/embeddings/` IS written when `embeddingsProvider: 'external'`: one `<relPath>.json` cached vector per promoted note (Phase E, REME.md §12.1).
   logs/                        # Phase C consolidation audit (not written in Phase A)
 ```
 
@@ -158,10 +169,17 @@ agent loop. Recall does not reshape any other prefix.
   session id; a host restart mid-session loses the buffered turns. The durable
   artifact is the `dialog/<id>.jsonl` written on disposal. A persistence-backed
   buffer is a Phase C extension point.
-- **No embeddings / semantic recall** — `memory_search` is keyword/BM25-ish only;
-  vector recall awaits an upstream embeddings seam (REME.md §5.2, §12 open
-  question 1). `recallMode: 'auto'` is accepted by the schema but falls back to
-  keyword and logs the downgrade once.
+- **Embeddings are opt-in (default off)** — Phase E adds an `EmbeddingService` seam with
+  an OpenAI-compatible `ExternalEmbeddingProvider`, but `embeddingsProvider` defaults to
+  `off`, so the shipped behavior is unchanged keyword/BM25 recall (no network, no cache).
+  When `embeddingsProvider: 'external'` is configured with `embeddingsBaseURL`,
+  `embeddingsModel`, and a key, `memory_search` blends cached cosine similarity with the
+  keyword index (`hybridSearch`) and consolidation writes one vector per promoted note
+  under `index/embeddings/`. DeepSeek exposes no embeddings API, so the external provider
+  points at an OpenAI-compatible endpoint; `recallMode: 'auto'` without a configured
+  provider still falls back to keyword (logs the downgrade once). The seam is a Phase E
+  make-do: a future dsh-native `Embedding` capability (`packages/core`) should replace
+  `external` without touching call sites (REME.md §12.1).
 - **Index rebuilt per call** — the keyword index is derived from `published/` on
   every `memory_search`; on a large knowledge base an incremental/maintained index
   (the `index/` dir reserved in layout) is a Phase C/D optimization, not a

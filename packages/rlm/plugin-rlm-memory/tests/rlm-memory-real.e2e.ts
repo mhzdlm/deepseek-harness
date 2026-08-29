@@ -30,8 +30,10 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import * as PluginRlmKernel from '@deepseek-ai/dsh-plugin-rlm-kernel'
 import * as PluginContinualHarness from '@deepseek-ai/dsh-plugin-continual-harness'
 import * as PluginRlmMemory from '@deepseek-ai/dsh-plugin-rlm-memory'
-import { writePublished, parseNote, writeDraft, writeDialog, ensureMemoryDirs, listPublished, listArchived, type Note, type NoteFrontmatter } from '../src/storage.ts'
+import { writePublished, parseNote, writeDraft, writeDialog, ensureMemoryDirs, listPublished, listArchived, publishedRelFor, type Note, type NoteFrontmatter } from '../src/storage.ts'
 import { consolidate } from '../src/consolidate.ts'
+import { hybridSearch } from '../src/search.ts'
+import { createExternalEmbeddingProvider } from '../src/embedding.ts'
 
 const roots: string[] = []
 afterEach(() => {
@@ -48,6 +50,9 @@ function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
     })
   })
 }
+
+/** Normalize OS path separators so Windows `published\...` equals `published/...`. */
+const norm = (p: string): string => p.replace(/\\/g, '/')
 
 async function setup() {
   const ctx = new Context()
@@ -79,9 +84,9 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('memory capture with-key e2e', ()
     // Resolve once the capture audit event fires (after dialog lands + extraction runs).
     let captured: { sessionId: string; dialogTurns: number; draftsAdmitted: number; extractionRan: boolean } | null = null
     const capturedDone = new Promise<void>((resolve) => {
-      ctx.on('session/event', (s, e) => {
+      ctx.on('session/event', (_s, e) => {
         if (e.type === 'session/memory-captured') {
-          captured = e.data as typeof captured
+          captured = e.data
           resolve()
         }
       })
@@ -245,4 +250,41 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('memory retire/unretire with-key 
     expect(restored.body).toBe('# Retire Target\nThis note is retired and un-retired end to end.')
     expect(restored.frontmatter.retired_at).toBeUndefined()
   }, 180_000)
+})
+
+describe.skipIf(
+  !process.env.EMBEDDINGS_BASE_URL || !process.env.EMBEDDINGS_API_KEY || !process.env.EMBEDDINGS_MODEL,
+)('memory embeddings with-key e2e', () => {
+  it('consolidates with a real OpenAI-compatible provider and hybridSearch recalls semantically', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-memory-emb-e2e-'))
+    roots.push(root)
+    ensureMemoryDirs(root)
+    // Phase E real seam: a real OpenAI-compatible embeddings endpoint (NOT DeepSeek, which
+    // exposes no embeddings API). Gated on EMBEDDINGS_* so it self-skips in CI; the extra
+    // guard narrows the types for `createExternalEmbeddingProvider`.
+    const baseURL = process.env.EMBEDDINGS_BASE_URL
+    const apiKey = process.env.EMBEDDINGS_API_KEY
+    const model = process.env.EMBEDDINGS_MODEL
+    if (!baseURL || !apiKey || !model) return
+    const svc = createExternalEmbeddingProvider({ baseURL, apiKey, model })
+    const now = new Date().toISOString()
+    const fm = (source: string, body: string): Note => ({
+      frontmatter: {
+        kind: 'wiki', scope: 'global', session_id: 'emb-e2e', source,
+        source_conversation: 'dialog/none.jsonl', created_at: now, updated_at: now,
+        version: 1, use_count: 0, last_accessed: now,
+        gate: { mode: 'observe', verdict: 'pass', reviewed_at: now },
+      },
+      body,
+    })
+    writeDraft(root, fm('d1', '# Sorting\nHow to sort a list of numbers in python.'), 'emb-e2e', 'Sorting')
+    writeDraft(root, fm('d2', '# Baking\nHow to bake bread from flour.'), 'emb-e2e', 'Baking')
+    await consolidate(root, { gateMode: 'observe', maxPublishedNotes: 200, maxPublishedBytes: 5_000_000, embeddingService: svc })
+    expect(listPublished(root).length).toBe(2)
+    // A query with no shared tokens but semantically close to the sorting note. This is the
+    // case lexical `search` cannot reach; only the cached-embedding cosine leg scores it.
+    const hits = await hybridSearch(root, 'ordering elements in a programming language', 5, undefined, svc)
+    expect(hits.length).toBeGreaterThanOrEqual(1)
+    expect(norm(hits[0]!.relPath)).toBe(norm(publishedRelFor(fm('d1', ''))))
+  }, 120_000)
 })

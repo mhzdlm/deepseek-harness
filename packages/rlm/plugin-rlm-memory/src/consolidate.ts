@@ -34,11 +34,13 @@
 
 import { readFileSync, statSync, existsSync, writeFileSync, utimesSync } from 'node:fs'
 import { join, sep } from 'node:path'
+import type { EmbeddingService } from './embedding.ts'
 import {
   listDrafts,
   parseNote,
   deleteDraft,
   writePublished,
+  writeEmbedding,
   listPublished,
   publishedRelFor,
   snapshotsDir,
@@ -63,6 +65,12 @@ export interface ConsolidateOptions {
   maxPublishedNotes: number
   /** Maximum total bytes across `published/` before promotion is skipped/rejected (default 5_000_000). */
   maxPublishedBytes: number
+  /**
+   * Optional embedding provider (Phase E, REME.md §12.1). When present, `promoteDraft`
+   * caches the promoted note's embedding (best-effort) so `hybridSearch` can fuse it with
+   * lexical BM25. Absent = no embedding cache (lexical fallback in search).
+   */
+  embeddingService?: EmbeddingService
 }
 
 /** The decision reached for one draft during the decide step. */
@@ -113,7 +121,9 @@ export function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     try {
       return await fn()
     } finally {
-      if (locks.get(key) === promise) locks.delete(key)
+      // Single-flight: only this promise is ever stored for `key` until it settles,
+      // so deleting unconditionally is safe (a later call creates a fresh lock).
+      locks.delete(key)
     }
   })()
   locks.set(key, promise)
@@ -256,6 +266,18 @@ export async function promoteDraft(memoryDir: string, draftPath: string, options
       body: note.body,
     }
     writePublished(memoryDir, promoted)
+    // Phase E embedding cache (REME.md §12.1): cache the promoted note's vector so
+    // hybridSearch can fuse it with lexical BM25. Best-effort — a failure must never
+    // fail promotion.
+    if (options.embeddingService) {
+      try {
+        const rel = publishedRelFor(promoted)
+        const [vec] = await options.embeddingService.embed([`${promoted.frontmatter.source}\n${promoted.body}`])
+        if (vec) writeEmbedding(memoryDir, rel, vec)
+      } catch {
+        // embedding cache is observability for recall; ignore on failure
+      }
+    }
     // Stamp the reverse-snapshot slightly after the published file's post-write mtime so
     // the override-warning (rollbackNote) treats OUR write as the baseline, not the
     // snapshot-read time — a genuine user edit (mtime after our write) is warned; our own
@@ -326,7 +348,7 @@ function markRejected(note: Note, reason: string): Note {
       ...note.frontmatter,
       rejected_at: now,
       rejection: reason,
-    } as NoteFrontmatter,
+    },
     body: note.body,
   }
 }

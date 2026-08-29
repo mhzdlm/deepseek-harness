@@ -100,7 +100,12 @@ tool applies the §8 D4 use-signal after ranking, mirroring how Phase D will rea
 - The keyword index is always consistent with `published/` (rebuilt per call);
   no persisted index to maintain or rebuild.
 - `recallMode: 'auto'` silently degrades to keyword until an upstream embeddings
-  seam exists; `defineTool` cannot carry `purpose: 'memory'`.
+  seam exists; `defineTool` cannot carry `purpose: 'memory'`. Phase E
+  ([2026-08-30-rlm-memory-phase-e-embedding-seam.md](./2026-08-30-rlm-memory-phase-e-embedding-seam.md))
+  partially supersedes this: it ships that seam as an opt-in
+  OpenAI-compatible provider, so `auto` becomes semantic only when
+  `embeddingsProvider: 'external'` is configured — the keyword default here is
+  unchanged.
 - Phase C (consolidation/rollback, promotion into `published/`) and Phase D
   (retire/archive using `use_count`/`last_accessed`) remain unbuilt; the read path
   assumes notes already live in `published/` (this Phase B writes them in tests via

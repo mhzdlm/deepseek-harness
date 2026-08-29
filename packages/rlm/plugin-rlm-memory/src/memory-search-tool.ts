@@ -29,8 +29,9 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { search, type SearchHit } from './search.ts'
+import { search, hybridSearch, type SearchHit } from './search.ts'
 import { updateUsage } from './storage.ts'
+import type { EmbeddingService } from './embedding.ts'
 
 /** Construction options for the `memory_search` tool. */
 export interface MemorySearchToolOptions {
@@ -44,6 +45,13 @@ export interface MemorySearchToolOptions {
    * — no embeddings seam). The tool itself is the keyword implementation.
    */
   recallMode: 'keyword' | 'auto'
+  /**
+   * Optional embedding provider (Phase E, REME.md §12.1). When present, the tool runs
+   * `hybridSearch` (lexical BM25 fused with cached-embedding cosine); otherwise it runs
+   * the lexical `search`. The closure carries it so a dsh-native provider later needs no
+   * tool change.
+   */
+  embeddingService?: EmbeddingService
 }
 
 interface MemorySearchResult {
@@ -71,10 +79,11 @@ function renderHits(hits: SearchHit[]): string {
  * @returns a `defineTool` tool object implementing `memory_search`.
  */
 export function createMemorySearchTool(options: MemorySearchToolOptions): ReturnType<typeof defineTool> {
-  // `recallMode` is accepted but Phase B has only the keyword implementation; the
-  // index.ts caller already logged the 'auto' -> keyword fallback once before
-  // constructing this tool (REME.md §12 open question 1). Keep the value on the
-  // closure so a future embedding seam can branch here without a signature change.
+  // `recallMode` is accepted by the Config and logged centrally (index.ts) when it
+  // downgrades to keyword. The embedding seam (Phase E, REME.md §12.1) lives on the
+  // optional `embeddingService` closure: when present this tool runs `hybridSearch`,
+  // otherwise the lexical `search`. Keep the value on the closure so a dsh-native
+  // provider later needs no tool change.
   void options.recallMode
 
   return defineTool({
@@ -136,7 +145,9 @@ export function createMemorySearchTool(options: MemorySearchToolOptions): Return
         : options.recallTopK
       const kind = typeof args.kind === 'string' && args.kind.length > 0 ? args.kind : undefined
 
-      const hits = search(options.memoryDir, query, limitArg, kind)
+      const hits = options.embeddingService
+        ? await hybridSearch(options.memoryDir, query, limitArg, kind, options.embeddingService)
+        : search(options.memoryDir, query, limitArg, kind)
       const nowIso = new Date().toISOString()
       // Update the aging signal on every hit (REME.md §8 D4): increment use_count
       // and set last_accessed, WITHOUT bumping version (content identity).

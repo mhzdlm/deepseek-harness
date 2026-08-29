@@ -19,7 +19,8 @@
  * @module @deepseek-ai/dsh-plugin-rlm-memory/search
  */
 
-import { listPublished, parseNote, readNote, type Note } from './storage.ts'
+import { listPublished, parseNote, readNote, readEmbedding, type Note } from './storage.ts'
+import { type EmbeddingService, cosine } from './embedding.ts'
 
 /** One note's derived recall fields, carried alongside its source path. */
 export interface IndexedNote {
@@ -192,6 +193,82 @@ export function search(memoryDir: string, query: string, limit: number, kind?: s
   })
 
   return scored.slice(0, Math.max(0, limit)).map(({ note, score }) => ({
+    relPath: note.relPath,
+    title: note.title,
+    kind: note.note.frontmatter.kind,
+    score,
+    body: note.note.body,
+  }))
+}
+
+/**
+ * Hybrid recall (Phase E, REME.md §12.1): blend lexical BM25 with cosine similarity over
+ * each note's cached embedding. Only used when an `EmbeddingService` is configured
+ * (`embeddingsProvider !== 'off'`); otherwise callers use {@link search} (lexical only).
+ * A note with no cached embedding scores 0 on the vector axis, so lexical recall still
+ * applies. Async because embedding is a network call. Returns the same {@link SearchHit}
+ * shape as {@link search} so the `memory_search` tool renders unchanged.
+ *
+ * Borrow: vector + lexical fusion mirrors the hybrid retrieval the Continual Harness
+ * paper expects for retrieval quality; here it is a dsh-native seam stand-in.
+ *
+ * @param memoryDir - resolved memory root.
+ * @param query - the recall query.
+ * @param limit - max hits.
+ * @param kind - optional bucket filter.
+ * @param embeddingService - the configured embedding provider.
+ * @returns ranked hits.
+ */
+export async function hybridSearch(
+  memoryDir: string,
+  query: string,
+  limit: number,
+  kind: string | undefined,
+  embeddingService: EmbeddingService,
+): Promise<SearchHit[]> {
+  const { notes, inverted } = buildIndex(memoryDir)
+  if (notes.length === 0) return []
+
+  const queryTerms = tokenize(query)
+  const N = notes.length
+  const lexScores = new Map<string, number>()
+  for (const note of notes) {
+    if (kind !== undefined && note.note.frontmatter.kind !== kind) continue
+    let score = 0
+    for (const term of queryTerms.keys()) {
+      const tf = note.terms.get(term) ?? 0
+      if (tf === 0) continue
+      const docsWithTerm = inverted.get(term)?.size ?? 0
+      const idf = docsWithTerm > 0 ? Math.log(1 + (N - docsWithTerm + 0.5) / (docsWithTerm + 0.5)) : 0
+      score += tf * idf
+    }
+    lexScores.set(note.relPath, score)
+  }
+
+  const qvec = await embeddingService.embed([query])
+  const q = qvec[0] ?? []
+  const maxLex = Math.max(1, ...lexScores.values())
+  const blended: Array<{ note: IndexedNote; score: number }> = []
+  for (const note of notes) {
+    if (kind !== undefined && note.note.frontmatter.kind !== kind) continue
+    const lex = (lexScores.get(note.relPath) ?? 0) / maxLex
+    const emb = readEmbedding(memoryDir, note.relPath)
+    const vec = emb && q.length > 0 ? cosine(q, emb) : 0
+    // ReLU: orthogonal/negative cosine → 0, so an unrelated note cannot score half-
+    // relevant. Matches lexical (score 0 = no recall); the 0.5/0.5 blend then fuses
+    // the two axes (REME.md §12.1).
+    const vecNorm = Math.max(0, vec)
+    blended.push({ note, score: 0.5 * lex + 0.5 * vecNorm })
+  }
+
+  blended.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score
+    return a.note.updatedAt < b.note.updatedAt ? 1 : a.note.updatedAt > b.note.updatedAt ? -1 : 0
+  })
+
+  // Like `search`, drop zero-score notes: no lexical AND no vector signal means no recall.
+  const ranked = blended.filter(h => h.score > 0).slice(0, Math.max(0, limit))
+  return ranked.map(({ note, score }) => ({
     relPath: note.relPath,
     title: note.title,
     kind: note.note.frontmatter.kind,

@@ -39,6 +39,7 @@ import { extractDrafts, persistCapture, type CaptureBufferEntry } from './captur
 import { type CaptureTurn } from './sanitize.ts'
 import { listMemoryText, showMemoryText, deleteMemoryText, consolidateText, rollbackText, retireText, archivedText, unretireText } from './memory-cmd.ts'
 import { createMemorySearchTool } from './memory-search-tool.ts'
+import { createExternalEmbeddingProvider, type EmbeddingService } from './embedding.ts'
 import { memoryGuidance } from './guidance.ts'
 import type { GateMode } from './consolidate.ts'
 import type { ExitMode } from './retire.ts'
@@ -59,6 +60,8 @@ export type CaptureMode = 'off' | 'sessionEnd' | 'intervalTurns'
 export type PrivacyFilter = '' | 'display' | 'full'
 /** Recall mode (REME.md §9, §12 open question 1). Phase B ships `'keyword'` only. */
 export type RecallMode = 'keyword' | 'auto'
+/** Embedding provider selection (REME.md §12.1 Phase E). */
+export type EmbeddingProviderMode = 'off' | 'external'
 
 /** Plugin configuration: where to store memory and how aggressively to capture/recall. */
 export interface Config {
@@ -100,6 +103,25 @@ export interface Config {
   agingMinAgeDays?: number
   /** Aging scan minimum `use_count` to stay safe (default 1, REME.md §5.4/§9 — a note used even once is never retired). */
   agingMinUseCount?: number
+  /**
+   * Embedding provider (REME.md §12.1 Phase E). `off` (default) keeps lexical-only
+   * recall; `external` enables the OpenAI-compatible `ExternalEmbeddingProvider` (vector
+   * + lexical hybrid recall). A dsh-native seam, when available, is a future provider on
+   * the same `EmbeddingService` interface (no consumer change).
+   */
+  embeddingsProvider?: EmbeddingProviderMode
+  /** External embeddings base URL, e.g. `https://api.openai.com/v1` (OpenAI-compatible). */
+  embeddingsBaseURL?: string
+  /** External embeddings API key; never committed. Falls back to `embeddingsApiKeyEnv`. */
+  embeddingsApiKey?: string
+  /** Env var to read the API key from when `embeddingsApiKey` is empty (e.g. `DEEPSEEK_API_KEY`). */
+  embeddingsApiKeyEnv?: string
+  /** External embeddings model id, e.g. `text-embedding-3-small`. */
+  embeddingsModel?: string
+  /** Optional fixed embedding dimension; inferred from the first response when omitted. */
+  embeddingsDim?: number
+  /** Max texts per embeddings request (batching); default 32. */
+  embeddingsBatchSize?: number
 }
 
 /** Schemastery schema validating {@link Config} at plugin load. */
@@ -118,6 +140,13 @@ export const Config: z<Config> = z.object({
   exitMode: z.union(['off', 'observe', 'enforce'] as const),
   agingMinAgeDays: z.natural(),
   agingMinUseCount: z.natural(),
+  embeddingsProvider: z.union(['off', 'external'] as const),
+  embeddingsBaseURL: z.string(),
+  embeddingsApiKey: z.string(),
+  embeddingsApiKeyEnv: z.string(),
+  embeddingsModel: z.string(),
+  embeddingsDim: z.natural(),
+  embeddingsBatchSize: z.natural(),
 })
 
 /**
@@ -171,13 +200,36 @@ export function apply(ctx: Context, config: Config): void {
   // and use_count >= 1 — normal use never triggers retirement. Explicit defaults, no `??`.
   const agingMinAgeDays = config.agingMinAgeDays && config.agingMinAgeDays > 0 ? config.agingMinAgeDays : 180
   const agingMinUseCount = config.agingMinUseCount && config.agingMinUseCount > 0 ? config.agingMinUseCount : 1
-  // REME.md §12 open question 1: dsh has no embeddings API. `recallMode: 'auto'`
-  // is accepted but Phase B ships only the keyword implementation, so fall back to
-  // keyword and log the downgrade once (the tool is the keyword implementation).
-  let warnedAutoFallback = false
-  if (recallMode === 'auto' && !warnedAutoFallback) {
-    warnedAutoFallback = true
-    ctx.logger?.warn?.('[plugin-rlm-memory] recallMode "auto" requested but no embeddings seam exists (REME.md §12 open question 1); falling back to keyword recall')
+  // Phase E embedding seam (REME.md §12.1): explicit default `off`, no hidden `??`.
+  // When `external`, build the OpenAI-compatible provider; fail loud if the required
+  // base URL / model / key are missing (misconfiguration fails loud, never silently
+  // degrades to lexical).
+  const embeddingsProvider: EmbeddingProviderMode = config.embeddingsProvider === 'external' ? 'external' : 'off'
+  let embeddingService: EmbeddingService | undefined
+  if (embeddingsProvider === 'external') {
+    const baseURL = config.embeddingsBaseURL
+    const model = config.embeddingsModel
+    const apiKey = config.embeddingsApiKey
+      || (config.embeddingsApiKeyEnv ? process.env[config.embeddingsApiKeyEnv] : undefined)
+    if (!baseURL || !model || !apiKey) {
+      throw new Error(
+        '[plugin-rlm-memory] embeddingsProvider "external" requires embeddingsBaseURL, '
+        + 'embeddingsModel, and an api key (embeddingsApiKey or embeddingsApiKeyEnv)',
+      )
+    }
+    embeddingService = createExternalEmbeddingProvider({
+      baseURL,
+      apiKey,
+      model,
+      ...(config.embeddingsDim !== undefined ? { dim: config.embeddingsDim } : {}),
+      ...(config.embeddingsBatchSize !== undefined ? { batchSize: config.embeddingsBatchSize } : {}),
+    })
+  }
+  // REME.md §12 open question 1: dsh has no embeddings API. `recallMode: 'auto'` is
+  // accepted; when an embedding seam IS configured (`external`), hybrid recall runs and
+  // no downgrade is logged. Otherwise fall back to keyword and log once.
+  if (recallMode === 'auto' && !embeddingService) {
+    ctx.logger?.warn?.('[plugin-rlm-memory] recallMode "auto" requested but no embeddings seam configured (embeddingsProvider !== "external"); falling back to keyword recall')
   }
 
   ensureMemoryDirs(memoryDir)
@@ -214,7 +266,12 @@ export function apply(ctx: Context, config: Config): void {
   // Borrow the `ctx.effect(() => ctx.tools.register(...))` registration idiom from
   // plugin-rlm-loop/loop-tool.ts.
   ctx.effect(
-    () => ctx.tools.register(createMemorySearchTool({ memoryDir, recallTopK, recallMode })),
+    () => ctx.tools.register(createMemorySearchTool({
+      memoryDir,
+      recallTopK,
+      recallMode,
+      ...(embeddingService ? { embeddingService } : {}),
+    })),
     'register memory_search tool',
   )
 
@@ -291,7 +348,12 @@ export function apply(ctx: Context, config: Config): void {
               return { kind: 'success' as const, text: deleteMemoryText(memoryDir, arg) }
             case 'consolidate': {
               // Phase C promotion (REME.md §5.3): publish gate + growth budget + reverse-snapshot.
-              const opts = { gateMode, maxPublishedNotes, maxPublishedBytes }
+              const opts = {
+                gateMode,
+                maxPublishedNotes,
+                maxPublishedBytes,
+                ...(embeddingService ? { embeddingService } : {}),
+              }
               return consolidateText(memoryDir, opts).then(({ text }) => ({ kind: 'success' as const, text }))
             }
             case 'rollback': {
