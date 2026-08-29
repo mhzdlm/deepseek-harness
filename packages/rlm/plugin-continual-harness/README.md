@@ -9,10 +9,20 @@ Continual-learning substrate for the rlm family. It owns the CAS-backed harness-
 | Config | Type | Default | Description |
 |---|---|---|---|
 | `dataDir` | string | `~/.dsh/rlm` | Harness base dir for the CAS state store and landed entries; must match the other rlm plugins' `dataDir`. |
+| `autoRefine` | boolean | `false` | Opt-in scheduler that triggers `/refine` on a root-agent turn-interval gate. |
+| `autoRefineTurnInterval` | number | `12` | Root-agent idle turns between automatic review attempts. |
+| `autoRefineCooldownMs` | number | `600000` | Minimum gap between automatic reviews (stamped on both success and rejection). |
+| `maxEntriesPerKind` | number | `6` | Per-kind cap when rendering the harness overview into the prompt. Mirrors prime-agent's hints-only injected overview: surface routing hints, not the full harness; the model reads underlying entries on demand. |
+| `maxCharsPerEntry` | number | `180` | Per-entry content cap when rendering the harness overview. Truncate each entry to a hint, keeping the id/tag/title visible for reference. |
+| `maxTotalChars` | number | `6000` | Total character ceiling for the whole harness overview section — a bounded routing index across the four kinds. |
 
 ## Tool: `/refine`
 
-`/refine` reviews the recent transcript, has a subagent propose small evidence-backed harness updates, reverse-snapshots the entries that will change, applies them, and records a `RefinementEvent`; rollback restores a snapshot by event id.
+`/refine` reviews the recent transcript, has a subagent propose small evidence-backed harness updates, reverse-snapshots the entries that will change, applies them, and records a `RefinementEvent`; rollback restores a snapshot by event id. The proposal and review subagents run with `reasoningEffort: 'none'` so the JSON budget is not spent on a chain-of-thought.
+
+## Behavior: automatic refinement (opt-in)
+
+When `autoRefine` is enabled, `registerAutoRefine` listens on `agent/status` and counts root-agent turn completions (`currentInitiator()` undefined). At the turn-interval and once the cooldown gate passes, it runs a scoped review subagent (`reviewAutoRefine`); only when `shouldRefine` is true does it reuse the `runRefine` pipeline. Child agents are excluded, and the cooldown is persisted so a failed review cannot immediately re-trigger. Defaults keep existing deployments manual-only until they opt in.
 
 ## Model Experience
 

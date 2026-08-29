@@ -47,6 +47,7 @@ export const KNOWN_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'session/kernel-snapshot',
   'session/loop-round-done',
   'session/loop-start',
+  'session/memory-captured',
   'session/moa-reference',
   'session/moa-synthesis',
   'session/title',

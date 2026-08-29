@@ -1,7 +1,10 @@
 /**
- * Render the harness state into a system-prompt section, aligned with the
- * vendored `harness.py` `overview()`. Budget-truncated per kind (newest
- * first) so a large harness cannot blow the prompt.
+ * Render the harness state into a system-prompt section. Budget-truncated per
+ * kind (newest first) so a large harness cannot blow the prompt. The defaults
+ * mirror prime-agent's injected-overview hints-only philosophy
+ * (`DEFAULT_OVERVIEW_ENTRY_LIMIT=6` / `CONTENT_LIMIT=180`): surface only
+ * routing hints, forcing the model to read the underlying entry on demand
+ * (`/harness show <id>`) rather than dumping the whole harness into context.
  *
  * FIX-10: budgets are enforced at two levels — per-entry content length and a
  * total character ceiling for the whole section — so a single oversized entry
@@ -45,9 +48,12 @@ export function renderHarnessOverview(
   state: HarnessStateFile,
   options: HarnessOverviewOptions = {},
 ): string {
-  const max = options.maxEntriesPerKind ?? 20
-  const maxCharsPerEntry = options.maxCharsPerEntry ?? 1_000
-  const maxTotalChars = options.maxTotalChars ?? 16_000
+  // Hints-only budget aligned with prime-agent's injected overview
+  // (6 entries / 180 chars / bounded total); the model reads full entries on
+  // demand, so the per-turn injected section stays a routing index, not a dump.
+  const max = options.maxEntriesPerKind ?? 6
+  const maxCharsPerEntry = options.maxCharsPerEntry ?? 180
+  const maxTotalChars = options.maxTotalChars ?? 6_000
   const lines: string[] = []
   let totalChars = 0
 

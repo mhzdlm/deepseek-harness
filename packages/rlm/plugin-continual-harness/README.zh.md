@@ -9,10 +9,17 @@
 | 配置 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `dataDir` | string | `~/.dsh/rlm` | CAS 状态存储与落地条目的 harness 基础目录；必须与其余 rlm 插件的 `dataDir` 一致。 |
+| `autoRefine` | boolean | `false` | 可选开关：按根代理轮次间隔门触发 `/refine`。 |
+| `autoRefineTurnInterval` | number | `12` | 两次自动审视之间的根代理空闲轮数。 |
+| `autoRefineCooldownMs` | number | `600000` | 两次自动审视之间的最小间隔（成功与拒否均盖戳）。 |
 
 ## 工具：`/refine`
 
-`/refine` 审视最近的对话轨迹，让一个 subagent 提出小而带证据支撑的 harness 更新，对将要变更的条目做逆向快照，应用之，并记录一条 RefinementEvent；回滚按事件 id 恢复快照。
+`/refine` 审视最近的对话轨迹，让一个 subagent 提出小而带证据支撑的 harness 更新，对将要变更的条目做逆向快照，应用之，并记录一条 RefinementEvent；回滚按事件 id 恢复快照。提案与审视 subagent 均运行于 `reasoningEffort: 'none'`，使 JSON 预算不被思考链占用。
+
+## 行为：自动精炼（可选）
+
+启用 `autoRefine` 时，`registerAutoRefine` 监听 `agent/status` 并统计根代理轮次完成（`currentInitiator()` 为 undefined）。当达到轮次间隔且冷却门通过，运行一个作用域受限的审视 subagent（`reviewAutoRefine`）；仅当 `shouldRefine` 为真才复用 `runRefine` 流程。子代理被排除，冷却持久化以保证一次失败审视不会立即重触发。默认值保持既有部署仅手动触发，直到显式开启。
 
 ## 模型体验
 

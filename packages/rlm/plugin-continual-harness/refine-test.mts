@@ -26,7 +26,7 @@ import {
 	type HarnessKind,
 	type HarnessStateFile,
 } from './src/harness-file.ts'
-import { applyProposals, applyProposalsAndPersist, extractProposals, pruneRefinements, rollbackRefine, validateProposals } from './src/refine.ts'
+import { applyProposals, applyProposalsAndPersist, extractProposals, pruneRefinements, rollbackRefine, validateProposals, registerAutoRefine, reviewAutoRefine, runRefine } from './src/refine.ts'
 import { deleteHarnessEntry, listHarness, showHarnessEntry } from './src/harness-cmd.ts'
 import { createHarnessOverviewCache } from './src/prompt-cache.ts'
 import { renderHarnessOverview } from './src/prompt.ts'
@@ -660,6 +660,108 @@ console.log('== writeHarnessStates absent-local rollback (2026-08-28) ==')
 	}
 	check('absent-local composite write throws on global conflict', absentThrew)
 	check('freshly created local file removed on global failure', !existsSync(absentLocalPath))
+}
+
+console.log('== auto-refine scheduler (P0) ==')
+{
+	// reviewAutoRefine parses the structured decision from a mocked subagent.
+	const reviewCtx = {
+		subagents: {
+			start: async (_provider: string, _req: unknown) => ({
+				result: { shouldRefine: true, rationale: 'reusable tactic emerged' },
+				dispose: async () => undefined,
+			}),
+		},
+		sessions: { get: () => undefined },
+	} as unknown as import('@deepseek-ai/cordis').Context
+	const decision = await reviewAutoRefine(reviewCtx, 'rev-session', { id: 'rev-agent' } as any, 'spawn', new AbortController().signal)
+	check('review gate parses shouldRefine:true', decision.shouldRefine === true && decision.rationale.includes('reusable'), JSON.stringify(decision))
+
+	const reviewCtx2 = {
+		subagents: {
+			start: async (_provider: string, _req: unknown) => ({
+				result: { shouldRefine: false, rationale: 'nothing reusable' },
+				dispose: async () => undefined,
+			}),
+		},
+		sessions: { get: () => undefined },
+	} as unknown as import('@deepseek-ai/cordis').Context
+	const decision2 = await reviewAutoRefine(reviewCtx2, 'rev-session', { id: 'rev-agent' } as any, 'spawn', new AbortController().signal)
+	check('review gate parses shouldRefine:false', decision2.shouldRefine === false)
+
+	// registerAutoRefine with enabled:false registers no listener.
+	let registered = false
+	const disabledCtx = {
+		on: () => { registered = true; return () => undefined },
+		agents: { currentInitiator: () => undefined },
+		subagents: { start: async () => ({ result: {}, dispose: async () => undefined }) },
+		effect: (fn: () => unknown) => fn(),
+	} as unknown as import('@deepseek-ai/cordis').Context
+	registerAutoRefine(disabledCtx, baseDir, { refineProvider: 'spawn' }, { enabled: false, turnInterval: 1, cooldownMs: 0 })
+	check('disabled auto-refine registers no listener', registered === false)
+
+	// enabled:true fires runRefine after turnInterval root-agent idle events with
+	// a review that approves, using a mocked subagents.start for both review and refine.
+	let refineCalls = 0
+	let capturedHandler: ((p: { agent: { id: string }; status: 'idle' | 'running' }) => Promise<void>) | undefined
+	const enabledCtx = {
+		on: (_event: string, handler: (p: { agent: { id: string }; status: 'idle' | 'running' }) => Promise<void>) => { capturedHandler = handler; return () => undefined },
+		agents: { currentInitiator: () => undefined }, // root agent
+		subagents: {
+			start: async (_provider: string, req: { outputSchema?: unknown }) => {
+				// First call is the review gate (has shouldRefine schema); second is the refine.
+				if (req.outputSchema && JSON.stringify(req.outputSchema).includes('shouldRefine')) {
+					return { result: { shouldRefine: true, rationale: 'ok' }, dispose: async () => undefined }
+				}
+				refineCalls++
+				return { result: { proposals: [] }, dispose: async () => undefined }
+			},
+		},
+		effect: (fn: () => unknown) => fn(),
+		sessions: { get: () => undefined },
+	} as unknown as import('@deepseek-ai/cordis').Context
+	registerAutoRefine(enabledCtx, baseDir, { refineProvider: 'spawn' }, { enabled: true, turnInterval: 3, cooldownMs: 0 })
+	check('enabled auto-refine registers a listener', typeof capturedHandler === 'function')
+
+	const rootAgent = { id: 'root-agent' }
+	// Fire 3 idle events: only the 3rd (interval met) should pass the gate.
+	for (let i = 1; i <= 3; i++) {
+		await capturedHandler!({ agent: rootAgent as any, status: 'idle' })
+	}
+	check('refine triggered once after turnInterval (3) root idle events', refineCalls === 1, `refineCalls=${refineCalls}`)
+
+	// A child agent (currentInitiator defined) must be skipped even on the interval.
+	refineCalls = 0
+	const childCtx = {
+		on: (_event: string, handler: (p: { agent: { id: string }; status: 'idle' | 'running' }) => Promise<void>) => { capturedHandler = handler; return () => undefined },
+		agents: { currentInitiator: () => ({ id: 'parent' }) }, // child, not root
+		subagents: { start: async () => { refineCalls++; return { result: { proposals: [] }, dispose: async () => undefined } } },
+		effect: (fn: () => unknown) => fn(),
+		sessions: { get: () => undefined },
+	} as unknown as import('@deepseek-ai/cordis').Context
+	registerAutoRefine(childCtx, baseDir, { refineProvider: 'spawn' }, { enabled: true, turnInterval: 1, cooldownMs: 0 })
+	for (let i = 1; i <= 3; i++) {
+		await capturedHandler!({ agent: { id: 'child-agent' } as any, status: 'idle' })
+	}
+	check('child-agent idle events never trigger refine', refineCalls === 0, `refineCalls=${refineCalls}`)
+}
+
+console.log('== runRefine forces non-reasoning (P2-B) ==')
+{
+	let captured: unknown = undefined
+	const baseDirP2 = mkdtempSync(path.join(os.tmpdir(), 'dsh-rlm-p2b-'))
+	const p2Ctx = {
+		subagents: {
+			start: async (_provider: string, req: unknown) => {
+				captured = req
+				return { result: { proposals: [] }, dispose: async () => undefined }
+			},
+		},
+		sessions: { get: () => undefined },
+	} as unknown as import('@deepseek-ai/cordis').Context
+	await runRefine(p2Ctx, 'p2b-session', baseDirP2, { id: 'p2b-agent' } as any, 'spawn', new AbortController().signal)
+	const req = captured as { agentOptions?: { reasoningEffort?: string } }
+	check('runRefine requests non-reasoning (reasoningEffort none)', req?.agentOptions?.reasoningEffort === 'none', JSON.stringify(req?.agentOptions))
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)

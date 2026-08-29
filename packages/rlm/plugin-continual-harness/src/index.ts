@@ -30,7 +30,7 @@ export type { HarnessEntry, HarnessStateFile, RefinementEvent } from './harness-
 import { deleteHarnessEntry, listHarness, showHarnessEntry } from './harness-cmd.ts'
 import { createHarnessOverviewCache } from './prompt-cache.ts'
 import { renderHarnessOverview } from './prompt.ts'
-import { rollbackRefine, runRefine, DEFAULT_MAX_REFINEMENT_EVENTS } from './refine.ts'
+import { rollbackRefine, runRefine, registerAutoRefine, DEFAULT_MAX_REFINEMENT_EVENTS, DEFAULT_AUTO_REFINE } from './refine.ts'
 
 export const name = 'plugin-continual-harness'
 export const inject = ['systemPrompt', 'commands', 'sessions', 'agents', 'subagents']
@@ -42,11 +42,23 @@ export const inject = ['systemPrompt', 'commands', 'sessions', 'agents', 'subage
 export interface Config {
   /** Root directory for harness state. Defaults to `~/.dsh/rlm` — must match plugin-rlm-kernel. */
   dataDir?: string
-  /** Per-kind cap when rendering the harness overview into the prompt. */
+  /**
+   * Per-kind cap when rendering the harness overview into the prompt.
+   * Defaults to 6, mirroring prime-agent's hints-only injected overview
+   * (`DEFAULT_OVERVIEW_ENTRY_LIMIT`): surface routing hints, not the full
+   * harness; the model reads underlying entries on demand.
+   */
   maxEntriesPerKind?: number
-  /** Per-entry content cap when rendering the harness overview (FIX-10). */
+  /**
+   * Per-entry content cap when rendering the harness overview (FIX-10).
+   * Defaults to 180, mirroring prime-agent's `CONTENT_LIMIT`: truncate each
+   * entry to a hint, keeping the id/tag/title visible for reference.
+   */
   maxCharsPerEntry?: number
-  /** Total character ceiling for the whole harness overview section (FIX-10). */
+  /**
+   * Total character ceiling for the whole harness overview section (FIX-10).
+   * Defaults to 6000 — a bounded routing index across the four kinds.
+   */
   maxTotalChars?: number
   /**
 	 * Subagent provider used by `/refine`. Must name a registered provider
@@ -60,15 +72,28 @@ export interface Config {
 	 * session before the oldest are pruned (item-10). Defaults to 100.
 	 */
   maxRefinementEvents?: number
+  /**
+   * Automatic refinement scheduler (P0): trigger `/refine` from root-agent turn
+   * completions after a turn-interval and cooldown gate, gated by an independent
+   * review LLM. Disabled by default; opt in explicitly.
+   */
+  autoRefine?: boolean
+  /** Minimum root-agent turns between automatic refine reviews. Defaults to 12. */
+  autoRefineTurnInterval?: number
+  /** Minimum wall-clock gap (ms) between automatic refine reviews. Defaults to 600000. */
+  autoRefineCooldownMs?: number
 }
 
 export const Config: z<Config> = z.object({
   dataDir: z.string(),
-  maxEntriesPerKind: z.natural(),
-  maxCharsPerEntry: z.natural(),
-  maxTotalChars: z.natural(),
+  maxEntriesPerKind: z.natural().default(6),
+  maxCharsPerEntry: z.natural().default(180),
+  maxTotalChars: z.natural().default(6000),
   refineProvider: z.string(),
   maxRefinementEvents: z.natural(),
+  autoRefine: z.boolean(),
+  autoRefineTurnInterval: z.natural(),
+  autoRefineCooldownMs: z.natural(),
 })
 
 function sessionIdFromAssembleContext(context: AssembleContext): string | undefined {
@@ -171,4 +196,21 @@ export function apply(ctx: Context, config: Config): void {
       }
     },
   })
+
+  // P0: automatic refinement scheduler. Reads the opt-in flags and delegates the
+  // turn/idle and root-agent gating to registerAutoRefine, which no-ops when
+  // disabled.
+  registerAutoRefine(
+    ctx,
+    dataDir,
+    {
+      ...(config.refineProvider !== undefined ? { refineProvider: config.refineProvider } : {}),
+      ...(config.maxRefinementEvents !== undefined ? { maxRefinementEvents: config.maxRefinementEvents } : {}),
+    },
+    {
+      enabled: config.autoRefine ?? DEFAULT_AUTO_REFINE.enabled,
+      turnInterval: config.autoRefineTurnInterval ?? DEFAULT_AUTO_REFINE.turnInterval,
+      cooldownMs: config.autoRefineCooldownMs ?? DEFAULT_AUTO_REFINE.cooldownMs,
+    },
+  )
 }

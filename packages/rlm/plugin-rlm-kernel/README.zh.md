@@ -10,6 +10,10 @@ RLM 家族的共享基座。它适配 harness 的 `SubagentRuntime`，让 verifi
 |---|---|---|---|
 | `dataDir` | string | `~/.dsh/rlm` | rlm 插件共享的 harness 基础目录，用于落地状态与产物；必须与 verifier/MOA/loop/continual-harness 的 `dataDir` 一致。 |
 
+## 行为：内核状态恢复告知
+
+当会话从 dill 快照恢复时，`appendRestoreNotice` 在 `restoreState()` 之后立即向解析出的会话注入一条 `user/message`（`source.form: 'notice'`、`surfaceOp: 'append'`）。正文在 `<ipython_state_restored>` 块中列出已恢复的变量、并单独列出丢失项，使模型在发出下一个 cell 之前就看到恢复后的命名空间。空恢复结果为静默 no-op。它与既有的 `consumeRestoreNotice`（在下一次 `!python` 结果前缀提示）互补。
+
 ## 模型体验
 
 ### 打分委派

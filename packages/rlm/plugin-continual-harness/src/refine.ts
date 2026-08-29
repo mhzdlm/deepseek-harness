@@ -24,6 +24,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import {
   HarnessConflictError,
   harnessStatePath,
@@ -476,6 +477,9 @@ export async function runRefine(
     // FIX-6: wire the command's own cancellation signal through instead of a
     // throwaway AbortController — aborting the command aborts the refine agent.
     signal,
+    // P2-B: force non-reasoning so the JSON-budget refinery output is not spent
+    // on chain-of-thought (prime passes thinkingLevel: 'none' on its refine call).
+    agentOptions: { reasoningEffort: 'none' as ReasoningEffortId },
     outputSchema: {
       type: 'object',
       properties: {
@@ -804,4 +808,199 @@ export async function pruneRefinements(refinements: RefinementEvent[], maxEvents
       await rm(event.snapshot.path, { force: true }).catch(() => undefined)
     }
   }
+}
+
+// ── Automatic refinement gate (P0: closes the "experience auto-crystallizes"
+// loop prime-agent reaches via `reviewAutoRefine` + `_maybeAutoRefine`) ─────────
+
+/** Configuration for the automatic refinement scheduler. */
+export interface AutoRefineConfig {
+  /**
+   * Whether automatic `/refine` triggers. When false, refinement stays
+   * command-only (`/refine`). Defaults to false so existing deployments keep
+   * manual control until they opt in.
+   */
+  enabled: boolean
+  /**
+   * Minimum number of root-agent turns between two automatic refine reviews.
+   * Mirrors prime's `turnInterval`. Defaults to 12.
+   */
+  turnInterval: number
+  /**
+   * Minimum wall-clock gap (ms) between two automatic refine reviews, even when
+   * the turn count is satisfied. Mirrors prime's cooldown (which is stamped on
+   * both success and rejection so a failing review cannot retry immediately).
+   * Defaults to 600_000 (10 min).
+   */
+  cooldownMs: number
+}
+
+/** Default automatic-refinement settings. */
+export const DEFAULT_AUTO_REFINE: AutoRefineConfig = {
+  enabled: false,
+  turnInterval: 12,
+  cooldownMs: 600_000,
+}
+
+/** Per-session scheduler state, kept in memory for the agent's lifetime. */
+interface AutoRefineState {
+  turns: number
+  lastRunMs: number
+}
+
+const AUTO_REFINE_META_FILE = '.auto-refine.json'
+
+/** Read the persisted last-run timestamp, or 0 if absent/corrupt. */
+async function readLastRun(baseDir: string, sessionId: string): Promise<number> {
+  const file = path.join(path.dirname(harnessStatePath(baseDir, sessionId)), AUTO_REFINE_META_FILE)
+  try {
+    const raw = await readFile(file, 'utf8')
+    const parsed = JSON.parse(raw) as { lastRunMs?: number }
+    return typeof parsed.lastRunMs === 'number' ? parsed.lastRunMs : 0
+  } catch {
+    return 0
+  }
+}
+
+/** Persist the last-run timestamp. Stamp on both success and rejection so a
+ *  failing review cannot immediately retry (prime's cooldown-on-failure). */
+async function writeLastRun(baseDir: string, sessionId: string, ms: number): Promise<void> {
+  const file = path.join(path.dirname(harnessStatePath(baseDir, sessionId)), AUTO_REFINE_META_FILE)
+  try {
+    await mkdir(path.dirname(file), { recursive: true })
+    const tmp = `${file}.tmp`
+    await writeFile(tmp, JSON.stringify({ lastRunMs: ms }), 'utf8')
+    await rename(tmp, file)
+  } catch {
+    // Observability only; a missed timestamp just lets the next review run sooner.
+  }
+}
+
+/**
+ * Ask a review subagent whether the recent trajectory is worth a refinement.
+ * Independent LLM gate (prime's `reviewAutoRefine`): returns true only when the
+ * model explicitly says `shouldRefine`.
+ * @returns the decision and the model's rationale.
+ */
+export async function reviewAutoRefine(
+  ctx: Context,
+  sessionId: SessionId,
+  parent: Agent,
+  provider: string,
+  signal: AbortSignal,
+): Promise<{ shouldRefine: boolean; rationale: string }> {
+  const transcriptText = transcriptToText(sessionId, ctx)
+  const request: SubagentStartRequest = {
+    label: 'review auto-refine',
+    prompt: [
+      {
+        type: 'text',
+        text: [
+          'You decide whether the agent trajectory below is worth persisting a',
+          'small harness update (memory / prompt note / skill / subagent spec).',
+          'Rules:',
+          '- A refinement is warranted only when a *reusable* tactic, failure, or',
+          '  preference has clearly emerged — not for one-off task progress.',
+          '- If nothing reusable stands out, return shouldRefine:false.',
+          '- Do not invent; base the decision on the transcript.',
+          '',
+          'Respond with ONLY a JSON object: {"shouldRefine":boolean,"rationale":"..."}',
+          '',
+          '--- TRANSCRIPT (recent turns) ---',
+          transcriptText,
+        ].join('\n'),
+      },
+    ],
+    parent,
+    signal,
+    // P2-B: same non-reasoning constraint as runRefine — the review is a tiny
+    // JSON decision, so budget goes to the structured answer, not CoT.
+    agentOptions: { reasoningEffort: 'none' as ReasoningEffortId },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        shouldRefine: { type: 'boolean' },
+        rationale: { type: 'string' },
+      },
+      required: ['shouldRefine', 'rationale'],
+    },
+  }
+  const run: SubagentRun = await ctx.subagents.start(provider, request)
+  const result = await run.result
+  await run.dispose().catch(() => undefined)
+  const shouldRefine = !!(result as unknown as Record<string, unknown>)?.shouldRefine
+  const rationale = String((result as unknown as Record<string, unknown>)?.rationale ?? '')
+  return { shouldRefine, rationale }
+}
+
+/**
+ * Register the automatic refinement scheduler. Listens for root-agent turn
+ * completions (`agent/status` → `idle` while no initiator is active, i.e. the
+ * top-level session agent, not a recursive `rlm.run` child) and, when the
+ * turn-interval and cooldown gates pass, runs the review gate then `/refine`.
+ *
+ * Subagents are excluded (prime's `_rlmDepth===0` rule) so recursive children
+ * never trigger their own refinement storm. The scheduler is a Cordis effect:
+ * its listener and helper state are torn down with the fiber.
+ * @param ctx - Cordis context carrying `agents`, `subagents`, and `sessions`.
+ * @param dataDir - Harness base directory for state reads/writes.
+ * @param config - Resolved continual-harness configuration.
+ * @param autoRefine - Resolved automatic-refinement configuration.
+ * @returns void; registration is managed through `ctx.effect`.
+ */
+export function registerAutoRefine(
+  ctx: Context,
+  dataDir: string,
+  config: { refineProvider?: string; maxRefinementEvents?: number },
+  autoRefine: AutoRefineConfig,
+): void {
+  if (!autoRefine.enabled) return
+  const states = new WeakMap<object, AutoRefineState>()
+  const provider = config.refineProvider ?? 'spawn'
+  const maxEvents = config.maxRefinementEvents ?? DEFAULT_MAX_REFINEMENT_EVENTS
+
+  ctx.effect(
+    () =>
+      ctx.on(
+        'agent/status',
+        async (payload: { agent: Agent; status: 'idle' | 'running' }) => {
+          if (payload.status !== 'idle') return
+          // Root-agent only: currentInitiator() is undefined at the top-level
+          // session boundary (prime's `_rlmDepth===0`). Children are skipped.
+          const initiator = ctx.agents.currentInitiator()
+          if (initiator !== undefined) return
+          const sessionId = payload.agent.id
+          if (typeof sessionId !== 'string') return
+
+          const state = states.get(payload.agent) ?? { turns: 0, lastRunMs: 0 }
+          state.turns += 1
+          states.set(payload.agent, state)
+
+          if (state.turns % autoRefine.turnInterval !== 0) return
+          const now = Date.now()
+          const lastRun = Math.max(state.lastRunMs, await readLastRun(dataDir, sessionId))
+          if (now - lastRun < autoRefine.cooldownMs) return
+
+          // Stamp the cooldown immediately (success or not) so a rejected review
+          // cannot immediately re-trigger on the next qualifying turn.
+          state.lastRunMs = now
+          states.set(payload.agent, state)
+          await writeLastRun(dataDir, sessionId, now)
+
+          const parent = payload.agent
+          let shouldRefine = false
+          try {
+            const review = await reviewAutoRefine(ctx, sessionId, parent, provider, new AbortController().signal)
+            shouldRefine = review.shouldRefine
+          } catch {
+            return // review failure is non-fatal; cooldown already stamped
+          }
+          if (!shouldRefine) return
+          // Reuse the manual pipeline; its own CAS + validation guards apply.
+          await runRefine(ctx, sessionId, dataDir, parent, provider, new AbortController().signal, maxEvents).catch(() => undefined)
+        },
+        { global: true },
+      ),
+    'register auto-refine scheduler',
+  )
 }

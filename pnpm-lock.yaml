@@ -216,6 +216,27 @@ importers:
       '@deepseek-ai/dsh-plan-mode':
         specifier: workspace:^
         version: link:../../packages/plan/plan-mode
+      '@deepseek-ai/dsh-plugin-continual-harness':
+        specifier: workspace:^
+        version: link:../../packages/rlm/plugin-continual-harness
+      '@deepseek-ai/dsh-plugin-rlm-compaction':
+        specifier: workspace:^
+        version: link:../../packages/rlm/plugin-rlm-compaction
+      '@deepseek-ai/dsh-plugin-rlm-kernel':
+        specifier: workspace:^
+        version: link:../../packages/rlm/plugin-rlm-kernel
+      '@deepseek-ai/dsh-plugin-rlm-loop':
+        specifier: workspace:^
+        version: link:../../packages/rlm/plugin-rlm-loop
+      '@deepseek-ai/dsh-plugin-rlm-memory':
+        specifier: workspace:^
+        version: link:../../packages/rlm/plugin-rlm-memory
+      '@deepseek-ai/dsh-plugin-rlm-moa':
+        specifier: workspace:^
+        version: link:../../packages/rlm/plugin-rlm-moa
+      '@deepseek-ai/dsh-plugin-rlm-verifier':
+        specifier: workspace:^
+        version: link:../../packages/rlm/plugin-rlm-verifier
       '@deepseek-ai/dsh-pwsh-local':
         specifier: workspace:^
         version: link:../../packages/shell/pwsh-local
@@ -6827,6 +6848,34 @@ importers:
         specifier: workspace:^
         version: link:../../core/system-prompt
 
+  packages/rlm/plugin-rlm-compaction:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: workspace:^
+        version: link:../../core/agent
+      '@deepseek-ai/dsh-compaction':
+        specifier: workspace:^
+        version: link:../../compaction/compaction
+      '@deepseek-ai/dsh-compaction-basic':
+        specifier: workspace:^
+        version: link:../../compaction/compaction-basic
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:^
+        version: link:../../llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+
   packages/rlm/plugin-rlm-kernel:
     dependencies:
       '@deepseek-ai/dsh-plugin-continual-harness':
@@ -6882,6 +6931,34 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: workspace:^
         version: link:../../core/tools
+
+  packages/rlm/plugin-rlm-memory:
+    dependencies:
+      '@deepseek-ai/dsh-tools':
+        specifier: workspace:^
+        version: link:../../core/tools
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: workspace:^
+        version: link:../../core/agent
+      '@deepseek-ai/dsh-commands':
+        specifier: workspace:^
+        version: link:../../interaction/commands
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+      '@deepseek-ai/dsh-subagent':
+        specifier: workspace:^
+        version: link:../../subagent/subagent
 
   packages/rlm/plugin-rlm-moa:
     dependencies:

@@ -52,6 +52,6 @@ pnpm_config_verify_deps_before_run=false pnpm --filter @deepseek-ai/dsh-plugin-r
 
 ## 已知限制与待办工作
 
-- 真实运行时挂载需等待与其它 rlm 插件相同的依赖闭包修复（`apps/cli` 未依赖 rlm 包）；在此之前工具通过显式 `ctx.plugin()` 挂载或 vitest 工具链组合抵达会话。
+- 真实运行时挂载已就绪：六个 rlm 插件包（含本插件）已加入 `apps/cli/package.json` 依赖闭包，`pnpm install` 后可由 CLI 正常解析与装配；`docs/recipes/agent-presets/loop/` 即一个自包含的 loop preset（MODE B）。
 - 运行注册表（`runId`、已记录轮次）为每进程内存态；持久真相存在于会话日志事件与 harness 状态文件中，因此监管进程重启只会丢失 `status` 这个便利视图。
 - 已验证进度沿用既有 `memory` 种类与 id 命名约定，而非专用 `HarnessKind` 值，代价是无法按种类过滤。

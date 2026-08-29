@@ -99,9 +99,33 @@
 
     - id: continual-harness
       name: '@deepseek-ai/dsh-plugin-continual-harness'
+      config:
+        # P0: automatic refinement scheduler. Opt-in (disabled upstream-default);
+        # turn the gate on once the review LLM budget is acceptable.
+        autoRefine: false
+        autoRefineTurnInterval: 12
+        autoRefineCooldownMs: 600000
+        # P3-#2: hints-only harness overview budget, mirroring prime-agent's
+        # injected-overview philosophy (6 entries / 180 chars / 6000-char ceiling).
+        # Surface routing hints, not the full harness; read entries on demand.
+        maxEntriesPerKind: 6
+        maxCharsPerEntry: 180
+        maxTotalChars: 6000
 
     - id: rlm-moa
       name: '@deepseek-ai/dsh-plugin-rlm-moa'
+
+    - id: rlm-memory
+      name: '@deepseek-ai/dsh-plugin-rlm-memory'
+      config:
+        # Phase A write path. Defaults resolved explicitly in apply(); list only
+        # deployment-varying overrides here. captureMode 'sessionEnd' captures root
+        # sessions on disposal; 'off' disables; 'intervalTurns' captures every N.
+        memoryDir: ~/.dsh/rlm/memory
+        captureMode: sessionEnd
+        captureIntervalTurns: 16
+        rootAgentsOnly: true
+        privacyFilter: ''
 # ── goal (persistent goals + autonomous continuations) ────────────────────
 # The goal service and session driver stay on the host plane; this preset
 # contributes the command and the model-facing tool, mirroring the standard
@@ -113,9 +137,10 @@
   name: '@deepseek-ai/dsh-tool-goal'
 
 # ── compaction (automatic summarization at turn boundaries) ───────────────
-# compaction-basic publishes the `compaction` service, so it must sit inside an
-# isolate realm; tool-result-pruner shares that realm because compaction-basic
-# reads toolResultPrune through ctx.get. tokenMeter stays on the host plane.
+# rlm-compaction (a BasicCompactionEngine subclass) publishes the `compaction`
+# service, so it must sit inside an isolate realm; tool-result-pruner shares that
+# realm because the compaction engine reads toolResultPrune through ctx.get.
+# tokenMeter stays on the host plane.
 - id: compaction
   name: cordis:group
   group: true
@@ -123,8 +148,8 @@
     compaction: true
     toolResultPruner: true
   config:
-    - id: compaction-basic
-      name: '@deepseek-ai/dsh-compaction-basic'
+    - id: rlm-compaction
+      name: '@deepseek-ai/dsh-plugin-rlm-compaction'
 
     - id: command-compact
       name: '@deepseek-ai/dsh-command-compact'

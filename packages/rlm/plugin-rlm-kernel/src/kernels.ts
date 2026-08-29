@@ -14,6 +14,7 @@ import { copyFile, mkdir, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import type { Session } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { KernelBusyAfterInterruptError, KernelManager, type HostRequestHandlers } from './vendor/kernel/index.ts'
 import type { ExecuteResult } from './vendor/kernel/index.ts'
 import type { KernelPythonSkill } from './vendor/kernel/bootstrap.ts'
@@ -247,6 +248,86 @@ export class SessionKernelRegistry {
   }
 
   /**
+   * P2-A: inject a model-visible `notice` describing the kernel namespace
+   * revival/loss right after restore, mirroring prime's `<ipython_state_restored>`
+   * message. The model sees the state transition before it issues the next cell,
+   * independent of `consumeRestoreNotice` (which still prefixes the next tool
+   * result). Best-effort: a missing session resolver or append failure is silent.
+   * @param sessionId - session whose kernel was just restored.
+   * @param restore - the revival/loss result from `restoreState()`.
+   */
+  private appendRestoreNotice(sessionId: string, restore: RestoreResult): void {
+    if (restore.restored.length === 0 && restore.failed.length === 0) return
+    const parts: string[] = []
+    if (restore.restored.length > 0) {
+      parts.push(`<ipython_state_restored> revived: ${restore.restored.join(', ')} </ipython_state_restored>`)
+    }
+    if (restore.failed.length > 0) {
+      const lost = restore.failed.map(f => f.name)
+      parts.push(`<ipython_state_restored> lost (not restored): ${lost.join(', ')} </ipython_state_restored>`)
+    }
+    const session = this.options.resolveSession?.(sessionId)
+    if (!session) return
+    try {
+      session.append('user/message', createUserMessage({
+        content: [{ type: 'text', text: parts.join('\n') }],
+        source: {
+          kind: 'plugin',
+          plugin: 'dsh-rlm-kernel',
+          form: 'notice',
+          summary: 'kernel namespace restored from snapshot',
+        },
+      }), { surfaceOp: 'append' })
+    } catch {
+      // A notice is best-effort observability; persistence failures stay silent.
+    }
+  }
+
+  /**
+   * T5: after a compaction, tell the model the persistent kernel namespace is
+   * intact by injecting prime's `<ipython_state>` message listing the surviving
+   * top-level variable names. Compaction only folds the dialogue; the kernel
+   * keeps running and every variable/import/helper defined before the checkpoint
+   * is still live — mirroring prime's `_syncKernelStateAfterCompaction`.
+   * Best-effort: a missing session resolver, empty namespace, or append failure
+   * is silent.
+   * @param sessionId - Session whose compaction just completed.
+   */
+  private async appendPostCompactionNotice(sessionId: string): Promise<void> {
+    const names = await this.listVariables(sessionId).catch(() => undefined)
+    if (!names || names.length === 0) return
+    const content = `<ipython_state> still alive after compaction (kernel keeps running): ${names.join(', ')} </ipython_state>`
+    const session = this.options.resolveSession?.(sessionId)
+    if (!session) return
+    try {
+      session.append('user/message', createUserMessage({
+        content: [{ type: 'text', text: content }],
+        source: {
+          kind: 'plugin',
+          plugin: 'dsh-rlm-kernel',
+          form: 'notice',
+          summary: 'kernel namespace intact after compaction',
+        },
+      }), { surfaceOp: 'append' })
+    } catch {
+      // A notice is best-effort observability; persistence failures stay silent.
+    }
+  }
+
+  /**
+   * T5: entry point for the plugin's `session/event` subscription. Called when a
+   * `compaction/end` event is observed for `sessionId`; injects the post-
+   * compaction `<ipython_state>` notice if a live kernel exists for the session.
+   * No-op when no kernel is provisioned (e.g. compaction fired before any ipython
+   * call). The notice itself is best-effort and internally null-guarded.
+   * @param sessionId - Session whose compaction just completed.
+   */
+  async notifyCompactionEnd(sessionId: string): Promise<void> {
+    if (!this.kernels.has(sessionId)) return
+    await this.appendPostCompactionNotice(sessionId)
+  }
+
+  /**
    * item-7: whether a live (provisioned) kernel exists for the session.
    * @param sessionId - Session to check.
    * @returns Whether a live (provisioned) kernel exists for the session.
@@ -335,6 +416,21 @@ export class SessionKernelRegistry {
         throw retryError
       }
     }
+  }
+
+  /**
+   * List the live kernel's user-defined top-level variable names for a session,
+   * or `undefined` when no kernel is live. Wraps the vendored
+   * `KernelManager.listNamespaceNames`; used to report surviving state after a
+   * compaction (prime's post-compaction `<ipython_state>` message).
+   * @param sessionId - Session whose namespace names are requested.
+   * @param signal - Abort signal forwarded to the introspection cell.
+   * @returns The sorted top-level names, or `undefined` if the kernel is absent.
+   */
+  async listVariables(sessionId: string, signal?: AbortSignal): Promise<string[] | undefined> {
+    const kernel = this.kernels.get(sessionId)
+    if (!kernel) return undefined
+    return (await kernel.listNamespaceNames(signal)) ?? undefined
   }
 
   /** Mark a session's kernel as actively executing (item-4).
@@ -631,7 +727,14 @@ export class SessionKernelRegistry {
     // restore must run before the RLM bootstrap so the freshly injected
     // `rlm`/skill handles override any revived stale objects.
     const restore = await manager.restoreState()
-    if (restore) this.pendingRestore.set(sessionId, restore)
+    if (restore) {
+      this.pendingRestore.set(sessionId, restore)
+      // P2-A: surface the revival/loss immediately as a model-visible notice
+      // (prime's <ipython_state_restored>), so the model knows the kernel
+      // namespace was restored before it issues the next cell — not only when
+      // the next ipython tool result is prefixed (consumeRestoreNotice).
+      this.appendRestoreNotice(sessionId, restore)
+    }
 
     const bootstrap = await manager.execute(buildRlmBootstrapCode(pythonSkills))
     if (bootstrap.status !== 'ok') {

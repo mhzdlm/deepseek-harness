@@ -54,6 +54,6 @@ Landed entries re-enter context through the harness overview injection, so later
 
 ## Known Limitations and Deferred Work
 
-- Real-runtime mounting awaits the same dependency-closure fix as the other rlm plugins (`apps/cli` does not depend on rlm packages); until then the tool reaches sessions via explicit `ctx.plugin()` mounting or vitest-toolchain compositions.
+- Real-runtime mounting is now ready: the six rlm plugin packages (including this one) are in `apps/cli/package.json`'s dependency closure, so `pnpm install` lets the CLI resolve and assemble them; `docs/recipes/agent-presets/loop/` is a self-contained loop preset (MODE B).
 - The run registry (`runId`, recorded rounds) is in-memory per process; durable truth lives in the session-log events and harness state files, so a supervisor restart loses only the `status` convenience view.
 - Verified progress rides the existing `memory` kind under an id naming convention instead of dedicated `HarnessKind` values, keeping continual-harness's kind union untouched at the cost of kind-level filtering.

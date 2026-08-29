@@ -163,6 +163,18 @@ export function apply(ctx: Context, config: Config): void {
     kernels.disposeSession(sid)
   })
 
+  // T5: after a compaction, tell the model the persistent kernel namespace
+  // survived it (prime's `<ipython_state>` after `_syncKernelStateAfterCompaction`).
+  // A `compaction/end` event carries no session id in its payload, so we route by
+  // the enclosing session argument; the registry ignores sessions without a live
+  // kernel. `compaction/end` is a log-only event absent from this package's view
+  // of the `SessionEvent` union, so the type is widened for the comparison.
+  ctx.on('session/event', (session, event) => {
+    if ((event as { type?: string } | undefined)?.type === 'compaction/end') {
+      kernels.notifyCompactionEnd(String(session.id))
+    }
+  })
+
   // item-7: warm the kernel at session creation so the first ipython call is
   // fast. Errors are swallowed here; a real ipython call retries provision.
   if (config.warmupOnSessionCreate) {
