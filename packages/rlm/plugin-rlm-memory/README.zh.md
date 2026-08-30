@@ -13,6 +13,7 @@ RLM 跨会话记忆层——Phase A（写路径）+ Phase B（召回）+ Phase C
 | `memoryDir` | string | `~/.dsh/rlm/memory` | 记忆根目录；子目录 `published/ drafts/ archived/ dialog/ index/ logs/` 在首次捕获时创建。 |
 | `captureMode` | `off \| sessionEnd \| intervalTurns` | `sessionEnd` | 捕获时机。`off` 关闭写路径；`sessionEnd` 在 `session/disposed` 时冲刷；`intervalTurns` 为周期捕获预留钩子（Phase A 仅落地 `sessionEnd`）。 |
 | `captureIntervalTurns` | natural | `16` | `intervalTurns` 模式的轮间隔（预留；尚未接入周期定时器）。 |
+| `captureTimeoutMs` | natural | `120000` | 捕获提取子调用的墙钟预算；非正值回退到该默认值。 |
 | `rootAgentsOnly` | boolean | `true` | 仅 root（非子代理）会话进入捕获（REME.md §5.1 D5）。 |
 | `privacyFilter` | `'' \| display \| full` | `''` | `full` 在 dialog jsonl 落盘前掩码凭据/PII 形态内容；`display` 被接受但 Phase A 无展示面。 |
 | `recallTopK` | natural | `5` | `memory_search` 默认返回的 top-K（REME.md §9/§10 Phase B 验收）。 |
@@ -38,14 +39,7 @@ RLM 跨会话记忆层——Phase A（写路径）+ Phase B（召回）+ Phase C
 
 ## Commands
 
-`/memory list` — 全部草案笔记（kind/scope + 证据 `source`）。
-`/memory show <name>` — 单条草案的完整 frontmatter + 正文。
-`/memory delete <name>` — 删除一条草案笔记。已发布笔记不可删除，只能经反向快照回滚降级。
-`/memory consolidate` — 对全部草案运行 Phase C 发布门 + 增长预算，晋升合格草案到 `published/`（对被覆盖笔记先拍反向快照）并移除已消费草案（REME.md §5.3）。
-`/memory rollback <noteId> [force]` — 用最新 `snapshots/<noteId>/<iso>.md` 还原已发布笔记。若发布笔记在上次快照后被编辑过（用户/外部编辑），返回改过告警且不带 `force` 不覆盖（REME.md §5.3 D11，借用 harness `writeHarnessStates` 改过告警纪律）。
-`/memory retire <noteId> [force]` — 退场一条已发布笔记（REME.md §5.4 D12）：`exitMode: off` 下为 logged no-op；`observe` 下记意图但不移动；`enforce` 下移动 `published/` → `archived/`（字节保留，可逆）。`force` 为显式用户退场绕过年龄/使用阈值（仅 enforce）。
-`/memory archived` — 列出 `archived/` 下全部已退场笔记及其 `retired_at` 时间与 kind/scope。
-`/memory unretire <noteId>` — 将已退场笔记移回 `published/`（REME.md §5.4 D12，"退场可逆"）；清除 `retired_at` 并重新进入召回索引。
+`/memory list` — 全部草案笔记（kind/scope + 证据 `source`）。 `/memory show <name>` — 单条草案的完整 frontmatter + 正文。 `/memory delete <name>` — 删除一条草案笔记。已发布笔记不可删除，只能经反向快照回滚降级。 `/memory consolidate` — 对全部草案运行 Phase C 发布门 + 增长预算，晋升合格草案到 `published/`（对被覆盖笔记先拍反向快照）并移除已消费草案（REME.md §5.3）。 `/memory rollback <noteId> [force]` — 用最新 `snapshots/<noteId>/<iso>.md` 还原已发布笔记。若发布笔记在上次快照后被编辑过（用户/外部编辑），返回改过告警且不带 `force` 不覆盖（REME.md §5.3 D11，借用 harness `writeHarnessStates` 改过告警纪律）。 `/memory retire <noteId> [force]` — 退场一条已发布笔记（REME.md §5.4 D12）：`exitMode: off` 下为 logged no-op；`observe` 下记意图但不移动；`enforce` 下移动 `published/` → `archived/`（字节保留，可逆）。`force` 为显式用户退场绕过年龄/使用阈值（仅 enforce）。 `/memory archived` — 列出 `archived/` 下全部已退场笔记及其 `retired_at` 时间与 kind/scope。 `/memory unretire <noteId>` — 将已退场笔记移回 `published/`（REME.md §5.4 D12，"退场可逆"）；清除 `retired_at` 并重新进入召回索引。
 
 ## Storage layout
 

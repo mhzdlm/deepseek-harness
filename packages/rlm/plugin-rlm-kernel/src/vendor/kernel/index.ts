@@ -685,7 +685,16 @@ export class KernelManager {
 	}
 
 	private appendKernelDiagnostic(message: string): void {
-		this.kernelStderr += `[kernel] ${message.endsWith("\n") ? message : `${message}\n`}`;
+		this.appendKernelStderr(`[kernel] ${message.endsWith("\n") ? message : `${message}\n`}`);
+	}
+
+	// [local patch #18] T7.9: bound the kernel stderr buffer (the model only ever
+	// reads the 1024-char tail); an unbounded accumulation would grow without limit
+	// across a long-lived session.
+	private static readonly MAX_KERNEL_STDERR = 1_048_576;
+
+	private appendKernelStderr(text: string): void {
+		this.kernelStderr = (this.kernelStderr + text).slice(-KernelManager.MAX_KERNEL_STDERR);
 	}
 
 	async start(options: KernelStartOptions = {}): Promise<void> {
@@ -800,8 +809,7 @@ export class KernelManager {
 			if (kernel.pid !== undefined) recordOrphanProcessState(kernel.pid, true);
 
 			kernel.stderr?.on("data", (buf: Buffer) => {
-				const s = buf.toString();
-				this.kernelStderr += s;
+				this.appendKernelStderr(buf.toString());
 			});
 
 			kernel.on("error", (err) => {

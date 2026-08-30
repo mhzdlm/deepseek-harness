@@ -77,8 +77,7 @@ AUTH=8(2)  ABORTED=6(4)  INVALID_REQUEST=6(2)  TIMEOUT=4(2)  QUOTA=2(1)  CONTEXT
 - **SERVER/TRANSPORT 最频发**——处置提示优先（"稍后重试"/"检查网络"）。
 - 6 个未观测 code（`STREAM_CLOSED`/`EMPTY_RESPONSE`/`MALFORMED_RESPONSE`/`NO_ADAPTER`/`INVALID_CREDENTIAL`/`MODEL_UNAVAILABLE`）也给了文案（未来可能触发）；`MODEL_UNAVAILABLE` 是 T4.9 新增，历史统计自然无（旧 401 全被归 AUTH）。
 
-文案表（中文，`AUTH`/`INVALID_CREDENTIAL` 掩码防凭据回显）：
-`AUTH`→"API key 无效或已过期，请检查凭据设置"；`MODEL_UNAVAILABLE`→"模型不可用或已下架，请更换模型"；`QUOTA`→"账户额度不足，请检查余额或配额"；`RATE_LIMIT`→"请求过于频繁，请稍后重试"；`CONTEXT_WINDOW_EXCEEDED`→"上下文超出模型容量上限，请精简或压缩对话"；`INVALID_REQUEST`→"请求参数无效，请检查请求内容"；`SERVER`→"模型服务端错误，请稍后重试"；`TIMEOUT`→"请求超时，请稍后重试"；`TRANSPORT`→"网络或连接异常，请检查网络后重试"；`STREAM_CLOSED`→"响应流意外中断，请重试"；`EMPTY_RESPONSE`→"模型返回了空响应，请重试"；`MALFORMED_RESPONSE`→"模型响应格式异常，请重试"；`PI_AI_ERROR`→"模型网关返回未知错误，请重试"；`NO_ADAPTER`→"未配置该模型的适配器，请检查模型路由"；`INVALID_CREDENTIAL`→"凭据格式无效，请更正后重试"。
+文案表（中文，`AUTH`/`INVALID_CREDENTIAL` 掩码防凭据回显）： `AUTH`→"API key 无效或已过期，请检查凭据设置"；`MODEL_UNAVAILABLE`→"模型不可用或已下架，请更换模型"；`QUOTA`→"账户额度不足，请检查余额或配额"；`RATE_LIMIT`→"请求过于频繁，请稍后重试"；`CONTEXT_WINDOW_EXCEEDED`→"上下文超出模型容量上限，请精简或压缩对话"；`INVALID_REQUEST`→"请求参数无效，请检查请求内容"；`SERVER`→"模型服务端错误，请稍后重试"；`TIMEOUT`→"请求超时，请稍后重试"；`TRANSPORT`→"网络或连接异常，请检查网络后重试"；`STREAM_CLOSED`→"响应流意外中断，请重试"；`EMPTY_RESPONSE`→"模型返回了空响应，请重试"；`MALFORMED_RESPONSE`→"模型响应格式异常，请重试"；`PI_AI_ERROR`→"模型网关返回未知错误，请重试"；`NO_ADAPTER`→"未配置该模型的适配器，请检查模型路由"；`INVALID_CREDENTIAL`→"凭据格式无效，请更正后重试"。
 
 **为什么这一步不需要真实返回信息**（与 T4.9 本质不同）：T4.9 修的是**分类**（判据藏在消息文本里，需样本校准）；T4.5 ① 消费的是**分类结果**（`failure.code` 稳定枚举），文案映射是 code→文案的纯函数，输入是 code 而非消息文本——甚至应避免解析消息文本（不稳定、可能含凭据，同掩码理由）。分布统计只为"覆盖真实触发过的 code + 聚焦处置提示"，不决定文案内容。
 

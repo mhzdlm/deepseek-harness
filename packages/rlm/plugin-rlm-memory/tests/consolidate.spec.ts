@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ensureMemoryDirs, writeDraft, writeDialog, writePublished, listDrafts, listPublished, parseNote, type Note, type NoteFrontmatter } from '../src/storage.ts'
+import { ensureMemoryDirs, writeDraft, writeDialog, writePublished, listDrafts, listPublished, parseNote, publishedRelFor, type Note, type NoteFrontmatter } from '../src/storage.ts'
 import { consolidate, promoteDraft, withLock, type ConsolidateOptions } from '../src/consolidate.ts'
 
 const roots: string[] = []
@@ -105,17 +105,21 @@ describe('consolidate single-flight lock', () => {
     expect(listDrafts(dir).length).toBe(0)
   })
 
-  it('withLock runs the guarded fn once per key (joins an in-flight promise)', async () => {
+  it('withLock queues concurrent callers; each gets its OWN outcome (Phase 8)', async () => {
+    // Phase 8 (review round 6): the lock used to JOIN — the second caller got
+    // the first caller's result and its own work never ran (a same-target draft
+    // was reported promoted while its file stayed behind). Now callers queue
+    // and every fn runs exactly once per call.
     let runs = 0
-    const fn = () => { runs += 1; return Promise.resolve('ok') }
+    const fn = () => { runs += 1; return Promise.resolve(`run-${runs}`) }
     const [r1, r2] = await Promise.all([withLock('k', fn), withLock('k', fn)])
-    expect(r1).toBe('ok')
-    expect(r2).toBe('ok')
-    expect(runs).toBe(1)
-    // After settle, a new call runs again.
-    const r3 = await withLock('k', fn)
-    expect(r3).toBe('ok')
+    expect(r1).toBe('run-1')
+    expect(r2).toBe('run-2')
     expect(runs).toBe(2)
+    // After the queue drains, a new call runs again.
+    const r3 = await withLock('k', fn)
+    expect(r3).toBe('run-3')
+    expect(runs).toBe(3)
   })
 })
 
@@ -123,13 +127,17 @@ describe('promoteDraft direct', () => {
   it('reverse-snapshots an existing published note before overwrite (slug collision)', async () => {
     const dir = tmp()
     ensureMemoryDirs(dir)
-    // Pre-existing published note (version 1) at the real slug (`turn:0` -> `turn-0.md`).
-    writePublished(dir, { frontmatter: fm('turn:0', 1), body: '# Old\nold body' })
+    // Pre-existing published note (version 1) at the session-derived slug.
+    // Phase 8: published slugs carry a session suffix, so seed and draft both
+    // derive the path via publishedRelFor (same session + source = same note).
+    const draft: Note = { frontmatter: fm('turn:0'), body: '# New\nnew body' }
+    const targetRel = publishedRelFor(draft)
+    writePublished(dir, { frontmatter: fm('turn:0'), body: '# Old\nold body' }, targetRel)
     // A new draft whose slug collides (same source) — promote overwrites + snapshots.
     writeDraft(dir, { frontmatter: { ...fm('turn:0'), version: 1 }, body: '# New\nnew body' }, 'sess-1', 'turn-0')
     const decision = await promoteDraft(dir, join(dir, 'drafts', 'personal', 'turn-0-sess-1.md'), OBSERVE)
     expect(decision.kind).toBe('promote')
-    const publishedNote = parseNote(join(dir, 'published', 'personal', 'turn-0.md'))
+    const publishedNote = parseNote(join(dir, targetRel))
     expect(publishedNote!.body).toBe('# New\nnew body')
     expect(publishedNote!.frontmatter.version).toBe(2) // bumped on rewrite
     // Snapshot of the prior version exists.

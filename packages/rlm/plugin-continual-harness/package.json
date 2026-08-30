@@ -12,7 +12,7 @@
   "main": "lib/types/index.js",
   "types": "lib/types/index.d.ts",
   "scripts": {
-    "test": "tsx refine-test.mts"
+    "test": "vitest run --root ../../../ packages/rlm/plugin-continual-harness/tests/refine-test.spec.ts packages/rlm/plugin-continual-harness/tests/recall-inject.spec.ts"
   },
   "exports": {
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/types/index.js" },
@@ -29,6 +29,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@deepseek-ai/dsh-plugin-rlm-memory": "workspace:^",
     "@deepseek-ai/schemastery": "workspace:^"
   },
   "peerDependencies": {

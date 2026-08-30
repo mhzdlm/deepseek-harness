@@ -12,6 +12,18 @@
 | `autoRefine` | boolean | `false` | 可选开关：按根代理轮次间隔门触发 `/refine`。 |
 | `autoRefineTurnInterval` | number | `12` | 两次自动审视之间的根代理空闲轮数。 |
 | `autoRefineCooldownMs` | number | `600000` | 两次自动审视之间的最小间隔（成功与拒否均盖戳）。 |
+| `maxEntriesPerKind` | number | `6` | 渲染 harness overview 时每类条目的上限，镜像 prime 的 hints-only 注入：呈现路由提示而非全量 harness，模型按需读取底层条目。 |
+| `maxCharsPerEntry` | number | `180` | 渲染 harness overview 时每条目内容上限；截断为提示，保留 id/tag/title 供引用。 |
+| `maxTotalChars` | number | `6000` | 整个 harness overview 段的字符总上限——四类路由索引的有界天花板。 |
+| `refineProvider` | string | `spawn` | `/refine` 使用的 subagent provider 名。 |
+| `maxRefinementEvents` | number | `100` | 每会话保留的 `RefinementEvent`（及其快照文件）上限，超出修剪最旧。 |
+| `recallInject` | `off\|observe\|enforce` | `observe` | T7.13 主动召回注入（LAYERS.md §3）：`off` 不做任何事；`observe`（默认）执行检索并记录 `session/memory-recall-inject` 事件而不触碰 prompt；`enforce` 实际注入 top-N 召回段。 |
+| `recallInjectTopN` | number | `3` | 注入召回段最多携带的排序命中数。 |
+| `recallInjectBudgetChars` | number | `2000` | 整个注入召回段的硬字符预算；超限截断并标记。 |
+
+## 行为：主动召回注入（默认 observe）
+
+每次 harness section 渲染时，插件取最近一条 user message，对 `<dataDir>/memory` 的 `published/` 存储（memory 包检索）做一次轻量检索。默认 `observe` 模式下命中只记录进 log-only `session/memory-recall-inject` 事件（mode、query、命中 relPath、将注入字符数）——prompt 不变，默认行为保持原样。`enforce` 模式下 top-N 命中以 `## Relevant Memories` 段注入，带硬字符预算。召回是相关度通道；harness overview 保持时间索引通道。
 
 ## 工具：`/refine`
 

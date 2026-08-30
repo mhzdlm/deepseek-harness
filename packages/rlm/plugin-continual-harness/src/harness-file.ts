@@ -316,6 +316,7 @@ export async function writeHarnessStates(
   }
 }
 
+/** The four content categories a harness state entry can hold, in render order. */
 export const HARNESS_KINDS = ['prompt', 'memory', 'skill', 'subagent'] as const
 
 /**

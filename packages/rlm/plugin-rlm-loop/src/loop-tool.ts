@@ -201,6 +201,21 @@ export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defi
           ? args.round
           : 0
         if (round === 0) throw new Error('loop record: round must be a positive integer')
+        // Phase 8 (review round 6 / T6.17 leftover): a duplicate round must not
+        // double-count progress or overwrite the earlier round's harness entry.
+        if (run.rounds.some(entry => entry.round === round)) {
+          return {
+            text: `Round NOT recorded: round ${round} was already recorded in run ${run.runId}. `
+              + 'Retrying a round is fine, but record the RETRY as a new round number; nothing was trusted twice.',
+            runId: run.runId,
+            round,
+            accepted: false,
+            status: 'duplicate',
+            integrity: 'suspect',
+            contractAudit: 'unknown',
+            landed: false,
+          }
+        }
         const route = typeof args.route === 'string' ? args.route.trim() : ''
         if (!ROUTES.has(route)) throw new Error(`loop record: route must be one of ${[...ROUTES].join(' | ')}`)
         const report = typeof args.audit_report === 'string' ? args.audit_report : ''

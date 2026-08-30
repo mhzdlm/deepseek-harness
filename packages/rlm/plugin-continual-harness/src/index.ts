@@ -20,6 +20,15 @@ import z from '@deepseek-ai/schemastery'
 import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt'
 import { globalHarnessStatePath, harnessStatePath, mergeHarnessStates, readHarnessStateSync } from './harness-file.ts'
+import { latestUserQuery, renderRecallSection, type SessionLike } from './recall-inject.ts'
+// Phase 8 (review round 6): import through the memory package's compiled entry.
+// The previous specifier (`@deepseek-ai/dsh-plugin-rlm-memory/src/search.ts`)
+// was copied verbatim into this file's lib/ build output, and plain Node
+// cannot execute a `.ts` import from node_modules — the built plugin failed to
+// load outside tsx/monorepo resolution. The memory package now re-exports
+// `search` from its root entry (kernel `redactReferenceText` precedent).
+import { search } from '@deepseek-ai/dsh-plugin-rlm-memory'
+import { emitRecallInjectEvent } from './events.ts'
 
 // Re-exported so the loop plugin can consume the CAS write path through this
 // package's compiled entry instead of a cross-package src/*.ts specifier,
@@ -82,10 +91,24 @@ export interface Config {
   autoRefineTurnInterval?: number
   /** Minimum wall-clock gap (ms) between automatic refine reviews. Defaults to 600000. */
   autoRefineCooldownMs?: number
+  /**
+   * T7.13 (LAYERS.md §3): active recall injection at harness section render.
+   * `off` does nothing; `observe` (default) runs the recall and records a
+   * `session/memory-recall-inject` event WITHOUT touching the prompt; `enforce`
+   * actually injects the top-N recall section. The query is the most recent
+   * user message; hits come from the memory package's published store under
+   * `<dataDir>/memory`.
+   */
+  recallInject?: 'off' | 'observe' | 'enforce'
+  /** T7.13: how many ranked hits the recall section may carry. Defaults to 3. */
+  recallInjectTopN?: number
+  /** T7.13: hard budget (chars) for the whole injected recall section. Defaults to 2000. */
+  recallInjectBudgetChars?: number
 }
 
 export const Config: z<Config> = z.object({
-  dataDir: z.string(),
+  // Phase 8: an empty dataDir used to pass the schema and resolve to the cwd.
+  dataDir: z.string().min(1),
   maxEntriesPerKind: z.natural().default(6),
   maxCharsPerEntry: z.natural().default(180),
   maxTotalChars: z.natural().default(6000),
@@ -94,6 +117,9 @@ export const Config: z<Config> = z.object({
   autoRefine: z.boolean(),
   autoRefineTurnInterval: z.natural(),
   autoRefineCooldownMs: z.natural(),
+  recallInject: z.union(['off', 'observe', 'enforce'] as const),
+  recallInjectTopN: z.natural().min(1),
+  recallInjectBudgetChars: z.natural().min(1),
 })
 
 function sessionIdFromAssembleContext(context: AssembleContext): string | undefined {
@@ -129,6 +155,16 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // Inject harness overview at identity order; base prompt stays untouched.
+  // T7.13: the recall-injection suffix rides the same section render — the
+  // overview is the time-index channel, the recall is the relevance channel.
+  // `observe` (default) records what WOULD be injected without touching the
+  // prompt; `enforce` appends the injected section.
+  const recallMode: 'off' | 'observe' | 'enforce' =
+    config.recallInject === 'off' || config.recallInject === 'enforce' ? config.recallInject : 'observe'
+  const recallTopN = config.recallInjectTopN && config.recallInjectTopN > 0 ? config.recallInjectTopN : 3
+  const recallBudget = config.recallInjectBudgetChars && config.recallInjectBudgetChars > 0 ? config.recallInjectBudgetChars : 2000
+  const memoryDir = path.join(dataDir, 'memory')
+
   ctx.effect(
     () =>
       ctx.systemPrompt.section({
@@ -137,7 +173,34 @@ export function apply(ctx: Context, config: Config): void {
         text: (context) => {
           const sessionId = sessionIdFromAssembleContext(context)
           if (!sessionId) return ''
-          return overviewCache.render(dataDir, sessionId)
+          const base = overviewCache.render(dataDir, sessionId)
+          if (recallMode === 'off') return base
+          const agent = context.scope as unknown as { session?: SessionLike } | undefined
+          const session = agent?.session
+          if (!session || typeof session.deriveMessages !== 'function') return base
+          const query = latestUserQuery(session)
+          if (!query) return base
+          // Phase 8 (review round 6): the search walks every published note
+          // with sync reads and no guard — a concurrent delete (ENOENT) or a
+          // permission error inside this section callback used to crash EVERY
+          // prompt assembly. Recall is advisory: degrade to the base prompt.
+          let hits: ReturnType<typeof search>
+          try {
+            hits = search(memoryDir, query, recallTopN)
+          } catch (error) {
+            console.warn(`[continual-harness] recall-inject search failed; prompt continues without recall: ${error instanceof Error ? error.message : String(error)}`)
+            return base
+          }
+          const section = renderRecallSection(query, hits, recallBudget)
+          emitRecallInjectEvent(session as never, {
+            mode: recallMode,
+            query,
+            hitIds: hits.map(hit => hit.relPath),
+            injectedChars: section.length,
+          })
+          // observe: record what WOULD inject; prompt stays unchanged.
+          if (recallMode !== 'enforce') return base
+          return section.length > 0 ? `${base}\n\n${section}` : base
         },
       }),
     'register continual-harness section',
@@ -209,7 +272,11 @@ export function apply(ctx: Context, config: Config): void {
     },
     {
       enabled: config.autoRefine ?? DEFAULT_AUTO_REFINE.enabled,
-      turnInterval: config.autoRefineTurnInterval ?? DEFAULT_AUTO_REFINE.turnInterval,
+      // Phase 8: 0 would make the `turns % interval` check NaN and silently
+      // disable auto-refine — fall back to the default instead.
+      turnInterval: config.autoRefineTurnInterval && config.autoRefineTurnInterval > 0
+        ? config.autoRefineTurnInterval
+        : DEFAULT_AUTO_REFINE.turnInterval,
       cooldownMs: config.autoRefineCooldownMs ?? DEFAULT_AUTO_REFINE.cooldownMs,
     },
   )

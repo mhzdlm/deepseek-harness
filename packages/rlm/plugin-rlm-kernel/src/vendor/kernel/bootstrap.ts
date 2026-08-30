@@ -479,7 +479,11 @@ export function windowsBatchSpawnSpec(
 	return { command: comspec, args: ["/d", "/s", "/c", `"${quoted}"`], verbatim: true };
 }
 
-function run(command: string, args: string[], options: { stdio?: "ignore" | "inherit" } = {}): Promise<void> {
+// [local patch #18] T7.9: a hung installer child (network stall, broken
+// interpreter) must not strand bootstrap forever; default 2-minute per-run budget.
+const DEFAULT_RUN_TIMEOUT_MS = 120_000;
+
+function run(command: string, args: string[], options: { stdio?: "ignore" | "inherit"; timeoutMs?: number } = {}): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const spec = windowsBatchSpawnSpec(command, args);
 		const child = spawn(spec.command, spec.args, {
@@ -488,8 +492,19 @@ function run(command: string, args: string[], options: { stdio?: "ignore" | "inh
 			stdio: options.stdio ?? "ignore",
 			...(spec.verbatim ? { windowsVerbatimArguments: true } : {}),
 		});
-		child.on("error", reject);
+		// [local patch #18] T7.9: bounded wait for the child; on expiry kill it
+		// and surface the timeout as a failed run (an exit observed after the
+		// kill settles the same already-settled promise as a no-op).
+		const timer = setTimeout(() => {
+			child.kill();
+			reject(new Error(`${command} ${args.join(" ")} timed out after ${options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS}ms`));
+		}, options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
+		child.on("error", (err) => {
+			clearTimeout(timer);
+			reject(err);
+		});
 		child.on("exit", (code, signal) => {
+			clearTimeout(timer);
 			if (code === 0) {
 				resolve();
 				return;

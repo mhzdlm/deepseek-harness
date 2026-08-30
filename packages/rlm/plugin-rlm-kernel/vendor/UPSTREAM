@@ -121,3 +121,20 @@
 #     - rlmEnv (src/env.ts): Windows case-insensitive fallback
 #       Exact match → fail → case-insensitive scan of process.env keys
 #   Strict-mode manual items and AF_UNIX/socket items NOT auto-transformed (see docs/windows-compatibility.md)
+#
+# #18 T7.9 2026-08-30 dead-code + bounds batch
+#   - boot-gate.ts: DELETED from src/vendor/kernel/ (working copy only; ORIGINAL/kernel/
+#     keeps the pristine snapshot). Zero callers repo-wide (audit: no import of boot-gate/
+#     BootGate anywhere); its #3 Semaphore / #11 rlmEnv patches had no consumer. audit-vendor.mts
+#     boot-gate entry removed. If upstream reintroduces usage, re-vendor and re-evaluate.
+#   - orphan-process-journal.ts: read/identity/clear side DELETED (readActiveOrphanProcesses /
+#     isOrphanProcessIdentityCurrent / clearOrphanProcessJournal / ActiveOrphanProcess) — zero
+#     callers in the dsh host; the active filter was vacuously false because #17 pruned
+#     getProcessStartId (processStartId always undefined). Write side (recordOrphanProcessState)
+#     kept: kernel/fork-server call it for spawn/exit bookkeeping.
+#   - index.ts: kernelStderr buffer bounded at 1 MiB (MAX_KERNEL_STDERR + appendKernelStderr);
+#     model-visible reads always used the 1024-char tail, so this is memory-bound only.
+#   - bootstrap.ts: run() helper got a per-run timeout (DEFAULT_RUN_TIMEOUT_MS = 120_000);
+#     a hung installer child (uv install / interpreter probe) is killed and surfaces as a
+#     failed run instead of stranding bootstrap forever.
+#   Affected: boot-gate.ts (deleted), orphan-process-journal.ts, index.ts, bootstrap.ts

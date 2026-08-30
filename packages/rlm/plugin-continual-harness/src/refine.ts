@@ -628,6 +628,9 @@ export async function applyProposalsAndPersist(
     // item-10: cap the event log (pruning the oldest events and their snapshots)
     // before the write, so the file lands already bounded.
     await pruneRefinements(merged.refinements, maxRefinementEvents)
+    // Phase 8 (review round 6): the global event log was returned unpruned and
+    // grew without bound across sessions; apply the same cap.
+    await pruneRefinements(global.state.refinements, maxRefinementEvents)
 
     const split = splitHarnessStateByScope(merged, global.state.refinements)
 
@@ -882,6 +885,11 @@ async function writeLastRun(baseDir: string, sessionId: string, ms: number): Pro
  * Ask a review subagent whether the recent trajectory is worth a refinement.
  * Independent LLM gate (prime's `reviewAutoRefine`): returns true only when the
  * model explicitly says `shouldRefine`.
+ * @param ctx - the Cordis context used to spawn the review subagent.
+ * @param sessionId - the reviewed session's id.
+ * @param parent - the owning Agent used as the subagent parent.
+ * @param provider - the subagent provider name.
+ * @param signal - caller cancellation for the review child.
  * @returns the decision and the model's rationale.
  */
 export async function reviewAutoRefine(
@@ -890,7 +898,7 @@ export async function reviewAutoRefine(
   parent: Agent,
   provider: string,
   signal: AbortSignal,
-): Promise<{ shouldRefine: boolean; rationale: string }> {
+): Promise<{ shouldRefine: unknown; rationale: string }> {
   const transcriptText = transcriptToText(sessionId, ctx)
   const request: SubagentStartRequest = {
     label: 'review auto-refine',
@@ -930,9 +938,12 @@ export async function reviewAutoRefine(
   const run: SubagentRun = await ctx.subagents.start(provider, request)
   const result = await run.result
   await run.dispose().catch(() => undefined)
-  const shouldRefine = !!(result as unknown as Record<string, unknown>)?.shouldRefine
+  // Phase 8 (review round 6): return the RAW field — the `!!` coercion used to
+  // run before the caller's `typeof !== 'boolean'` validation, making that
+  // check unreachable and letting truthy junk like `"yes"` open the gate.
+  const rawShouldRefine = (result as unknown as Record<string, unknown>)?.shouldRefine
   const rationale = String((result as unknown as Record<string, unknown>)?.rationale ?? '')
-  return { shouldRefine, rationale }
+  return { shouldRefine: rawShouldRefine, rationale }
 }
 
 /**

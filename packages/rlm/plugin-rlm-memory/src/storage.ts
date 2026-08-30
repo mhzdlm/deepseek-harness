@@ -120,9 +120,21 @@ export function readDialog(memoryDir: string, sessionId: string): Array<{ role: 
   return out
 }
 
-/** Slugify a note title into a filesystem-safe basename fragment. */
+/**
+ * Slugify a note title into a filesystem-safe basename fragment.
+ * Phase 8 (review round 6): Unicode letters and numbers are preserved — the
+ * old ASCII-only rule collapsed every CJK title to the `note` fallback, so a
+ * Chinese session's drafts overwrote each other per kind.
+ */
 function slugify(title: string): string {
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
+  const slug = title
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64)
+    // A 64-code-unit cut can split an astral character; drop a lone surrogate.
+    .replace(/[\uD800-\uDBFF]$/, '')
+    .replace(/^-+|-+$/g, '')
   return slug.length > 0 ? slug : 'note'
 }
 
@@ -198,13 +210,21 @@ function parseFrontmatter(block: string): Record<string, unknown> {
   return out
 }
 
-/** Strip surrounding quotes from a YAML scalar we emitted with `JSON.stringify`. */
+/** Decode a YAML scalar we emitted with `JSON.stringify` (Phase 8 quote-safe round-trip). */
 function unquote(value: string): string | number | boolean {
   if (value === 'true') return true
   if (value === 'false') return false
   if (/^-?\d+$/.test(value)) return Number(value)
   const m = /^"(.*)"$/.exec(value)
-  return m ? (m[1] as string) : value
+  if (!m) return value
+  // We emit strings with JSON.stringify, so decode with JSON semantics. The
+  // old strip-outer-quotes-only rule doubled backslashes on every
+  // read-modify-write cycle once a value contained a quote or backslash.
+  try {
+    return JSON.parse(`"${m[1]}"`) as string
+  } catch {
+    return m[1] as string
+  }
 }
 
 /**
@@ -270,9 +290,15 @@ export function publishedDir(memoryDir: string): string {
   return join(memoryDir, 'published')
 }
 
-/** Build a deterministic published note path from its kind and title. */
-function publishedPath(memoryDir: string, kind: NoteKind, title: string): string {
-  return join(memoryDir, 'published', kind, `${slugify(title)}.md`)
+/**
+ * The session-disambiguated published basename for one note (Phase 8): the
+ * source slug plus an 8-char session suffix, so two sessions' notes about
+ * their own first turn never share a path.
+ */
+function publishedBaseFor(note: Note): string {
+  const slug = slugify(note.frontmatter.source)
+  const sid = slugify(note.frontmatter.session_id).slice(0, 8)
+  return sid.length > 0 ? `${slug}-${sid}` : slug
 }
 
 /**
@@ -280,10 +306,16 @@ function publishedPath(memoryDir: string, kind: NoteKind, title: string): string
  * promoted. Uses the same slug derivation as {@link writePublished} so consolidation
  * can compute the single-flight key and dedup target without duplicating the slug rule.
  * @param note - the note whose published path to compute.
- * @returns the relative path under `memoryDir`, e.g. `published/personal/turn-0.md`.
+ * @returns the relative path under `memoryDir`, e.g. `published/personal/turn-0-a1b2c3d4.md`.
+ *
+ * Phase 8 (review round 6): the path carries an 8-char session disambiguator.
+ * The slug used to derive from `source` alone, so every session's first-turn
+ * note landed on `published/<kind>/turn-0.md` and the later promotion silently
+ * overwrote the earlier one (cross-session knowledge loss). Content-level dedup
+ * (consolidate.ts `dedupTarget`) still merges genuinely-similar notes.
  */
 export function publishedRelFor(note: Note): string {
-  return join('published', note.frontmatter.kind, `${slugify(note.frontmatter.source)}.md`).split(sep).join('/')
+  return join('published', note.frontmatter.kind, `${publishedBaseFor(note)}.md`).split(sep).join('/')
 }
 
 /**
@@ -293,12 +325,17 @@ export function publishedRelFor(note: Note): string {
  * {@link serializeNote} keeps the on-disk YAML stable; callers own `version`.
  * @param memoryDir - resolved memory root.
  * @param note - the note to write (frontmatter + body).
+ * @param targetRel - optional relative path under `memoryDir` (e.g.
+ *   `published/personal/<id>.md`); defaults to a slug path under `published/`
+ *   derived from the note's kind and source.
  * @returns the absolute path written.
  */
 export function writePublished(memoryDir: string, note: Note, targetRel?: string): string {
   const path = targetRel
     ? join(memoryDir, ...targetRel.split('/'))
-    : publishedPath(memoryDir, note.frontmatter.kind, note.frontmatter.source)
+    // Fallback shares the session-disambiguated slug (Phase 8) so a bare
+    // writePublished and a promoteDraft-derived target agree.
+    : join(memoryDir, 'published', note.frontmatter.kind, `${publishedBaseFor(note)}.md`)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, serializeNote(note), 'utf8')
   return path
@@ -333,7 +370,11 @@ export function listPublished(memoryDir: string): string[] {
  * `hybridSearch` does, and a missing cache degrades to lexical-only.
  */
 
-/** Path of the embedding cache directory (`memoryDir/index/embeddings`). */
+/**
+ * Path of the embedding cache directory (`memoryDir/index/embeddings`).
+ * @param memoryDir - resolved memory root.
+ * @returns the absolute embedding-cache directory path.
+ */
 export function embeddingCacheDir(memoryDir: string): string {
   return join(memoryDir, 'index', 'embeddings')
 }
@@ -421,7 +462,10 @@ export function updateUsage(memoryDir: string, relPath: string, nowIso: string):
   const updated: Note = {
     frontmatter: {
       ...note.frontmatter,
-      use_count: note.frontmatter.use_count + 1,
+      // Phase 8: coerce defensively — a hand-edited `use_count:` (empty string)
+      // used to make this `'' + 1 = '1'`, then `'11'` on every hit. `Number()`
+      // folds any non-numeric junk back to a clean numeric base.
+      use_count: (Number(note.frontmatter.use_count) || 0) + 1,
       last_accessed: nowIso,
     },
     body: note.body,
@@ -462,7 +506,16 @@ export function takeSnapshot(memoryDir: string, relPath: string, content: string
   // directory (e.g. `snapshots/published/personal/turn-0.md/<iso>.md`), so each note keeps
   // a list of timestamped prior versions. `relPath` already ends in `.md`, so it forms a
   // directory named after the note's full relative path (REME.md §5.3 D11).
-  const snapPath = join(snapshotsDir(memoryDir), safeRel, `${iso}.md`)
+  // Phase 8 (review round 6): the ISO name only reaches millisecond resolution, so two
+  // snapshots of the same note in the same millisecond silently overwrote each other.
+  // A `-N` disambiguator keeps the name lexically sortable.
+  const container = join(snapshotsDir(memoryDir), safeRel)
+  let snapPath = join(container, `${iso}.md`)
+  if (existsSync(snapPath)) {
+    let n = 2
+    while (existsSync(join(container, `${iso}-${n}.md`))) n += 1
+    snapPath = join(container, `${iso}-${n}.md`)
+  }
   mkdirSync(dirname(snapPath), { recursive: true })
   writeFileSync(snapPath, content, 'utf8')
   return snapPath
@@ -505,6 +558,16 @@ export function restoreSnapshot(memoryDir: string, noteId: string, snapshotFile:
   const target = noteId.startsWith(memoryDir) ? noteId : join(memoryDir, noteId.split(/[\\/]/).filter(Boolean).join('/'))
   mkdirSync(dirname(target), { recursive: true })
   writeFileSync(target, readFileSync(snapshotFile, 'utf8'), 'utf8')
+  // Phase 8 (review round 6): carry the snapshot's mtime onto the restored file.
+  // The restore write used to stamp `now` on the live file, so a SECOND rollback
+  // of the same note always tripped the `liveMtime > snapMtime + 1` user-edit
+  // warning (and `force` then misreported "overriding a user edit").
+  try {
+    const snapMtime = statSync(snapshotFile).mtimeMs
+    utimesSync(target, snapMtime / 1000, snapMtime / 1000)
+  } catch {
+    // mtime sync is best-effort; the rollback itself already succeeded.
+  }
   return target
 }
 
@@ -547,6 +610,10 @@ export function archiveNote(memoryDir: string, relPath: string): string {
   }
   writeFileSync(archived, serializeNote(stamped), 'utf8')
   rmSync(src, { force: true })
+  // Phase 8 (review round 6): drop the note's embedding cache alongside the
+  // move — `deleteEmbedding` was a dead API, so retired notes kept stale
+  // vectors that still surfaced in hybrid retrieval.
+  deleteEmbedding(memoryDir, relPath.split(/[\\/]/).filter(Boolean).join('/'))
   return archived
 }
 
@@ -555,9 +622,9 @@ export function archiveNote(memoryDir: string, relPath: string): string {
  * (REME.md §5.4 D12, "retirement is reversible"). Clears `retired_at` from the
  * frontmatter on the way back so the note re-enters the recall index cleanly.
  * @param memoryDir - resolved memory root.
- * @param relPath - relative note path, the SAME relPath it had under `published/`
- *   (e.g. `published/personal/turn-0.md`). The `archived/` source is derived by
- *   swapping the leading `published` segment for `archived`.
+ * @param archivedRelPath - relative note path under `archived/`, the SAME relPath it had
+ *   under `published/` (e.g. `published/personal/turn-0.md`). The `archived/` source is
+ *   derived by swapping the leading `published` segment for `archived`.
  * @returns the absolute published note path written.
  */
 export function unarchiveNote(memoryDir: string, archivedRelPath: string): string {

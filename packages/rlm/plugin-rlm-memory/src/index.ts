@@ -5,8 +5,9 @@
  * D5), writes `dialog/<id>.jsonl`, spawns a host-owned extraction subagent that
  * proposes draft notes gated by an evidence locator (REME.md §5.1 D6), appends a
  * log-only `session/memory-captured` event (REME.md §5.1 D7), and exposes the
- * `/memory list|show|delete` command (delete is drafts-only; published notes
- * await Phase C). Phase B (memory_search recall over `published/`) is implemented
+ * `/memory list|show|delete|consolidate|rollback|retire|archived|unretire` command
+ * family (delete is drafts-only; published notes go through the Phase C promotion
+ * gate and Phase D retirement below). Phase B (memory_search recall over `published/`) is implemented
  * here: an in-memory keyword index rebuilt from `published/` on each call (no
  * persisted `index/keyword.json` to drift, REME.md §5.2 / §10 Phase B acceptance),
  * the `memory_search` tool with the §8 D4 use-signal (increments `use_count`/
@@ -34,7 +35,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { MEMORY_EVENT_TYPES, emitMemoryCapturedEvent } from './events.ts'
-import { ensureMemoryDirs, type Note } from './storage.ts'
+import { ensureMemoryDirs, readDialog, type Note } from './storage.ts'
 import { extractDrafts, persistCapture, type CaptureBufferEntry } from './capture.ts'
 import { type CaptureTurn } from './sanitize.ts'
 import { listMemoryText, showMemoryText, deleteMemoryText, consolidateText, rollbackText, retireText, archivedText, unretireText } from './memory-cmd.ts'
@@ -48,6 +49,13 @@ import type { ExitMode } from './retire.ts'
 export type { GateMode }
 // ExitMode is re-exported from ./retire.ts for the same reason (Phase D).
 export type { ExitMode }
+// Phase 8 (review round 6): the lexical recall entry point is re-exported so
+// sibling plugins (plugin-continual-harness's recall-inject) import it through
+// this package's compiled entry instead of a cross-package `src/*.ts`
+// specifier, which plain Node cannot load from node_modules — the same
+// discipline as the kernel package's `redactReferenceText` re-export.
+export { search, hybridSearch } from './search.ts'
+export type { SearchHit } from './search.ts'
 
 /** Plugin manifest name, matching the npm package identifier. */
 export const name = 'plugin-rlm-memory'
@@ -122,6 +130,10 @@ export interface Config {
   embeddingsDim?: number
   /** Max texts per embeddings request (batching); default 32. */
   embeddingsBatchSize?: number
+  /** Wall-clock budget per embeddings HTTP request (default 30_000); expiry degrades recall to lexical. */
+  embeddingsTimeoutMs?: number
+  /** Wall-clock budget for the capture extraction child (default 120_000); expiry lands the dialog without drafts. */
+  captureTimeoutMs?: number
 }
 
 /** Schemastery schema validating {@link Config} at plugin load. */
@@ -147,6 +159,8 @@ export const Config: z<Config> = z.object({
   embeddingsModel: z.string(),
   embeddingsDim: z.natural(),
   embeddingsBatchSize: z.natural(),
+  embeddingsTimeoutMs: z.natural(),
+  captureTimeoutMs: z.natural(),
 })
 
 /**
@@ -200,6 +214,10 @@ export function apply(ctx: Context, config: Config): void {
   // and use_count >= 1 — normal use never triggers retirement. Explicit defaults, no `??`.
   const agingMinAgeDays = config.agingMinAgeDays && config.agingMinAgeDays > 0 ? config.agingMinAgeDays : 180
   const agingMinUseCount = config.agingMinUseCount && config.agingMinUseCount > 0 ? config.agingMinUseCount : 1
+  // External-call wall-clock budgets (T7.3): embeddings ride the synchronous
+  // memory_search path, capture spawns a child — neither may hang unbounded.
+  const embeddingsTimeoutMs = config.embeddingsTimeoutMs && config.embeddingsTimeoutMs > 0 ? config.embeddingsTimeoutMs : 30_000
+  const captureTimeoutMs = config.captureTimeoutMs && config.captureTimeoutMs > 0 ? config.captureTimeoutMs : 120_000
   // Phase E embedding seam (REME.md §12.1): explicit default `off`, no hidden `??`.
   // When `external`, build the OpenAI-compatible provider; fail loud if the required
   // base URL / model / key are missing (misconfiguration fails loud, never silently
@@ -223,6 +241,7 @@ export function apply(ctx: Context, config: Config): void {
       model,
       ...(config.embeddingsDim !== undefined ? { dim: config.embeddingsDim } : {}),
       ...(config.embeddingsBatchSize !== undefined ? { batchSize: config.embeddingsBatchSize } : {}),
+      timeoutMs: embeddingsTimeoutMs,
     })
   }
   // REME.md §12 open question 1: dsh has no embeddings API. `recallMode: 'auto'` is
@@ -296,6 +315,11 @@ export function apply(ctx: Context, config: Config): void {
   // Capture input is taken from COMPLETED sessions (REME.md §3 D2: boundary =
   // completed conversation, mirroring QwenPaw auto_memory); we buffer here and
   // flush on `session/disposed`, matching ReMe `runtime.capture` but host-owned.
+  // Phase 8 (review round 6): one in-flight interval capture per session — the
+  // old code could start a second runCapture on the same buffer entry while the
+  // first was still extracting (a slow extraction spanning the next %N trigger),
+  // double-extracting and double-appending the window.
+  const intervalCapturesInFlight = new Set<string>()
   ctx.on('session/event', (session: Session, event: SessionEvent) => {
     if (captureMode === 'off') return
     if (!eligible(session)) return
@@ -306,15 +330,21 @@ export function apply(ctx: Context, config: Config): void {
     if (captureMode === 'intervalTurns') {
       const seen = (counts.get(id) ?? 0) + 1
       counts.set(id, seen)
-      if (seen % captureIntervalTurns === 0) {
+      if (seen % captureIntervalTurns === 0 && !intervalCapturesInFlight.has(id)) {
         const entry = buffers.get(id)
         if (entry) {
           const agent = agentsBySession.get(id) ?? (session as unknown as Agent)
-          void runCapture(ctx, memoryDir, entry, agent)
-            .then(() => buffers.delete(id))
+          intervalCapturesInFlight.add(id)
+          void runCapture(ctx, memoryDir, entry, agent, captureTimeoutMs)
             .catch((error) => {
-              buffers.delete(id)
               ctx.logger.warn(`[rlm-memory] interval capture failed for ${id}: ${error instanceof Error ? error.message : String(error)}`)
+            })
+            .finally(() => {
+              intervalCapturesInFlight.delete(id)
+              // The window is persisted; drop it only now so turns arriving
+              // during the extraction were covered by the (cumulative) capture
+              // and the next %N trigger starts from a clean buffer.
+              buffers.delete(id)
             })
         }
       }
@@ -323,16 +353,20 @@ export function apply(ctx: Context, config: Config): void {
 
   // Flush on disposal: sanitize, persist dialog, extract, gate, emit event.
   ctx.on('session/disposed', (session: Session) => {
+    const id = String(session.id)
+    // The Agent-per-session registry is a lifecycle map, not a capture cache:
+    // every disposed session releases its Agent unconditionally, whatever the
+    // capture mode / eligibility / buffer state. (T6.11 reopened — three early
+    // returns used to skip this delete and leak child-session Agents.)
+    const agent = agentsBySession.get(id)
+    agentsBySession.delete(id)
     if (captureMode === 'off') return
     if (!eligible(session)) return
-    const id = String(session.id)
     const entry = buffers.get(id)
     if (!entry) return
     buffers.delete(id)
     counts.delete(id)
-    const agent = agentsBySession.get(id) ?? (session as unknown as Agent)
-    agentsBySession.delete(id)
-    void runCapture(ctx, memoryDir, entry, agent).catch((error) => {
+    void runCapture(ctx, memoryDir, entry, agent ?? (session as unknown as Agent), captureTimeoutMs).catch((error) => {
       ctx.logger.warn(`[rlm-memory] capture on dispose failed for ${id}: ${error instanceof Error ? error.message : String(error)}`)
     })
   })
@@ -401,22 +435,39 @@ export function apply(ctx: Context, config: Config): void {
 /**
  * Run one capture: extract drafts via a host-owned subagent, persist the dialog,
  * land admission-gated drafts, and emit the audit event. Best-effort: the dialog
- * jsonl is written even when extraction returns nothing.
+ * jsonl is written even when extraction fails or returns nothing. An extraction
+ * failure is logged and audited as `extractionRan: false` — never silently
+ * swallowed, never read as "nothing to extract".
  * @param ctx - Cordis context carrying the subagent runtime.
  * @param memoryDir - resolved memory root.
  * @param entry - the accumulated capture buffer entry.
  * @param agent - the captured session's owning Agent (extraction parent).
+ * @param captureTimeoutMs - wall-clock budget for the extraction child.
  */
-async function runCapture(ctx: Context, memoryDir: string, entry: CaptureBufferEntry, agent: Agent): Promise<void> {
+async function runCapture(
+  ctx: Context,
+  memoryDir: string,
+  entry: CaptureBufferEntry,
+  agent: Agent,
+  captureTimeoutMs: number,
+): Promise<void> {
   const subagents = ctx.get('subagents') as SubagentRuntime | undefined
   let proposals: Note[] = []
   let extractionRan = false
   if (subagents) {
-    const { renderDialogText } = await import('./sanitize.ts')
-    const dialogText = renderDialogText(entry.turns)
-    const controller = new AbortController()
-    proposals = await extractDrafts(subagents, agent, entry.sessionId, dialogText, controller.signal)
-    extractionRan = true
+    const { renderDialogText, sanitizeTurns } = await import('./sanitize.ts')
+    // Phase 8 (review round 6): the extractor sees the CUMULATIVE stored dialog
+    // plus this window — matching the cumulative file persistCapture writes, so
+    // `turn:N` evidence references stay aligned under intervalTurns capture.
+    const priorTurns = readDialog(memoryDir, entry.sessionId)
+    const windowTurns = sanitizeTurns(entry.turns)
+    const dialogText = renderDialogText([...priorTurns, ...windowTurns])
+    try {
+      proposals = await extractDrafts(subagents, agent, entry.sessionId, dialogText, new AbortController().signal, captureTimeoutMs)
+      extractionRan = true
+    } catch (error) {
+      ctx.logger.warn(`[rlm-memory] capture extraction failed for ${entry.sessionId}: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
   const summary = persistCapture(memoryDir, entry, proposals)
   emitMemoryCapturedEvent(agent.session ?? null, {

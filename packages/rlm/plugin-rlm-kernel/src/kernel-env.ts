@@ -53,7 +53,19 @@ export const CREDENTIAL_BLOCKLIST_PREFIXES = [
   'DSH_', 'DEEPSEEK_', 'OPENAI_', 'ANTHROPIC_', 'GOOGLE_', 'AZURE_', 'AWS_',
   'PRIME_', 'PI_', 'CODEBUDDY_', 'CLAUDE_',
 ] as const
+/**
+ * Phase 8 (review round 6): credential variables with no shared prefix. The
+ * prefix list alone let `GITHUB_TOKEN`/`NPM_TOKEN`/`HF_TOKEN`/`SSH_AUTH_SOCK`
+ * ride through {@link buildScrubbedEnv} into the uv/bootstrap helper children.
+ * These are exact-name (not prefix) blocks: `GITHUB_TOKEN` must never match a
+ * hypothetical benign `GITHUB_TOKEN_SETTINGS`-style name either way.
+ */
+export const CREDENTIAL_BLOCKLIST_EXACT = [
+  'GITHUB_TOKEN', 'GH_TOKEN', 'GITLAB_TOKEN', 'NPM_TOKEN', 'NODE_AUTH_TOKEN',
+  'HF_TOKEN', 'HUGGING_FACE_TOKEN', 'SSH_AUTH_SOCK',
+] as const
 const BLOCKLIST_PREFIXES = CREDENTIAL_BLOCKLIST_PREFIXES
+const BLOCKLIST_EXACT = CREDENTIAL_BLOCKLIST_EXACT
 
 function nameFolder(platform: NodeJS.Platform): (key: string) => string {
   return platform === 'win32' ? key => key.toLowerCase() : key => key
@@ -82,12 +94,14 @@ export function buildKernelEnv(
   const allowPrefixes = ALLOWLIST_PREFIXES.map(fold)
   const allowExact = new Set([...ALLOWLIST_EXACT].map(fold))
   const blockPrefixes = BLOCKLIST_PREFIXES.map(fold)
+  const blockExact = new Set(BLOCKLIST_EXACT.map(fold))
 
   const filtered: Record<string, string> = {}
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue
     const probe = fold(key)
     if (blockPrefixes.some(prefix => probe.startsWith(prefix))) continue
+    if (blockExact.has(probe)) continue
     if (allowPrefixes.some(prefix => probe.startsWith(prefix)) || allowExact.has(probe)) {
       filtered[key] = value
     }
@@ -118,10 +132,13 @@ export function buildScrubbedEnv(
 ): Record<string, string> {
   const fold = nameFolder(platform)
   const blockPrefixes = BLOCKLIST_PREFIXES.map(fold)
+  const blockExact = new Set(BLOCKLIST_EXACT.map(fold))
   const scrubbed: Record<string, string> = {}
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue
-    if (blockPrefixes.some(prefix => fold(key).startsWith(prefix))) continue
+    const probe = fold(key)
+    if (blockPrefixes.some(prefix => probe.startsWith(prefix))) continue
+    if (blockExact.has(probe)) continue
     scrubbed[key] = value
   }
   return scrubbed

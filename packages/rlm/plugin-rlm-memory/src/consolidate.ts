@@ -73,11 +73,16 @@ export interface ConsolidateOptions {
   embeddingService?: EmbeddingService
 }
 
-/** The decision reached for one draft during the decide step. */
+/**
+ * The decision reached for one draft during the decide step. `skip-budget`
+ * carries a `reason` so callers can distinguish a genuine budget skip from an
+ * unreadable (unparseable) draft file (Phase 8: the old report called both
+ * "growth budget", which misaudited corrupt drafts).
+ */
 export type DraftDecision =
   | { kind: 'promote'; note: Note; draftPath: string; publishedRel: string }
   | { kind: 'reject'; note: Note; draftPath: string; reason: string }
-  | { kind: 'skip-budget'; note: Note; draftPath: string }
+  | { kind: 'skip-budget'; note: Note; draftPath: string; reason?: 'budget' | 'unreadable' }
 
 /** One line of a consolidation report (the audit trail returned by `consolidate`). */
 export interface ConsolidateResult {
@@ -107,28 +112,35 @@ export interface ConsolidateResult {
 const locks = new Map<string, Promise<unknown>>()
 
 /**
- * Run `fn` under a per-key single-flight lock. If a promise is already in flight for
- * `key`, await it instead of running `fn` (the in-flight work covers this request).
- * The lock is released (the key deleted) when the promise settles, so later calls run.
- * @param key - the locked resource identity (published relPath).
+ * Run `fn` under the consolidate single-flight lock. Phase 8 (review round 6):
+ * the lock is a single global queue rather than a per-key join. The old join
+ * semantics returned the FIRST caller's promise to a second caller that hit the
+ * lock — the second draft was reported promoted while its own file work never
+ * ran (its draft file stayed behind and the promoted count over-counted). A
+ * global key is honest here: promotions are user-command-frequency events and
+ * every promotion scans/writes the shared `published/` tree.
+ * @param key - reserved for future keyed use (kept for call-site clarity).
  * @param fn - the guarded async work.
- * @returns the result of `fn` (or of the in-flight promise it joined).
+ * @returns the result of THIS caller's `fn` (queued behind any in-flight work).
  */
 export function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const inFlight = locks.get(key) as Promise<T> | undefined
-  if (inFlight) return inFlight
+  void key
+  const inFlight = locks.get(GLOBAL_LOCK_KEY) as Promise<unknown> | undefined
   const promise = (async () => {
-    try {
-      return await fn()
-    } finally {
-      // Single-flight: only this promise is ever stored for `key` until it settles,
-      // so deleting unconditionally is safe (a later call creates a fresh lock).
-      locks.delete(key)
-    }
+    if (inFlight) await inFlight.catch(() => undefined)
+    return await fn()
   })()
-  locks.set(key, promise)
+  const tracked = promise.finally(() => {
+    // Only the tail of the chain clears the key, so a queued caller's lock is
+    // never dropped while it is still pending.
+    if (locks.get(GLOBAL_LOCK_KEY) === tracked) locks.delete(GLOBAL_LOCK_KEY)
+  })
+  locks.set(GLOBAL_LOCK_KEY, tracked)
   return promise
 }
+
+/** The single global lock key (see {@link withLock}). */
+const GLOBAL_LOCK_KEY = 'consolidate:promote'
 
 /**
  * Compute the deterministic published relative path for a promoted draft. Delegates to
@@ -204,16 +216,21 @@ function dedupTarget(note: Note, memoryDir: string, threshold = 0.5): string | n
 export async function promoteDraft(memoryDir: string, draftPath: string, options: ConsolidateOptions): Promise<DraftDecision> {
   const note = parseNote(draftPath)
   if (!note) {
-    return { kind: 'skip-budget', note: emptyNote(), draftPath }
+    // Phase 8: an unparseable draft is not a budget skip — name it as such so
+    // the audit trail is accurate (the draft stays on disk either way).
+    return { kind: 'skip-budget', note: emptyNote(), draftPath, reason: 'unreadable' }
   }
   const rel = publishedRelFor(note)
 
-  // Dedup/overwrite target: if token overlap with an existing published note is high,
-  // this promotion overwrites that note (still reverse-snapshot first).
-  const overwriteRel = dedupTarget(note, memoryDir)
-  const targetRel = overwriteRel ?? rel
+  return withLock(rel, async (): Promise<DraftDecision> => {
+    // Dedup/overwrite target: if token overlap with an existing published note is high,
+    // this promotion overwrites that note (still reverse-snapshot first).
+    // Phase 8: computed INSIDE the lock — the candidate set changes while
+    // callers queue, so a target derived before the lock could be stale (T7.8's
+    // "read-decide not fully in-lock" registration).
+    const overwriteRel = dedupTarget(note, memoryDir)
+    const targetRel = overwriteRel ?? rel
 
-  return withLock(targetRel, async (): Promise<DraftDecision> => {
     // Budget check (REME.md §5.3 D2): over budget, a NEW note is blocked; an overwrite of
     // an existing note is not new growth, so it is allowed through.
     const budget = measureBudget(memoryDir)
@@ -225,7 +242,7 @@ export async function promoteDraft(memoryDir: string, draftPath: string, options
         writeRejectedDraft(draftPath, rejected)
         return { kind: 'reject', note: rejected, draftPath, reason }
       }
-      return { kind: 'skip-budget', note, draftPath }
+      return { kind: 'skip-budget', note, draftPath, reason: 'budget' }
     }
 
     // Gate decision.
@@ -249,12 +266,23 @@ export async function promoteDraft(memoryDir: string, draftPath: string, options
     // Bump version on rewrite; preserve the draft body. `observe` flags gate.mode='observe'
     // (non-blocking even when the source is not strictly valid); `enforce` only reaches here
     // when the source located.
+    // Phase 8 (review round 6): a dedup overwrite UPDATES an existing note —
+    // carry its provenance (created_at/use_count/last_accessed) instead of the
+    // draft's zeroed values, so a heavily-cited note is not silently
+    // rejuvenated into a retire candidate.
     const now = new Date().toISOString()
     const existing = existsSync(targetAbs) ? parseNote(targetAbs) : null
     const version = existing ? existing.frontmatter.version + 1 : 1
     const promoted: Note = {
       frontmatter: {
         ...note.frontmatter,
+        ...(existing
+          ? {
+            created_at: existing.frontmatter.created_at,
+            last_accessed: existing.frontmatter.last_accessed,
+            use_count: existing.frontmatter.use_count,
+          }
+          : {}),
         updated_at: now,
         version,
         gate: {
@@ -395,6 +423,9 @@ export async function consolidate(memoryDir: string, options: ConsolidateOptions
       result.promoted += 1
     } else if (decision.kind === 'reject') {
       result.rejected += 1
+    } else if (decision.reason === 'unreadable') {
+      result.skippedBudget += 1
+      result.warnings.push(`unreadable draft skipped (parse failure, not promoted or deleted): ${draftPath}`)
     } else {
       result.skippedBudget += 1
       result.warnings.push(`growth budget skipped promotion of ${draftPath}`)

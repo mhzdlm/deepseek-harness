@@ -40,7 +40,7 @@ export interface MoaPresetConfig {
     model?: string
     /** Whether the slot answers this round (default true). */
     enabled?: boolean
-    /** `'completion'` (plain model call) or `'subagent'` (tool-capable spawned child). */
+    /** `'subagent'` (tool-capable spawned child); anything else runs as a plain model call (normalized to `'llm'`). */
     mode?: string
   }>
   /** The synthesizing slot. */
@@ -54,6 +54,8 @@ export interface MoaPresetConfig {
   referenceMaxTokens?: number
   /** Per-reference wall-clock budget in ms (default 120000). */
   referenceTimeoutMs?: number
+  /** T7.3: aggregator wall-clock budget in ms (default 300000). */
+  aggregatorTimeoutMs?: number
   /** Whether failed references are announced to the aggregator (default loud). */
   degradedPolicy?: string
 }
@@ -81,7 +83,8 @@ export interface Config {
 
 /** Schema for the plugin's `Config`; all fields mirror the {@link Config} interface. */
 export const Config: z<Config> = z.object({
-  dataDir: z.string(),
+  // Phase 8: an empty dataDir used to pass the schema and resolve to the cwd.
+  dataDir: z.string().min(1),
   presets: z.dict(z.object({
     referenceModels: z.array(z.object({
       provider: z.string(),
@@ -95,6 +98,7 @@ export const Config: z<Config> = z.object({
     }),
     referenceMaxTokens: z.natural(),
     referenceTimeoutMs: z.natural(),
+    aggregatorTimeoutMs: z.natural(),
     degradedPolicy: z.string(),
   })),
   defaultPreset: z.string(),

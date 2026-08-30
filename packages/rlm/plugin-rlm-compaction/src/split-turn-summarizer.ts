@@ -47,13 +47,15 @@ export type RlmSummarizationInput = SummarizationInput & {
 }
 
 /**
- * Local view of `SummaryResult` that adds the RLM-parsed `filesTouched` and
- * `turnPrefix`. Structurally compatible with the official `SummaryResult`, so a
- * value can be returned through the base `summarize` override after a cast.
+ * Local view of `SummaryResult` that adds the RLM-parsed `filesTouched`.
+ * Structurally compatible with the official `SummaryResult`, so a value can be
+ * returned through the base `summarize` override after a cast.
+ * (T7.9: the `turnPrefix` field was removed — parseRlmSummary parsed it but no
+ * caller consumed it; the mid-turn context still flows forward inside the
+ * `<compacted-summary>` text block itself, so no behavior is lost.)
  */
 type RlmSummaryResult = SummaryResult & {
   filesTouched: { read: string[]; modified: string[] }
-  turnPrefix?: string
 }
 
 /** A resolved compaction config (the shape `summarizeWithLlm` reads in compaction-basic). */
@@ -127,14 +129,16 @@ export function buildRlmInstruction(
   return instruction
 }
 
-/** Extract `## Files Touched` and `## Turn Prefix` from a consolidated summary. */
+/**
+ * Extract `## Files Touched` from a consolidated summary.
+ * @param text - the model's consolidated summary text.
+ * @returns the parsed read/modified file sets (both empty when no section exists).
+ */
 export function parseRlmSummary(text: string): {
   filesTouched: { read: string[]; modified: string[] }
-  turnPrefix: string | undefined
 } {
   const filesTouched = parseFilesTouched(text)
-  const turnPrefix = parseTurnPrefix(text)
-  return { filesTouched, turnPrefix }
+  return { filesTouched }
 }
 
 function parseFilesTouched(text: string): { read: string[]; modified: string[] } {
@@ -161,20 +165,6 @@ function parseFilesTouched(text: string): { read: string[]; modified: string[] }
     }
   }
   return { read, modified }
-}
-
-function parseTurnPrefix(text: string): string | undefined {
-  const lines = text.split('\n')
-  let inPrefix = false
-  const collected: string[] = []
-  for (const raw of lines) {
-    const line = raw.trim()
-    if (/^##\s+turn prefix/i.test(line)) { inPrefix = true; continue }
-    if (/^##\s+/.test(line)) { if (inPrefix) break; continue }
-    if (inPrefix && line) collected.push(line)
-  }
-  const joined = collected.join('\n').trim()
-  return joined.length > 0 ? joined : undefined
 }
 
 /**

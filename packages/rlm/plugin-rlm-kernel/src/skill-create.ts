@@ -17,6 +17,17 @@ import type { HarnessEntry } from '@deepseek-ai/dsh-plugin-continual-harness'
 /** Entry/package-name rule: lowercase slug (`^[a-z][a-z0-9-]*$`). Shared with the collector's path-safety check. */
 export const SLUG_PATTERN = /^[a-z][a-z0-9-]*$/
 const IMPORT_PATTERN = /^[a-z_][a-z0-9_]*$/
+/**
+ * Phase 8 (review round 6): kernel-injected globals a skill import_name must
+ * never shadow. The bootstrap binds these unconditionally
+ * (`globals()[name] = ...`), so `import_name="rlm"` used to overwrite the
+ * callable `rlm` runtime (and every later kernel provision) with the module
+ * object. The `_prime_agent` prefix covers the bootstrap's internal helpers.
+ */
+export const RESERVED_IMPORT_NAMES: ReadonlySet<string> = new Set(['rlm', 'transcript', 'llm_query', 'agent_message'])
+export function isReservedImportName(name: string): boolean {
+  return RESERVED_IMPORT_NAMES.has(name) || name.startsWith('_prime_agent')
+}
 /** Title cap, matching the refine proposal limit so a model cannot inflate a harness entry. */
 const TITLE_MAX = 200
 /** Description cap, matching the refine proposal content limit. */
@@ -125,6 +136,12 @@ export function createSkillCreateTool(options: SkillCreateToolOptions): ReturnTy
       }
       if (!IMPORT_PATTERN.test(args.import_name)) {
         throw new Error('create_python_skill: import_name must be a python identifier')
+      }
+      if (isReservedImportName(args.import_name)) {
+        throw new Error(
+          `create_python_skill: import_name "${args.import_name}" is reserved by the kernel runtime `
+          + '(rlm, transcript, llm_query, agent_message, and _prime_agent* internals). Pick another module name.',
+        )
       }
       const title = typeof args.title === 'string' ? args.title : ''
       if (title.length === 0 || title.length > TITLE_MAX) {

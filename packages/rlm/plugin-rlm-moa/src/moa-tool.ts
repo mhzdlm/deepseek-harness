@@ -228,7 +228,13 @@ export function createMoaTool(options: MoaToolOptions): ReturnType<typeof define
               )
             }
             return { label: slot.label, status: 'ok' as const, ms: now() - startedSlot, chars: result.text.length, text: result.text }
-          } catch {
+          } catch (error) {
+            // Phase 8 (review round 6): a CALLER cancel is not a reference
+            // failure — rethrow it instead of letting a disposed session
+            // degrade into a misleading "all references failed". A slot's own
+            // wall-clock timeout still folds into `failed` so the panel can
+            // continue with the surviving references.
+            if (signal.aborted) throw error
             return { label: slot.label, status: 'failed' as const, ms: now() - startedSlot, chars: 0, text: '' }
           }
         }),
@@ -282,10 +288,13 @@ export function createMoaTool(options: MoaToolOptions): ReturnType<typeof define
         joined += `\n\n${failedLabels.map(label => `Reference failed: ${label}.`).join(' ')}`
       }
 
+      // The aggregator runs under its own wall-clock budget composed with the
+      // caller's abort signal: a provider that never returns must fail the tool
+      // after the references are already logged, not hang the turn forever.
       const synthesis = await options.callModel(
         preset.aggregator,
         { system: AGGREGATOR_SYSTEM, userText: buildAggregatorPrompt(problem, context, joined) },
-        signal,
+        AbortSignal.any([signal, AbortSignal.timeout(preset.aggregatorTimeoutMs)]),
         // No cap here on purpose: capping the aggregator truncates long
         // syntheses; only the reference fan-out carries referenceMaxTokens.
         undefined,

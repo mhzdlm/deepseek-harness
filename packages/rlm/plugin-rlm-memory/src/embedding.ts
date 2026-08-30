@@ -49,6 +49,8 @@ export interface ExternalEmbeddingOptions {
   fetchImpl?: typeof globalThis.fetch
   /** Max texts per HTTP request (batching); default 32. */
   batchSize?: number
+  /** Wall-clock budget per HTTP request; an expired request rejects (default 30_000). */
+  timeoutMs?: number
 }
 
 /**
@@ -65,6 +67,10 @@ export function createExternalEmbeddingProvider(opts: ExternalEmbeddingOptions):
   const base = opts.baseURL.replace(/\/+$/, '')
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
   const batchSize = opts.batchSize && opts.batchSize > 0 ? opts.batchSize : 32
+  // Wall-clock budget per HTTP request: `memory_search` embeds on its synchronous
+  // path, so a provider that never returns must reject (and degrade to lexical)
+  // instead of hanging the agent turn.
+  const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 30_000
   let dim = opts.dim ?? 0
   return {
     get dim() {
@@ -79,6 +85,7 @@ export function createExternalEmbeddingProvider(opts: ExternalEmbeddingOptions):
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${opts.apiKey}` },
           body: JSON.stringify({ model: opts.model, input: batch } satisfies OpenAIEmbedRequest),
+          signal: AbortSignal.timeout(timeoutMs),
         })
         if (!res.ok) {
           const text = await res.text().catch(() => '')
@@ -89,6 +96,14 @@ export function createExternalEmbeddingProvider(opts: ExternalEmbeddingOptions):
           const at = i + item.index
           if (at >= 0 && at < texts.length) out[at] = item.embedding
           if (dim === 0) dim = item.embedding.length
+          // A configured/inferred dimension that does not match the response is a
+          // provider misconfiguration — fail loud instead of silently pairing
+          // vectors of different lengths for cosine (T7.9).
+          if (item.embedding.length !== dim) {
+            throw new Error(
+              `[plugin-rlm-memory] embeddings dimension mismatch: provider returned ${item.embedding.length}, expected ${dim} (embeddingsDim/model mismatch)`,
+            )
+          }
         }
       }
       for (let i = 0; i < out.length; i++) if (out[i] === undefined) out[i] = new Array<number>(dim).fill(0)

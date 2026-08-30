@@ -15,6 +15,15 @@ Continual-learning substrate for the rlm family. It owns the CAS-backed harness-
 | `maxEntriesPerKind` | number | `6` | Per-kind cap when rendering the harness overview into the prompt. Mirrors prime-agent's hints-only injected overview: surface routing hints, not the full harness; the model reads underlying entries on demand. |
 | `maxCharsPerEntry` | number | `180` | Per-entry content cap when rendering the harness overview. Truncate each entry to a hint, keeping the id/tag/title visible for reference. |
 | `maxTotalChars` | number | `6000` | Total character ceiling for the whole harness overview section — a bounded routing index across the four kinds. |
+| `refineProvider` | string | `spawn` | Subagent provider name used by `/refine` and the auto-refine review. |
+| `maxRefinementEvents` | number | `100` | RefinementEvents (and their snapshot files) retained per session; oldest pruned beyond the cap. |
+| `recallInject` | `off\|observe\|enforce` | `observe` | T7.13 active recall injection (LAYERS.md §3): `off` does nothing; `observe` (default) runs the recall and records a `session/memory-recall-inject` event without touching the prompt; `enforce` actually injects the top-N recall section. |
+| `recallInjectTopN` | number | `3` | How many ranked hits the injected recall section may carry. |
+| `recallInjectBudgetChars` | number | `2000` | Hard budget (chars) for the whole injected recall section; overflow truncates with a marker. |
+
+## Behavior: active recall injection (default observe)
+
+At each harness section render, the plugin takes the most recent user message and runs a lightweight lexical recall over `<dataDir>/memory`'s `published/` store (the memory package search). Under the default `observe` mode the hits are only recorded in a log-only `session/memory-recall-inject` event (mode, query, hit relPaths, would-be injected chars) — the prompt is untouched, so default behavior is unchanged. Under `enforce`, the top-N hits are injected as a `## Relevant Memories` section with a hard character budget. The recall is the relevance channel; the harness overview stays the time-index channel.
 
 ## Tool: `/refine`
 

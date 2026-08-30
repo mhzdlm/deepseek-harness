@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { SessionKernelRegistry } from '../src/kernels.ts'
+import type { RestoreResult } from '../src/vendor/kernel/state-snapshot.ts'
 
 interface Appended {
   type: string
@@ -34,13 +35,22 @@ function registryWith(resolveSession: ((id: string) => unknown) | undefined) {
   })
 }
 
+/** White-box access: `appendRestoreNotice` is private on the registry. */
+function appendNotice(registry: SessionKernelRegistry, sessionId: string, restore: RestoreResult): void {
+  ;(registry as unknown as { appendRestoreNotice(id: string, restore: RestoreResult): void }).appendRestoreNotice(
+    sessionId,
+    restore,
+  )
+}
+
 describe('restore notice (P2-A)', () => {
   it('injects a model-visible notice with revived and lost names', () => {
     const { session, appended } = recordingSession()
     const registry = registryWith(() => session)
-    registry.appendRestoreNotice('sess-restore', {
+    appendNotice(registry, 'sess-restore', {
       restored: ['df', 'x'],
-      failed: [{ name: 'rlm' }],
+      failed: [{ name: 'rlm', reason: 'unpicklable' }],
+      path: 'kernel-state.dill',
     })
     expect(appended).toHaveLength(1)
     expect(appended[0]!.type).toBe('user/message')
@@ -55,7 +65,7 @@ describe('restore notice (P2-A)', () => {
     const { session, appended } = recordingSession()
     const registry = registryWith(undefined)
     // No resolver: appendRestoreNotice must be a silent no-op.
-    registry.appendRestoreNotice('sess-restore', { restored: ['df'], failed: [] })
+    appendNotice(registry, 'sess-restore', { restored: ['df'], failed: [], path: 'kernel-state.dill' })
     expect(appended).toHaveLength(0)
     void session
   })
@@ -63,7 +73,7 @@ describe('restore notice (P2-A)', () => {
   it('does not append when the restore result is empty', () => {
     const { session, appended } = recordingSession()
     const registry = registryWith(() => session)
-    registry.appendRestoreNotice('sess-restore', { restored: [], failed: [] })
+    appendNotice(registry, 'sess-restore', { restored: [], failed: [], path: 'kernel-state.dill' })
     expect(appended).toHaveLength(0)
   })
 })

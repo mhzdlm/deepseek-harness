@@ -68,6 +68,76 @@ describe('verify seam engine', () => {
     expect(calls).toBeLessThanOrEqual(6)
   })
 
+  it('reports the T3.3 quality gate from gate_score without equating it with success', async () => {
+    const { callModel } = biasedToA()
+    const tool = createVerifyTool(baseOptions({ callModel }))
+
+    // Threshold 0: every non-negative mean preference passes.
+    const passed = await tool.execute(
+      { problem: 'p', candidates: ['good', 'bad'], gate_score: 0 },
+      execStub,
+    ) as { gate: string; text: string }
+    expect(passed.gate).toBe('passed')
+    // The gate note is model-visible and disclaims any success verdict.
+    expect(passed.text).toContain('a passing gate does not mean the task succeeded')
+
+    // Threshold 1: no normalized preference reaches the maximum.
+    const failed = await tool.execute(
+      { problem: 'p', candidates: ['good', 'bad'], gate_score: 1 },
+      execStub,
+    ) as { gate: string }
+    expect(failed.gate).toBe('failed')
+
+    // Omitting the threshold leaves the gate unset (no behavior change).
+    const unset = await tool.execute(
+      { problem: 'p', candidates: ['good', 'bad'] },
+      execStub,
+    ) as { gate: string }
+    expect(unset.gate).toBe('unset')
+  })
+
+  it('fails loud on an out-of-range gate_score instead of silently disabling the gate (Phase 8)', async () => {
+    const tool = createVerifyTool(baseOptions())
+    // Pre-Phase-8 this fell through to `undefined` and the run settled with
+    // gate:'unset' — a misconfigured gate quietly stopped gating.
+    await expect(tool.execute({ problem: 'p', candidates: ['a', 'b'], gate_score: 1.5 }, execStub))
+      .rejects.toThrow(/gate_score must be a number in \[0, 1\]/)
+    await expect(tool.execute({ problem: 'p', candidates: ['a', 'b'], gate_score: -1 }, execStub))
+      .rejects.toThrow(/gate_score must be a number in \[0, 1\]/)
+  })
+
+  it('declares failedJudges in the output schema so degraded results pass host validation (Phase 8)', async () => {
+    const { callModel } = biasedToA()
+    // One scoring call always fails: the judge settles degraded and the result
+    // carries failedJudges.
+    let calls = 0
+    const flaky: VerifyCallModel = async (request) => {
+      calls += 1
+      if (calls === 1) throw new Error('judge endpoint 500')
+      return callModel(request)
+    }
+    const tool = createVerifyTool(baseOptions({ callModel: flaky }))
+    const schema = (tool as unknown as {
+      output: { schema: { additionalProperties: boolean; properties: Record<string, unknown> } }
+    }).output.schema
+    expect(schema.additionalProperties).toBe(false)
+    expect(schema.properties.failedJudges).toBeDefined()
+    // The degraded result must validate against the declared schema — the host
+    // rejects tool outputs with undeclared keys (additionalProperties:false).
+    const result = (await tool.execute({ problem: 'p', candidates: ['good', 'bad'] }, execStub)) as Record<string, unknown>
+    expect(result.failedJudges).toEqual(['deepseek-v4-flash'])
+    const { validateJsonSchemaValue } = (await import('@deepseek-ai/dsh-tools')) as {
+      validateJsonSchemaValue: (schema: unknown, value: unknown) => string[]
+    }
+    expect(validateJsonSchemaValue(schema, result)).toEqual([])
+  })
+
+  it('fails loud when the candidate pool exceeds the cap (Phase 8)', async () => {
+    const tool = createVerifyTool(baseOptions({ maxCandidates: 3 }))
+    await expect(tool.execute({ problem: 'p', candidates: ['a', 'b', 'c', 'd'] }, execStub))
+      .rejects.toThrow(/maxCandidates=3/)
+  })
+
   it('selects the logprobs-favored candidate via the PPT', async () => {
     const { callModel, prompts } = biasedToA()
     const tool = createVerifyTool(baseOptions({ callModel }))

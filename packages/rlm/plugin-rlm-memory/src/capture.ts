@@ -95,6 +95,14 @@ export function parseExtractionProposal(proposalText: string, sessionId: string)
  * Persist the captured dialog and land admission-gated drafts for one session.
  * The dialog is written FIRST and unconditionally; drafts follow only after the
  * evidence gate admits them. Returns the landing summary for the audit event.
+ *
+ * Phase 8 (review round 6): the write is CUMULATIVE — the stored dialog is
+ * re-read and the sanitized window appended, then the whole file rewritten.
+ * The old whole-file overwrite meant each `intervalTurns` flush (and a dispose
+ * after interval flushes) erased every earlier window, so `turn:N` evidence
+ * references in older drafts stopped resolving and the enforce gate wrongly
+ * rejected them. Cumulative text also keeps extraction and gate byte-aligned:
+ * the extractor sees the same cumulative dialog the gate re-reads.
  * @param memoryDir - resolved memory root.
  * @param entry - the accumulated capture buffer entry.
  * @param proposals - candidate notes from the extraction subagent (may be empty).
@@ -105,9 +113,10 @@ export function persistCapture(
   entry: CaptureBufferEntry,
   proposals: readonly Note[],
 ): { dialogTurns: number; draftsAdmitted: number; draftChars: number } {
-  const sanitized = sanitizeTurns(entry.turns)
-  const jsonl = renderDialogJsonl(sanitized)
-  writeDialog(memoryDir, entry.sessionId, jsonl)
+  const windowTurns = sanitizeTurns(entry.turns)
+  const priorTurns = readDialog(memoryDir, entry.sessionId)
+  const cumulative = [...priorTurns, ...windowTurns]
+  writeDialog(memoryDir, entry.sessionId, renderDialogJsonl(cumulative))
   // Re-read the stored dialog so the gate checks the same bytes we persisted.
   const dialogTurns = readDialog(memoryDir, entry.sessionId)
   const admitted = admitByEvidence(proposals, dialogTurns)
@@ -116,7 +125,7 @@ export function persistCapture(
     writeDraft(memoryDir, note, entry.sessionId, note.body.slice(0, 48) || note.frontmatter.source)
     draftChars += note.body.length
   }
-  return { dialogTurns: sanitized.length, draftsAdmitted: admitted.length, draftChars }
+  return { dialogTurns: cumulative.length, draftsAdmitted: admitted.length, draftChars }
 }
 
 /**
@@ -131,7 +140,12 @@ export function persistCapture(
  * @param sessionId - the captured session id.
  * @param dialogText - the sanitized dialog text the subagent reads.
  * @param signal - caller cancellation.
- * @returns the candidate notes, or `[]` on any extraction failure.
+ * @param timeoutMs - wall-clock budget for the child's run (default 120_000); an
+ * expired budget aborts the child.
+ * @returns the candidate notes; `[]` when the dialog is empty or extraction
+ * found nothing. A child failure (spawn error, rejected run) is rethrown — a
+ * failed extraction must be auditable as a failure, never reads as "nothing to
+ * extract".
  */
 export async function extractDrafts(
   subagents: SubagentRuntime,
@@ -139,23 +153,22 @@ export async function extractDrafts(
   sessionId: string,
   dialogText: string,
   signal: AbortSignal,
+  timeoutMs?: number,
 ): Promise<Note[]> {
   if (dialogText.trim().length === 0) return []
   const prompt = [
     { type: 'text' as const, text: extractionPrompt(sessionId, dialogText) },
   ]
-  try {
-    const run = await subagents.start('spawn', { prompt, parent, signal })
-    const result = await run.result
-    const text = (result.output ?? [])
-      .map(block => (block.type === 'text' ? (block.text ?? '') : ''))
-      .join('')
-      .trim()
-    return parseExtractionProposal(text, sessionId)
-  } catch {
-    // Extraction is auxiliary; a failure must not block the durable dialog write.
-    return []
-  }
+  // Wall-clock budget composed with the caller's signal: extraction is
+  // auxiliary, so a child that never settles must not dangle forever.
+  const bounded = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs && timeoutMs > 0 ? timeoutMs : 120_000)])
+  const run = await subagents.start('spawn', { prompt, parent, signal: bounded })
+  const result = await run.result
+  const text = (result.output ?? [])
+    .map(block => (block.type === 'text' ? (block.text ?? '') : ''))
+    .join('')
+    .trim()
+  return parseExtractionProposal(text, sessionId)
 }
 
 /** Build the extraction subagent's prompt (host-owned, deterministic spec). */

@@ -12,7 +12,7 @@ The 2026-08-26 review found a cluster of places where a model-driven loop could 
 
 Five shipped bounds, each failing loud or degrading visibly rather than silently:
 
-- **Fan-out governors** (`rlm.run`): new Config keys `maxChildrenPerSession` (default 8, outstanding one-shot children per parent session; retained exempt) and `maxRunPromptChars` (default 24000). Exceeding either throws actionable text at spawn time.
+- **Fan-out governors** (`rlm.run`): new Config keys `maxChildrenPerSession` (default 8, live children per parent session; retained included since T7.6 — the review found the original one-shot-only count left retained growth unbounded, see the [kernel-correctness note](../bug-fix/2026-08-30-rlm-kernel-correctness-batch.md)) and `maxRunPromptChars` (default 24000). Exceeding either throws actionable text at spawn time.
 - **Bounded grep**: patterns over 200 characters are rejected; chronological regex scanning stops at a 400k-character rendered-text budget and marks the result `truncated`. V8 cannot time out backtracking, so input volume is the bound that holds.
 - **Follow-ups address retained children only**: `rlm.message`'s service-listing fallback now accepts continuable rows exclusively — messaging a one-shot run failed downstream anyway.
 - **Recovery warning states rollback**: the interrupt-retry prefix now says the namespace was restored from the last snapshot, so changes made by the interrupted attempt may be absent (alongside the existing double-run risk and the `[lost: …]` restore notice).
@@ -23,7 +23,7 @@ Five shipped bounds, each failing loud or degrading visibly rather than silently
 
 **Regex timeout via worker threads for grep.** Rejected: moving transcript rendering off-thread duplicates session state access for one call; the character budget bounds total work deterministically and keeps the handler synchronous.
 
-**Counting retained children against the fan-out cap.** Rejected: retained children idle until messaged, so they are memory-only; counting them would starve long-lived follow-up workflows without bounding any LLM burn.
+**Counting retained children against the fan-out cap.** Rejected at the time: retained children idle until messaged, so they are memory-only; counting them would starve long-lived follow-up workflows without bounding any LLM burn. **Reversed by T7.6** (2026-08-30 review P1#5): the exemption let a looping model grow retained children — each a durable session plus a tracked controller — without any per-session bound; retained children now count toward `maxChildrenPerSession` and in-flight spawns count too (see the [kernel-correctness note](../bug-fix/2026-08-30-rlm-kernel-correctness-batch.md)).
 
 **Backing out snapshot verification into the recovery path.** Deferred: the dispose-time snapshot outcome is not currently surfaced by the vendored manager; the warning-plus-restore-notice pair already tells the model what survived. Revisit if the vendor exposes snapshot results.
 
@@ -33,7 +33,7 @@ A looping model can no longer grow child fan-out, prompt size, or grep evaluatio
 
 ## Testing
 
-- `host-handlers.spec.ts`: governor boundary/exceeded cases (retained exempt), retained-only follow-up refusal for service-listed one-shot children, find_models through `ctx.get`.
+- `host-handlers.spec.ts`: governor boundary/exceeded cases (retained included since T7.6), retained-only follow-up refusal for service-listed one-shot children, find_models through `ctx.get`.
 - `session-query.spec.ts`: over-long pattern refusal; scan-budget exhaustion marks `truncated` mid-transcript.
 - `ipython-tool.spec.ts`: extended recovery-warning copy pinned verbatim.
 - `skill-source.spec.ts`: traversal-shaped and non-slug ids land in `invalid`, never in package paths.

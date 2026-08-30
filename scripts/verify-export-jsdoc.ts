@@ -566,8 +566,12 @@ function loadCompilerOptions(scanRoot: string): ts.CompilerOptions {
  */
 export function collectExportJsdocViolations(scanRoot: string = root): string[] {
   const violations: string[] = []
+  // Non-vendored only: the RLM kernel's vendored prime sources and their
+  // ORIGINAL pristine mirrors carry no upstream JSDoc; requiring it there
+  // would force comments into code we re-vendor (kernel `src/vendor/**`).
   const rels = globSync('packages/*/*/src/**/*.ts', { cwd: scanRoot })
     .map(path => path.split(sep).join('/'))
+    .filter(rel => !rel.includes('/vendor/') && !rel.includes('/ORIGINAL/'))
     .sort()
   const program = ts.createProgram(rels.map(rel => resolve(scanRoot, rel)), loadCompilerOptions(scanRoot))
   const checker = program.getTypeChecker()

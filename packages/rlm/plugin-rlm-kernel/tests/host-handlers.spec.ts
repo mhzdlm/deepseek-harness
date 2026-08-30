@@ -37,9 +37,18 @@ function requireHandler(
 }
 
 function fakeParent(options: { provider?: string; model?: string } = {}) {
+  const subcallEvents: Array<{ type: string; payload: Record<string, unknown> }> = []
+  const session = {
+    id: SessionId('sess-parent'),
+    // llm.query audit events land on the owning session's durable log.
+    append: (type: string, payload: Record<string, unknown>) => {
+      subcallEvents.push({ type, payload })
+    },
+  }
   return {
-    session: { id: SessionId('sess-parent') },
+    session,
     options: { provider: options.provider ?? 'deepseek-official', model: options.model ?? 'deepseek-v4-flash' },
+    __subcallEvents: subcallEvents,
   }
 }
 
@@ -55,6 +64,15 @@ interface RunStub {
 }
 
 type RunFactory = (request: SubagentStartRequest) => RunStub
+
+/** One recorded `llm.stream` invocation (llm.query bridge tests). */
+export interface LlmStreamCapture {
+  options: { model: string; provider?: string; prompt: string; purpose?: string }
+  calls: number
+}
+
+/** Response chooser for the fake llm seam: map prompt text to generated text. */
+type StreamTextFn = (prompt: string) => string | readonly string[]
 
 interface ContinuableCapture {
   provider: string
@@ -76,16 +94,21 @@ function makeCtx(
   parent: ReturnType<typeof fakeParent> | undefined,
   starts: StartCapture[],
   runFactory?: RunFactory,
+  continuableFactory?: () => Promise<{ childId: string; messageId: string }>,
+  streamText?: StreamTextFn,
+  streamGate?: () => Promise<void>,
 ): Context & {
   __children: SubagentListEntry[]
   __failListModels: () => void
   __continuables: ContinuableCapture[]
   __followups: FollowupCapture[]
+  __llmStreams: LlmStreamCapture[]
 } {
   let failListModels = false
   const children: SubagentListEntry[] = []
   const continuables: ContinuableCapture[] = []
   const followups: FollowupCapture[] = []
+  const llmStreams: LlmStreamCapture[] = []
   const llm = {
     listModels: async () => {
       if (failListModels) throw new Error('catalog unavailable')
@@ -93,6 +116,30 @@ function makeCtx(
         { id: 'deepseek-v4-flash', name: 'DeepSeek v4 Flash' },
         { id: 'deepseek-v4-pro', name: 'DeepSeek v4 Pro' },
       ]
+    },
+    stream: async function* (options: Record<string, unknown>) {
+      const prompt = String((options.messages as Array<{ content?: Array<{ text?: unknown }> }>)[0]?.content?.[0]?.text ?? '')
+      const seen = llmStreams.find(item => item.options.prompt === prompt)
+      if (seen) {
+        seen.calls += 1
+      } else {
+        llmStreams.push({
+          options: { model: String(options.model), provider: options.provider as string, prompt, purpose: options.purpose as string },
+          calls: 1,
+        })
+      }
+      if (streamGate) await streamGate()
+      // Phase 8: the real seam honors the request signal; mirror that so the
+      // disposal test exercises the actual abort path.
+      if ((options as { signal?: AbortSignal }).signal?.aborted) throw new Error('simulated stream aborted after signal')
+      const chunks = streamText ? streamText(prompt) : `answer to ${prompt}`
+      if (chunks === '') return
+      // Emit the real StreamChunk sequence the BlockAssembler understands.
+      const text = typeof chunks === 'string' ? chunks : chunks.join('')
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
     },
   }
 
@@ -111,7 +158,7 @@ function makeCtx(
   async function startContinuable(spec: { provider: string; label: string; request: ContinuableCapture['request'] }) {
     continuables.push({ provider: spec.provider, label: spec.label, request: spec.request })
     const childId = `cont-${continuables.length}`
-    return { childId, messageId: 'inbox-1' }
+    return continuableFactory ? continuableFactory() : { childId, messageId: 'inbox-1' }
   }
 
   async function followup(_parent: unknown, childId: string, content: Array<{ type: string; text?: string }>) {
@@ -132,6 +179,7 @@ function makeCtx(
     },
     __continuables: continuables,
     __followups: followups,
+    __llmStreams: llmStreams,
   }
   return ctx as typeof ctx & Context
 }
@@ -366,10 +414,13 @@ describe('host.request handler table', () => {
       .rejects.toThrow(/no retained child matching/)
   })
 
-  it('rlm.run enforces prompt-size and outstanding-children governors', async () => {
+  it('rlm.run enforces prompt-size and live-children governors (retained included)', async () => {
     const parent = fakeParent()
     const starts: StartCapture[] = []
-    const ctx = makeCtx(parent, starts)
+    // A never-settling one-shot result keeps its record live, so the cap slot
+    // stays occupied across the subsequent calls (an immediately-resolving run
+    // self-cleans via its finally before the next call).
+    const ctx = makeCtx(parent, starts, () => pendingRun('run-hold'))
     const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxRunPromptChars: 10, maxChildrenPerSession: 1 })
 
     await expect(requireHandler(handlers, 'rlm.run')({ prompt: '0123456789012' }))
@@ -379,9 +430,25 @@ describe('host.request handler table', () => {
     await expect(requireHandler(handlers, 'rlm.run')({ prompt: 'another' }))
       .rejects.toThrow(/maxChildrenPerSession=1/)
 
-    // Retained children are exempt from the outstanding cap.
+    // Retained children count toward the same live-children cap (T7.6): a
+    // looping model cannot spawn unlimited durable continuable children.
     await expect(requireHandler(handlers, 'rlm.run')({ prompt: 'keep', kwargs: { retained: true } }))
-      .resolves.toBeDefined()
+      .rejects.toThrow(/maxChildrenPerSession=1/)
+  })
+
+  it('counts in-flight retained spawns toward the cap before their records land (T7.6)', async () => {
+    const parent = fakeParent()
+    const starts: StartCapture[] = []
+    // startContinuable never settles: the first spawn is stuck in the
+    // in-flight window (its sessionRuns record only lands after the await).
+    const ctx = makeCtx(parent, starts, undefined, () => new Promise(() => undefined))
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxChildrenPerSession: 1 })
+
+    const first = requireHandler(handlers, 'rlm.run')({ prompt: 'a', kwargs: { retained: true } })
+    // The first spawn is still in flight and must already occupy the cap slot.
+    await expect(requireHandler(handlers, 'rlm.run')({ prompt: 'b', kwargs: { retained: true } }))
+      .rejects.toThrow(/maxChildrenPerSession=1/)
+    void first
   })
 
   it('abortSession disposes every outstanding run of the session exactly once', async () => {
@@ -416,5 +483,189 @@ describe('host.request handler table', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     await expect(requireHandler(handlers, 'rlm.delete_subagent')({ target: spawned.rlm_child_id as string }))
       .rejects.toThrow(/no active rlm child/)
+  })
+})
+
+describe('llm.query bridge (T7.10)', () => {
+  interface LlmQueryResult {
+    answers: string[]
+    model: string
+    degenerate: boolean
+    truncated: boolean[]
+    retries: number
+    durationMs: number
+  }
+
+  async function queryLlm(handlers: HostRequestHandlers, payload: Record<string, unknown>): Promise<LlmQueryResult> {
+    return (await requireHandler(handlers, 'llm.query')(payload)) as unknown as LlmQueryResult
+  }
+
+  it('answers a single prompt through the llm seam with rlm-subcall attribution', async () => {
+    const parent = fakeParent()
+    const starts: StartCapture[] = []
+    const ctx = makeCtx(parent, starts)
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
+
+    const result = await queryLlm(handlers, { prompt: 'summarize the diff' })
+
+    expect(result.answers).toEqual(['answer to summarize the diff'])
+    expect(result.model).toBe('deepseek-v4-flash')
+    expect(result.degenerate).toBe(false)
+    expect(result.truncated).toEqual([false])
+    // Attribution purpose reaches the seam; the audit event lands on the log.
+    expect(ctx.__llmStreams[0]!.options.purpose).toBe('rlm-subcall')
+    const event = parent.__subcallEvents[0]!
+    expect(event.type).toBe('session/subcall-query')
+    expect(event.payload.batchSize).toBe(1)
+    expect(event.payload.model).toBe('deepseek-v4-flash')
+    expect(event.payload.answerChars).toEqual([result.answers[0]!.length])
+    expect(event.payload.degenerate).toBe(false)
+  })
+
+  it('answers a batch of prompts and reports batch metrics', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [])
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
+
+    const result = await queryLlm(handlers, { prompts: ['a', 'b', 'c'] })
+
+    expect(result.answers).toHaveLength(3)
+    expect(ctx.__llmStreams).toHaveLength(3)
+    const event = parent.__subcallEvents[0]!
+    expect(event.payload.batchSize).toBe(3)
+    expect(event.payload.answerChars).toEqual([11, 11, 11])
+  })
+
+  it('an empty payload and an empty prompts array are refused', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [])
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
+
+    await expect(requireHandler(handlers, 'llm.query')({})).rejects.toThrow(/requires a non-empty prompt or prompts/)
+    await expect(requireHandler(handlers, 'llm.query')({ prompts: [] })).rejects.toThrow(/requires a non-empty prompt or prompts/)
+  })
+
+  it('a batch over the length cap fails loud naming its key', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [])
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxSubcallBatch: 2 })
+
+    await expect(requireHandler(handlers, 'llm.query')({ prompts: ['a', 'b', 'c'] }))
+      .rejects.toThrow(/maxSubcallBatch=2/)
+  })
+
+  it('per-session in-flight quota fails loud and releases on settlement', async () => {
+    const parent = fakeParent()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const ctx = makeCtx(parent, [], undefined, undefined, undefined, () => gate)
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxInFlightSubcalls: 1 })
+
+    const first = requireHandler(handlers, 'llm.query')({ prompt: 'hold' })
+    // The first subcall is still in flight; the second must be refused loudly.
+    await expect(requireHandler(handlers, 'llm.query')({ prompt: 'second' }))
+      .rejects.toThrow(/maxInFlightSubcalls=1/)
+    // Release and settle; the quota slot is free again.
+    release()
+    expect((await first).answers).toEqual(['answer to hold'])
+    await expect(queryLlm(handlers, { prompt: 'third' })).resolves.toMatchObject({ model: 'deepseek-v4-flash' })
+  })
+
+  it('a degenerate answer is retried once and recovers without the flag', async () => {
+    const parent = fakeParent()
+    const texts = new Map<string, number>()
+    const ctx = makeCtx(parent, [], undefined, undefined, (prompt) => {
+      const seen = texts.get(prompt) ?? 0
+      texts.set(prompt, seen + 1)
+      // First generation degenerates (self-repeating); the retry answers properly.
+      return seen === 0 ? 'yes yes yes' : 'the real answer'
+    })
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
+
+    const result = await queryLlm(handlers, { prompt: 'q' })
+
+    expect(ctx.__llmStreams[0]!.calls).toBe(2)
+    expect(result.answers).toEqual(['the real answer'])
+    expect(result.degenerate).toBe(false)
+    expect(result.retries).toBe(1)
+    expect(parent.__subcallEvents[0]!.payload.retries).toBe(1)
+  })
+
+  it('an answer degenerate after its retry is flagged for the kernel caller', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [], undefined, undefined, () => 'yes yes yes')
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
+
+    const result = await queryLlm(handlers, { prompt: 'q' })
+
+    expect(result.retries).toBe(1)
+    expect(result.degenerate).toBe(true)
+    // The failing text is still returned (flagged) so the kernel can chunk.
+    expect(result.answers).toEqual(['yes yes yes'])
+  })
+
+  it('truncates over-cap answers and marks them', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [], undefined, undefined, () => 'x'.repeat(200))
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxSubcallAnswerChars: 10 })
+
+    const result = await queryLlm(handlers, { prompt: 'q' })
+
+    expect(result.answers[0]).toHaveLength(10)
+    expect(result.truncated).toEqual([true])
+    expect(parent.__subcallEvents[0]!.payload.answerChars).toEqual([10])
+    expect(parent.__subcallEvents[0]!.payload.truncated).toEqual([true])
+  })
+
+  it('resolves the model as request → route selector → owning agent', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [])
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', {}, { subcallModel: 'deepseek-v4-flash' })
+
+    // Request-named model wins over the route selector.
+    const requested = await queryLlm(handlers, { prompt: 'a', model: 'deepseek-v4-pro' })
+    expect(requested.model).toBe('deepseek-v4-pro')
+    // Route selector downgrades when no request model is given.
+    const routed = await queryLlm(handlers, { prompt: 'b' })
+    expect(routed.model).toBe('deepseek-v4-flash')
+  })
+
+  it('fails loud when the host has no llm service mounted', async () => {
+    const parent = fakeParent()
+    const ctx = {
+      agents: { currentInitiator: () => parent },
+      get: () => undefined,
+    } as unknown as Context
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused')
+
+    await expect(requireHandler(handlers, 'llm.query')({ prompt: 'a' }))
+      .rejects.toThrow(/requires the host-side llm service/)
+  })
+
+  it('an over-cap subcall prompt fails loud naming its key (Phase 8)', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [])
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxSubcallPromptChars: 10 })
+
+    await expect(requireHandler(handlers, 'llm.query')({ prompt: 'a'.repeat(11) }))
+      .rejects.toThrow(/maxSubcallPromptChars=10/)
+    // A batch is rejected as a whole; nothing reaches the seam.
+    expect(ctx.__llmStreams).toHaveLength(0)
+  })
+
+  it('session disposal aborts an in-flight subcall batch instead of orphaning it (Phase 8)', async () => {
+    const parent = fakeParent()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const ctx = makeCtx(parent, [], undefined, undefined, undefined, () => gate)
+    const { handlers, abortSession } = createHostHandlers(ctx, 'spawn', 'unused')
+
+    const inFlight = requireHandler(handlers, 'llm.query')({ prompts: ['hold-1', 'hold-2'] })
+    // Wait until the first subcall is parked inside the fake stream, then
+    // dispose the owning session: the batch must abort, not keep generating.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    abortSession('sess-parent')
+    release()
+    await expect(inFlight).rejects.toThrow(/aborted/)
   })
 })

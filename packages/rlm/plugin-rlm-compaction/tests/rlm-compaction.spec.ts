@@ -63,7 +63,7 @@ describe('buildRlmInstruction', () => {
 })
 
 describe('parseRlmSummary', () => {
-  it('parses Files Touched and Turn Prefix sections', () => {
+  it('parses the Files Touched section (T7.9: turnPrefix field removed as dead)', () => {
     const text = [
       '## Primary Request and Intent',
       '- do the thing',
@@ -76,7 +76,6 @@ describe('parseRlmSummary', () => {
     const parsed = parseRlmSummary(text)
     expect(parsed.filesTouched.read).toEqual(['src/x.ts'])
     expect(parsed.filesTouched.modified).toEqual(['src/y.ts'])
-    expect(parsed.turnPrefix).toContain('refactoring the loader')
   })
 })
 

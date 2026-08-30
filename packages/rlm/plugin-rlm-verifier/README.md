@@ -9,13 +9,20 @@ LLM-as-a-Verifier best-of-N selection, hosted entirely on the harness LLM seam. 
 | Config | Type | Default | Description |
 |---|---|---|---|
 | `dataDir` | string | `~/.dsh/rlm` | Harness base dir for landing run artifacts; must match the other rlm plugins' `dataDir`. |
-| `defaultModel` | string | — | Verifier model used when neither the tool argument nor the call wiring names one. |
-| `provider` | string | — | Default provider route for the scoring model. |
+| `model` | string | `deepseek-v4-flash` | Verifier model used when neither the tool argument nor the call wiring names one. |
+| `provider` | string | `deepseek-official` | Default provider route for the scoring model. |
+| `subagentProvider` | string | `spawn` | Subagent provider used by `verify.auto_spawn` candidate generation. |
+| `maxChildChars` | number | `20000` | Character cap per spawned candidate's collected output (auto_spawn path). |
 | `privacyFilter` | `'' \| 'display' \| 'full'` | `''` | `display` annotates output with per-judge provenance; `full` masks candidate text before scoring prompts. |
+| `judgeProfiles` | record | — | Named judge profiles (`name → { model, provider? }`); a `judges[]` tool argument selects among them for multi-judge Borda fusion. |
 
 ## Tool: `verify`
 
 `verify` takes a `problem`, one or more `candidates`, and optional `judges`, runs the panel, and returns the best candidate with the mean preference scores and the verification transcript.
+
+## Behavior: autonomous quality gate (T3.3)
+
+An optional `gate_score` (0-1 threshold) makes the result report a `gate` of `passed`/`failed` from the best candidate's score, with the model-visible note that a passing gate does not mean the task succeeded — it is a lower-bound filter for autonomous loops, never a verdict. Omitting `gate_score` leaves the gate `unset` (no behavior change).
 
 ## Model Experience
 

@@ -45,7 +45,11 @@ describe('memory_search tool schema', () => {
     // `defineTool` compiles the field-map into a JSON Schema object: requiredness
     // lives in the root `required` array, and each property is a plain JSON Schema
     // node (no per-property `required` flag).
-    const params = tool.parameters as { type: string; properties: Record<string, { type: string }>; required: string[] }
+    const params = tool.parameters as {
+      type: string
+      properties: { query: { type: string }; limit: { type: string }; kind: { type: string } }
+      required: string[]
+    }
     expect(params.type).toBe('object')
     expect(params.required).toContain('query')
     expect(params.properties.query.type).toBe('string')

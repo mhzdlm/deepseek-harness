@@ -53,6 +53,14 @@ describe('rlm bootstrap code', () => {
     expect(code).toContain('host_request("rlm.message", payload)')
   })
 
+  it('injects the llm_query subcall bridge (T7.10)', () => {
+    const code = buildRlmBootstrapCode()
+    expect(code).toContain('llm_query = _PrimeAgentLlmQuery().query')
+    expect(code).toContain('async def query(self, prompt=None, prompts=None, **kwargs):')
+    expect(code).toContain('host_request("llm.query", payload)')
+    expect(code).toContain('return await _prime_agent_host_request("llm.query", payload)')
+  })
+
   it('parses the skill import probe output for the T2.2 verification gate', () => {
     // Clean venv: empty object parses to no errors.
     expect(parseSkillImportErrors('{}\n')).toEqual({})
@@ -145,20 +153,25 @@ function buildExecHarness(opts: { healthyStub: boolean }): string {
     'print(json.dumps({"names": names, "rlmClass": type(ns["rlm"]).__name__}))',
     'print(json.dumps(_probe(ns["transcript"].tail(5))))',
     'print(json.dumps(_probe(ns["agent_message"].send("hi"))))',
+    'print(json.dumps(_probe(ns["llm_query"](prompt="p1"))))',
+    'print(json.dumps(_probe(ns["llm_query"](prompts=["p1", "p2"]))))',
   )
   return lines.join('\n')
 }
 
 describe('generated bootstrap execution (binding regression)', () => {
-  dIt('healthy path binds rlm/transcript/agent_message and routes both bridges', async () => {
+  dIt('healthy path binds rlm/transcript/agent_message/llm_query and routes all bridges', async () => {
     const code = buildRlmBootstrapCode()
     const stdout = await execPythonHarness(['-c', buildExecHarness({ healthyStub: true }), JSON.stringify(code)])
-    const [info, tail, send] = stdout.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
-    if (!info || !tail || !send) throw new Error('incomplete probe output from exec harness')
+    const [info, tail, send, single, batch] = stdout.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    if (!info || !tail || !send || !single || !batch) throw new Error('incomplete probe output from exec harness')
     expect(info).toMatchObject({ rlmClass: '_FakeRlm' })
-    expect(info.names).toEqual(expect.arrayContaining(['rlm', 'transcript', 'agent_message']))
+    expect(info.names).toEqual(expect.arrayContaining(['rlm', 'transcript', 'agent_message', 'llm_query']))
     expect(tail).toEqual({ ok: [{ role: 'stub', text: 'session.query' }] })
     expect(send).toEqual({ ok: { messages: [{ role: 'stub', text: 'rlm.message' }] } })
+    // The healthy stub bridge echoes the request type; both call shapes route.
+    expect(single).toEqual({ ok: { messages: [{ role: 'stub', text: 'llm.query' }] } })
+    expect(batch).toEqual({ ok: { messages: [{ role: 'stub', text: 'llm.query' }] } })
   }, 180_000)
 
   dIt('missing-runtime path still binds the objects and fails with install guidance', async () => {
@@ -167,7 +180,7 @@ describe('generated bootstrap execution (binding regression)', () => {
     const [info, tail] = stdout.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
     if (!info || !tail) throw new Error('incomplete probe output from exec harness')
     expect(info).toMatchObject({ rlmClass: '_PrimeAgentMissingRlm' })
-    expect(info.names).toEqual(expect.arrayContaining(['transcript', 'agent_message']))
+    expect(info.names).toEqual(expect.arrayContaining(['transcript', 'agent_message', 'llm_query']))
     expect(tail).toMatchObject({ error: expect.stringContaining('prime-agent-runtime is not installed') })
   }, 180_000)
 })

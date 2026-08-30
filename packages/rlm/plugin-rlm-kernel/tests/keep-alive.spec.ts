@@ -34,8 +34,13 @@ function internals(registry: SessionKernelRegistry) {
   }
 }
 
-function fakeManager(snapshot: () => Promise<unknown> = async () => ({ saved: [], skipped: [], bytes: 0, path: 'p' })) {
-  return { dispose: () => undefined, snapshotState: snapshot }
+function fakeManager(snapshot: () => Promise<unknown> = async () => ({ saved: [], skipped: [], bytes: 0, path: 'p' })): {
+  dispose(): Promise<void>
+  snapshotState(): Promise<unknown>
+} {
+  // KernelManager.dispose() is `Promise<void>` (kernels.ts:570 attaches .catch),
+  // so the stand-in must return a promise, not undefined.
+  return { dispose: async () => undefined, snapshotState: snapshot }
 }
 
 describe('IdleTracker.oldest (T3.2 LRU order)', () => {

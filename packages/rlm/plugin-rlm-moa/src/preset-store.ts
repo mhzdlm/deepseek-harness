@@ -8,7 +8,7 @@
  * @module @deepseek-ai/dsh-plugin-rlm-moa/preset-store
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { normalizePresets, type MoaResolvedPreset } from './presets.ts'
 
@@ -21,16 +21,26 @@ export interface MoaPresetStoreFile {
 }
 
 /**
- * Read the managed store. A missing file yields an empty store; a corrupted
- * file is set aside as `<name>.corrupt-<ts>` and treated as empty, mirroring
- * the harness state file's corruption policy.
+ * Read the managed store. A missing file yields an empty store; a file whose
+ * *content* is corrupted is set aside as `<name>.corrupt-<ts>` and treated as
+ * empty, mirroring the harness state file's corruption policy. A file that
+ * exists but cannot be read (EPERM/EACCES/EISDIR — AV scan, momentary lock,
+ * permission trouble) fails loud instead: quarantining here could set aside a
+ * healthy store, and the next save would then overwrite it with an empty one —
+ * silent data loss.
  * @param storePath - path to the managed store JSON file.
  * @returns the parsed store, or an empty store when the file is missing or corrupted.
  */
 export function loadPresetStoreSync(storePath: string): MoaPresetStoreFile {
-  if (!existsSync(storePath)) return {}
+  let raw: string
   try {
-    const parsed: unknown = JSON.parse(readFileSync(storePath, 'utf8'))
+    raw = readFileSync(storePath, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw)
     if (typeof parsed !== 'object' || parsed === null) throw new Error('not an object')
     return parsed as MoaPresetStoreFile
   } catch {
@@ -43,15 +53,31 @@ export function loadPresetStoreSync(storePath: string): MoaPresetStoreFile {
   }
 }
 
+/** Monotonic per-process sequence making each save's tmp path unique. */
+let saveSequence = 0
+
 /** Atomically persist the managed store (tmp write + rename).
+ *
+ * The tmp path is unique per save: two rapid saves in one process (or pid reuse
+ * across runs) must not share a tmp file, where interleaved or leftover bytes
+ * could be promoted by the rename.
  * @param storePath - path to the managed store JSON file.
  * @param store - the store object to persist.
  */
 export function savePresetStoreSync(storePath: string, store: MoaPresetStoreFile): void {
   mkdirSync(dirname(storePath), { recursive: true })
-  const tmp = `${storePath}.tmp-${process.pid}`
-  writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`, 'utf8')
-  renameSync(tmp, storePath)
+  const tmp = `${storePath}.tmp-${process.pid}-${++saveSequence}`
+  try {
+    writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`, 'utf8')
+    renameSync(tmp, storePath)
+  } catch (error) {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      // The tmp file may never have been created; cleanup is best-effort.
+    }
+    throw error
+  }
 }
 
 /** Layered view over Config presets + managed store, re-read per call. */

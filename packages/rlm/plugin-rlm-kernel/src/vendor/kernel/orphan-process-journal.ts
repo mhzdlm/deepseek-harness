@@ -1,4 +1,4 @@
-import { closeSync, fsyncSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 // [local patch #11] dsh env naming (new first, legacy fallback via rlmEnv()).
 import { ENV_ORPHAN_PROCESS_JOURNAL, rlmEnv } from "../../env.ts";
 
@@ -8,10 +8,13 @@ import { ENV_ORPHAN_PROCESS_JOURNAL, rlmEnv } from "../../env.ts";
 // shape, which is all the dsh host consumes for orphan-kernel bookkeeping.
 const getProcessStartId = (_pid: number): string | undefined => undefined;
 
-// Resolve at call time would be ideal; a constant snapshot is fine for this
-// process-lifetime journal path. rlmEnv picks DSH_RLM_* first, legacy fallback.
-
-
+// [local patch #18] T7.9: the read/identity/clear side (readActiveOrphanProcesses /
+// isOrphanProcessIdentityCurrent / clearOrphanProcessJournal + ActiveOrphanProcess)
+// is deleted — zero callers in the dsh host, and its active filter was vacuously
+// false because processStartId is always undefined under #17. The journal remains
+// an append-only process-tracking log for the write side, which the dsh host has
+// real callers for (kernel/fork-server spawn and exit bookkeeping).
+// rlmEnv picks DSH_RLM_* first, legacy fallback.
 
 interface OrphanProcessRecord {
 	version: 1;
@@ -20,11 +23,6 @@ interface OrphanProcessRecord {
 	processStartId?: string;
 	active: boolean;
 	recordedAt: string;
-}
-
-export interface ActiveOrphanProcess {
-	pid: number;
-	processStartId: string;
 }
 
 export function recordOrphanProcessState(pid: number, active: boolean): void {
@@ -53,51 +51,4 @@ export function recordOrphanProcessState(pid: number, active: boolean): void {
 	} catch {
 		// Process tracking must not make a successfully spawned command fail.
 	}
-}
-
-export function readActiveOrphanProcesses(path: string, ownerPid: number): ActiveOrphanProcess[] {
-	let contents: string;
-	try {
-		contents = readFileSync(path, "utf8");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			return [];
-		}
-		throw error;
-	}
-	const latest = new Map<number, OrphanProcessRecord>();
-	for (const line of contents.split("\n")) {
-		if (!line) {
-			continue;
-		}
-		try {
-			const record = JSON.parse(line) as Partial<OrphanProcessRecord>;
-			if (
-				record.version === 1 &&
-				Number.isInteger(record.pid) &&
-				(record.pid ?? 0) > 0 &&
-				record.ownerPid === ownerPid &&
-				typeof record.active === "boolean" &&
-				typeof record.recordedAt === "string"
-			) {
-				latest.set(record.pid!, record as OrphanProcessRecord);
-			}
-		} catch {
-			// A crash can truncate only the final append.
-		}
-	}
-	return [...latest.values()]
-		.filter(
-			(record): record is OrphanProcessRecord & { processStartId: string } =>
-				record.active && typeof record.processStartId === "string",
-		)
-		.map((record) => ({ pid: record.pid, processStartId: record.processStartId }));
-}
-
-export function isOrphanProcessIdentityCurrent(orphan: ActiveOrphanProcess): boolean {
-	return getProcessStartId(orphan.pid) === orphan.processStartId;
-}
-
-export function clearOrphanProcessJournal(path: string): void {
-	rmSync(path, { force: true });
 }

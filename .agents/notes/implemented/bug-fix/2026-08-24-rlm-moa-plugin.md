@@ -30,7 +30,7 @@ Deliberate deviations from Hermes, recorded as such: the guidance-injection cach
 
 ## Consequences
 
-The RLM preset gains a synthesis primitive that composes with `verify` (moa drafts → verify selects, or verify.auto_spawn candidates → moa synthesizes) without any wiring between the two tools yet. Costs: each `moa` call is N+1 provider round trips, bounded only by the tool description's usage guidance plus `referenceMaxTokens`; presets naming non-configured provider routes fail at fan-out time per slot, which the degraded path absorbs. `purpose` attribution for these auxiliary calls awaits extending the closed `GenerateOptions.purpose` union in dsh-llm.
+The RLM preset gains a synthesis primitive that composes with `verify` (moa drafts → verify selects, or verify.auto_spawn candidates → moa synthesizes) without any wiring between the two tools yet. Costs: each `moa` call is N+1 provider round trips, bounded by the tool description's usage guidance plus `referenceMaxTokens` and the per-preset `referenceTimeoutMs`/`aggregatorTimeoutMs` wall-clock budgets (the aggregator budget landed 2026-08-30, see the call-surface timeouts note); presets naming non-configured provider routes fail at fan-out time per slot, which the degraded path absorbs. `purpose` attribution for these auxiliary calls awaits extending the closed `GenerateOptions.purpose` union in dsh-llm.
 
 ## Testing
 

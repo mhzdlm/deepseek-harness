@@ -8,14 +8,21 @@ LLM-as-a-Verifier 的 best-of-N 选择，完全承载于 harness 的 LLM seam �
 
 | 配置 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `dataDir` | string | `~/.dsh/rlm` | 用于落地运行产物的 harness 基础目录；必须与其余 rlm 插件的 `dataDir` 一致。 |
-| `defaultModel` | string | — | 当工具参数与调用装配都未指定时使用的 verifier 模型。 |
-| `provider` | string | — | 打分模型的默认 provider 路由。 |
+| `dataDir` | string | `~/.dsh/rlm` | 落地运行产物的 harness 基础目录；必须与其余 rlm 插件的 `dataDir` 一致。 |
+| `model` | string | `deepseek-v4-flash` | 工具参数与调用装配都未指名时使用的 verifier 模型。 |
+| `provider` | string | `deepseek-official` | 打分模型的默认 provider 路由。 |
+| `subagentProvider` | string | `spawn` | `verify.auto_spawn` 候选生成使用的 subagent provider。 |
+| `maxChildChars` | number | `20000` | auto_spawn 路径下每个生成候选收集输出的字符上限。 |
 | `privacyFilter` | `'' \| 'display' \| 'full'` | `''` | `display` 在输出上标注每位 judge 的来源；`full` 在打分提示前遮蔽候选文本。 |
+| `judgeProfiles` | record | — | 命名 judge 配置（`name → { model, provider? }`）；工具参数 `judges[]` 从中选取，做多评委 Borda 融合。 |
 
 ## 工具：`verify`
 
 `verify` 接收 `problem`、一个或多个 `candidates` 以及可选的 `judges`，运行评委面板，返回最优候选及其平均偏好分数与验证轨迹。
+
+## 行为：自主质量门（T3.3）
+
+可选 `gate_score`（0-1 阈值）让结果按最优候选分数报告 `gate` 为 `passed`/`failed`，并带模型可见说明：gate 通过不代表任务成功——它是自主循环的下界过滤器，不是裁决。省略 `gate_score` 时 gate 为 `unset`（行为不变）。
 
 ## 模型体验
 

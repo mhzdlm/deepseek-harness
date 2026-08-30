@@ -77,9 +77,9 @@ export interface Config {
   /** T3.2 (C semantics): grace (ms) before a leased over-cap kernel retries its forced eviction snapshot. Defaults to 5000. */
   reclaimSnapshotGraceMs?: number
   /**
-   * Outstanding one-shot `rlm.run` children allowed per parent session before
-   * further spawns fail loud (retained children are exempt — they idle cheaply
-   * until messaged). Bounds the fan-out a looping model can create. Defaults to 8.
+   * Outstanding `rlm.run` children (one-shot and retained, including in-flight
+   * spawns) allowed per parent session before further spawns fail loud with a
+   * remedy. Bounds the fan-out a looping model can create. Defaults to 8.
    */
   maxChildrenPerSession?: number
   /**
@@ -87,6 +87,30 @@ export interface Config {
    * actionable text instead of silently inflating a child's context. Defaults to 24000.
    */
   maxRunPromptChars?: number
+  /**
+   * T7.10 (LAYERS.md §2.3 R2): `llm.query` route selector — the subcall model
+   * used when the kernel caller does not name one. The cheap-tier default is a
+   * deployment choice: omit it to run subcalls on the owning agent's own model
+   * (no downgrade), or set it (e.g. a flash-tier model) to unlock the paper's
+   * cheap-fanout cost rule. Managed through the same preset surface as every
+   * other kernel Config key.
+   */
+  subcallModel?: string
+  /** T7.10 (R1): in-flight `llm.query` subcall streams allowed per owning session. Defaults to 8. */
+  maxInFlightSubcalls?: number
+  /** T7.10 (R1): max prompts in one `llm.query` batch request. Defaults to 32. */
+  maxSubcallBatch?: number
+  /** T7.10: char cap per subcall answer; longer answers are truncated and flagged. Defaults to 8000. */
+  maxSubcallAnswerChars?: number
+  /** T7.10 (T7.3 semantics): wall-clock budget per subcall generation. Defaults to 120000. */
+  subcallTimeoutMs?: number
+  /**
+   * Phase 8 (review round 6): char cap per `llm.query` prompt. Sits far above
+   * `maxRunPromptChars` — chunk-sized subcall context is legitimate; the cap
+   * only stops absurd single prompts from becoming runaway billing calls.
+   * Defaults to 100000.
+   */
+  maxSubcallPromptChars?: number
 }
 
 /**
@@ -95,7 +119,9 @@ export interface Config {
  */
 export const Config: z<Config> = z.object({
   python: z.string().min(1),
-  dataDir: z.string(),
+  // Phase 8: an empty dataDir used to pass the schema and resolve to the cwd;
+  // min(1) keeps the `?? default` fallback meaningful.
+  dataDir: z.string().min(1),
   subagentProvider: z.string().min(1),
   idleTimeoutMs: z.natural(),
   maxOutputChars: z.natural(),
@@ -104,8 +130,16 @@ export const Config: z<Config> = z.object({
   warmupOnSessionCreate: z.boolean(),
   maxLiveKernels: z.natural(),
   reclaimSnapshotGraceMs: z.natural(),
-  maxChildrenPerSession: z.natural(),
+  // Phase 8: 0 used to make the `live >= 0` cap check always fire, rejecting
+  // every rlm.run — the documented minimum is 1.
+  maxChildrenPerSession: z.natural().min(1),
   maxRunPromptChars: z.natural().min(1),
+  subcallModel: z.string().min(1),
+  maxInFlightSubcalls: z.natural().min(1),
+  maxSubcallBatch: z.natural().min(1),
+  maxSubcallAnswerChars: z.natural().min(1),
+  subcallTimeoutMs: z.natural().min(1),
+  maxSubcallPromptChars: z.natural().min(1),
 })
 
 /**
@@ -120,6 +154,13 @@ export function apply(ctx: Context, config: Config): void {
   const hostHandlers = createHostHandlers(ctx, config.subagentProvider ?? 'spawn', dataDir, {
     ...(config.maxChildrenPerSession !== undefined ? { maxChildrenPerSession: config.maxChildrenPerSession } : {}),
     ...(config.maxRunPromptChars !== undefined ? { maxRunPromptChars: config.maxRunPromptChars } : {}),
+    ...(config.maxInFlightSubcalls !== undefined ? { maxInFlightSubcalls: config.maxInFlightSubcalls } : {}),
+    ...(config.maxSubcallBatch !== undefined ? { maxSubcallBatch: config.maxSubcallBatch } : {}),
+    ...(config.maxSubcallAnswerChars !== undefined ? { maxSubcallAnswerChars: config.maxSubcallAnswerChars } : {}),
+    ...(config.subcallTimeoutMs !== undefined ? { subcallTimeoutMs: config.subcallTimeoutMs } : {}),
+    ...(config.maxSubcallPromptChars !== undefined ? { maxSubcallPromptChars: config.maxSubcallPromptChars } : {}),
+  }, {
+    ...(config.subcallModel !== undefined ? { subcallModel: config.subcallModel } : {}),
   })
   const kernels = new SessionKernelRegistry({
     // exactOptionalPropertyTypes: spread undefined fields away.
@@ -160,7 +201,7 @@ export function apply(ctx: Context, config: Config): void {
     // FIX-6: abort outstanding rlm.run children owned by this session before
     // tearing down its kernel.
     hostHandlers.abortSession(sid)
-    kernels.disposeSession(sid)
+    void kernels.disposeSession(sid)
   })
 
   // T5: after a compaction, tell the model the persistent kernel namespace
@@ -211,7 +252,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(
     () => () => {
       if (sweepTimer) clearInterval(sweepTimer)
-      kernels.disposeAll()
+      void kernels.disposeAll()
     },
     'rlm-kernel teardown',
   )

@@ -110,6 +110,10 @@ const AUDITS: FileAudit[] = [
 				label: "#14 kernel env built by the shared kernel-env module",
 				mustContain: [/import\s*\{[^}]*buildKernelEnv[^}]*\}\s*from\s*["']\.\.\/\.\.\/kernel-env\.ts["']/],
 			},
+			{
+				label: "#18 kernelStderr buffer bounded (T7.9)",
+				mustContain: [/MAX_KERNEL_STDERR/, /appendKernelStderr/],
+			},
 		],
 	},
 	{
@@ -152,6 +156,10 @@ const AUDITS: FileAudit[] = [
 				label: "#16 batch-file spawn routing (PATHEXT .bat/.cmd shims)",
 				mustContain: [/\[local patch #16\]/, /windowsBatchSpawnSpec\(/, /windowsVerbatimArguments/],
 			},
+			{
+				label: "#18 hung installer child bounded (run() timeout, T7.9)",
+				mustContain: [/DEFAULT_RUN_TIMEOUT_MS/, /timed out after/, /child\.kill\(\)/],
+			},
 		],
 	},
 	{
@@ -179,19 +187,6 @@ const AUDITS: FileAudit[] = [
 			{
 				label: "#14 forkserver template launched with a scrubbed env",
 				mustContain: [/\[local patch #14\]/, /launchEnv = buildKernelEnv\(\)/],
-			},
-		],
-	},
-	{
-		file: "boot-gate.ts",
-		checks: [
-			{
-				label: "#3 inline Semaphore (prime-internal util replaced)",
-				mustContain: [/class Semaphore/],
-			},
-			{
-				label: "#11 env access via rlmEnv() indirection",
-				mustContain: [/rlmEnv\(\.\.\.ENV_MAX_CONCURRENT_BOOTS\)/],
 			},
 		],
 	},

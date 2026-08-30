@@ -5,6 +5,7 @@
  * @module @deepseek-ai/dsh-plugin-rlm-kernel
  */
 
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -21,7 +22,7 @@ function writeToolResultArchive(artifactDir: string, length: number, fullText: s
   try {
     const dir = path.join(artifactDir, 'tool-results')
     mkdirSync(dir, { recursive: true })
-    const file = path.join(dir, `${Date.now()}.log`)
+    const file = path.join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.log`)
     writeFileSync(file, fullText, 'utf8')
     return `\n[... output truncated at ${MAX_OUTPUT_CHARS} chars; full ${length} chars archived at ${file} — read it in slices from the kernel or fs tools]`
   } catch {

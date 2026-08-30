@@ -97,6 +97,47 @@ describe('session.query bridge', () => {
     await expect(query({ op: 'grep', pattern: 'a'.repeat(200) })).resolves.toBeDefined()
   })
 
+  it('rejects catastrophic-backtracking patterns outright (T7.6)', async () => {
+    // Exponential families: an unbounded quantifier over a group whose content
+    // quantifies or alternates.
+    await expect(query({ op: 'grep', pattern: '(a+)+' })).rejects.toThrow(/quantified group/)
+    await expect(query({ op: 'grep', pattern: '(a|b)*' })).rejects.toThrow(/quantified group/)
+    await expect(query({ op: 'grep', pattern: '(a{1,2})*' })).rejects.toThrow(/quantified group/)
+    // Polynomial families: the same quantified atom repeated 3+ times.
+    await expect(query({ op: 'grep', pattern: 'a*a*a*' })).rejects.toThrow(/repeats the same quantified atom/)
+    await expect(query({ op: 'grep', pattern: '\\d+\\d+\\d+' })).rejects.toThrow(/repeats the same quantified atom/)
+  })
+
+  it('checks every quantified group, not just the first (Phase 8)', async () => {
+    // The pre-Phase-8 guard exec'd only the FIRST quantified group, so a
+    // leading benign group (`(ab)+`) laundered the trailing `(a+)+` past it.
+    await expect(query({ op: 'grep', pattern: '(ab)+(a+)+' })).rejects.toThrow(/quantified group/)
+    // Nested groups: the outer unbounded quantifier over `(a)+` (which nests a
+    // group) is exponential even though the inner group itself is clean.
+    await expect(query({ op: 'grep', pattern: '((a)+)+' })).rejects.toThrow(/quantified group/)
+    await expect(query({ op: 'grep', pattern: '((ab)+)+' })).rejects.toThrow(/quantified group/)
+    // An unbounded group containing an optional nested group is ambiguous too.
+    await expect(query({ op: 'grep', pattern: '((a)?)+' })).rejects.toThrow(/quantified group/)
+  })
+
+  it('treats repeated quantified character classes like repeated atoms (Phase 8)', async () => {
+    // Class content used to hide the repetition from the 3x rule.
+    await expect(query({ op: 'grep', pattern: '[a-z]+[a-z]+[a-z]+' })).rejects.toThrow(/repeats the same quantified atom/)
+    await expect(query({ op: 'grep', pattern: '[\\s\\S]*[\\s\\S]*[\\s\\S]*' })).rejects.toThrow(/repeats the same quantified atom/)
+    // Two quantified classes stay allowed (below the ambiguity bar).
+    await expect(query({ op: 'grep', pattern: '[a-z]+[a-z]+' })).resolves.toBeDefined()
+  })
+
+  it('allows bounded quantified forms that are not ReDoS-shaped (T7.6)', async () => {
+    // A bounded outer quantifier and disjoint quantified atoms stay linear.
+    await expect(query({ op: 'grep', pattern: '(1|2)?\\d' })).resolves.toBeDefined()
+    await expect(query({ op: 'grep', pattern: '(ab)+' })).resolves.toBeDefined()
+    await expect(query({ op: 'grep', pattern: '\\d+\\s*\\d+' })).resolves.toBeDefined()
+    // Common real-world grep shapes must keep working (Phase 8 guard rewrite).
+    await expect(query({ op: 'grep', pattern: '(\\w+)@(\\w+\\.\\w+)' })).resolves.toBeDefined()
+    await expect(query({ op: 'grep', pattern: '.*error.*failed' })).resolves.toBeDefined()
+  })
+
   it('marks grep truncated when the scan budget is exhausted', async () => {
     // Budget is 400k rendered characters; 50 messages of ~10k (the per-message
     // cap) total ~500k, so the budget cuts the scan before every message runs

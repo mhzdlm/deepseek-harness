@@ -21,6 +21,7 @@
  * @module @deepseek-ai/dsh-plugin-rlm-verifier/verify-tool
  */
 
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -97,6 +98,24 @@ export interface VerifyToolOptions {
   judgeProfiles?: Record<string, { model: string; provider?: string }>
   /** Max output tokens per scoring call (reference default 4096). */
   maxTokens?: number
+  /**
+   * Phase 8 (review round 6): hard cap on the candidate pool. The comparison
+   * count grows with the pool, so an unbounded list let one tool call request
+   * thousands of scoring calls. Defaults to 24.
+   */
+  maxCandidates?: number
+  /**
+   * Phase 8: cap on `n_evaluations` (scoring passes per pair). Defaults to 8.
+   */
+  maxEvaluations?: number
+  /** Phase 8: cap on `auto_spawn` children. Defaults to 8. */
+  maxAutoSpawn?: number
+  /**
+   * Phase 8: whole-verify wall-clock budget (ms). The tournament previously had
+   * no deadline at all, so a hanging judge endpoint pinned the turn forever.
+   * Defaults to 600000 (10 minutes).
+   */
+  verifyTimeoutMs?: number
 }
 
 const DEFAULT_CRITERIA: Array<JudgeCriterion> = [
@@ -196,6 +215,12 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
         description:
           'If >0 and candidates is empty, spawn this many subagents to solve the task and verify their results (best-of-N)',
       },
+      gate_score: {
+        type: 'number',
+        description:
+          'Optional 0-1 quality threshold (T3.3): the result reports gate passed/failed from the best candidate score. ' +
+          'A passing gate does not mean the task succeeded — treat it as a lower-bound filter, not a verdict. Omit to skip the gate.',
+      },
     },
     output: {
       schema: {
@@ -207,6 +232,7 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
           scores: { type: 'array', items: { type: 'number' }, required: true },
           ranking: { type: 'array', items: { type: 'integer' }, required: true },
           nComparisons: { type: 'integer', required: true },
+          gate: { type: 'string', description: "'unset' | 'passed' | 'failed' from the optional gate_score threshold" },
           judges: {
             type: 'array',
             items: {
@@ -218,6 +244,11 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
               },
             },
           },
+          // Phase 8 (review round 6): degraded-judge paths attach this field to
+          // the tool result (not just the event), so it must be declared — the
+          // host validates tool output against this schema with
+          // additionalProperties:false and rejects undeclared keys.
+          failedJudges: { type: 'array', items: { type: 'string' }, description: 'Judge models that did not complete (degraded run)' },
         },
       },
       render: (_args, value) => {
@@ -240,6 +271,16 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
       let candidates: string[] = Array.isArray(raw)
         ? raw.filter((c): c is string => typeof c === 'string')
         : []
+      // Phase 8 (review round 6): the call volume scales with the pool
+      // (N + k(N−k) + C(k,2)) × n_evaluations × criteria × judges, so an
+      // unbounded pool is an unbounded bill. Fail loud naming the knob.
+      const maxCandidates = options.maxCandidates ?? 24
+      if (candidates.length > maxCandidates) {
+        throw new Error(
+          `verify: ${candidates.length} candidates exceed the cap (maxCandidates=${maxCandidates}). `
+          + 'Verify a shortlist, or raise the cap in the verifier Config.',
+        )
+      }
       // Cap every candidate entering scoring prompts (mirrors the spawned-child
       // cap): user-pasted candidates otherwise inflate judge context silently.
       const maxCandidateChars = options.maxChildChars ?? 20_000
@@ -249,7 +290,15 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
       // auto_spawn: dispatch N children against the task and use their results
       // as the candidate pool. Controllers register before start so disposal
       // during startup still aborts pending spawns (host-handlers pattern).
-      const autoSpawn = typeof args.auto_spawn === 'number' && args.auto_spawn > 0 ? Math.floor(args.auto_spawn) : 0
+      const maxAutoSpawn = options.maxAutoSpawn ?? 8
+      const requestedAutoSpawn = typeof args.auto_spawn === 'number' && args.auto_spawn > 0 ? Math.floor(args.auto_spawn) : 0
+      if (requestedAutoSpawn > maxAutoSpawn) {
+        throw new Error(
+          `verify: auto_spawn=${requestedAutoSpawn} exceeds the cap (maxAutoSpawn=${maxAutoSpawn}). `
+          + 'Spawn a smaller panel, or raise the cap in the verifier Config.',
+        )
+      }
+      const autoSpawn = requestedAutoSpawn
       if (candidates.length === 0 && autoSpawn > 0) {
         const subagents = options.subagents
         if (!subagents) throw new Error('verify: auto_spawn requires the subagent service')
@@ -257,7 +306,9 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
         if (!owner) throw new Error('verify: auto_spawn requires an owning agent')
         const sid = owner.session?.id !== undefined ? String(owner.session.id) : undefined
         const maxChars = options.maxChildChars ?? 20_000
-        const results = await Promise.all(
+        // Phase 8: allSettled — one failed child must not strand the others as
+        // un-aborted, still-billing orphans.
+        const settled = await Promise.allSettled(
           Array.from({ length: autoSpawn }, async (_, i) => {
             const controller = new AbortController()
             const unregister = sid !== undefined && options.trackController
@@ -279,12 +330,25 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
                 .join('\n')
                 .trim()
               return text.slice(0, maxChars)
+            } catch (error) {
+              controller.abort()
+              throw error
             } finally {
               unregister?.()
             }
           }),
         )
-        candidates = results.filter(text => text.length > 0)
+        const results = settled.map(entry => entry.status === 'fulfilled' ? entry.value : null)
+        const firstReject = settled.find(entry => entry.status === 'rejected') as PromiseRejectedResult | undefined
+        if (firstReject) {
+          if (!exec.signal.aborted) {
+            console.warn('[rlm-verifier] an auto_spawn child failed; its siblings were aborted', {
+              reason: String(firstReject.reason),
+            })
+          }
+          throw new Error(`verify: auto_spawn child failed: ${String(firstReject.reason)}`)
+        }
+        candidates = results.filter((text): text is string => text !== null && text.length > 0)
       }
 
       if (candidates.length < 2) {
@@ -292,11 +356,40 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
       }
 
       const criteria = resolveCriteria(args.criteria)
-      const nEvaluations = typeof args.n_evaluations === 'number' && args.n_evaluations > 0
-        ? Math.floor(args.n_evaluations)
-        : 4
+      const maxEvaluations = options.maxEvaluations ?? 8
+      const nEvaluations = Math.min(
+        typeof args.n_evaluations === 'number' && args.n_evaluations > 0 ? Math.floor(args.n_evaluations) : 4,
+        maxEvaluations,
+      )
       const pivotsArg = typeof args.pivots === 'number' && args.pivots > 0 ? Math.floor(args.pivots) : 2
       const seed = typeof args.seed === 'number' && Number.isFinite(args.seed) ? Math.floor(args.seed) : 0
+      // T3.3 autonomous quality gate: an optional 0-1 threshold on the best
+      // candidate's score. The gate is a lower-bound filter, never a verdict —
+      // "gate passed" does not mean the task succeeded.
+      // Phase 8 (review round 6): an out-of-range value used to fall through to
+      // `undefined`, silently DISABLING the gate the caller asked for. Fail loud
+      // instead — a misconfigured gate must never quietly stop gating.
+      if (args.gate_score !== undefined
+        && (typeof args.gate_score !== 'number' || !Number.isFinite(args.gate_score)
+          || args.gate_score < 0 || args.gate_score > 1)) {
+        throw new Error(
+          `verify: gate_score must be a number in [0, 1], got ${JSON.stringify(args.gate_score) ?? String(args.gate_score)}. `
+          + 'Refusing to silently drop the quality gate.',
+        )
+      }
+      const gateThreshold = typeof args.gate_score === 'number' ? args.gate_score : undefined
+      // Phase 8: whole-verify wall-clock budget, composed with the caller's
+      // signal. A hanging judge endpoint used to pin the turn forever.
+      const deadline = AbortSignal.timeout(options.verifyTimeoutMs ?? 600_000)
+      const runSignal = exec.signal ? AbortSignal.any([exec.signal, deadline]) : deadline
+      const aborted = (): boolean => runSignal.aborted
+      const gateFor = (scores: number[], bestIndex: number): 'unset' | 'passed' | 'failed' => {
+        if (gateThreshold === undefined) return 'unset'
+        return (scores[bestIndex] ?? 0) >= gateThreshold ? 'passed' : 'failed'
+      }
+      const gateNote = (gate: 'unset' | 'passed' | 'failed'): string => gate === 'unset'
+        ? ''
+        : `\ngate: ${gate} — a passing gate does not mean the task succeeded; verify against the actual outcome`
       const session = exec.agent?.session ?? null
       const startedAt = Date.now()
       // T2.6: tee every bypass scoring call so the durable detail file can
@@ -315,11 +408,15 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
         return out
       }
       const sessionIdForDetail = session ? String((session as unknown as { id: string }).id) : undefined
+      // Phase 8 (review round 6): problem and criteria enter the archive under
+      // the same masking discipline as candidates/calls — the archive's
+      // docstring promises uniform masking, and problem text can embed
+      // credential/PII material just like candidate text can.
       const writeDetail = (extra: Record<string, unknown>): string | undefined =>
         writeVerifyDetail(options.artifactRoot, sessionIdForDetail, {
           ts: new Date(startedAt).toISOString(),
-          problem,
-          criteria,
+          problem: maskForArchive(problem),
+          criteria: criteria.map(criterion => ({ ...criterion, description: maskForArchive(criterion.description) })),
           candidates: candidates.map(maskForArchive),
           ...extra,
           calls,
@@ -359,12 +456,13 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
               scorePairOnSeam(callModelTee, {
                 provider: profile.provider ?? options.provider ?? 'deepseek-official',
                 model: profile.model,
-              }, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens, failures))
+              }, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, runSignal, maxCallTokens, failures))
             return { name, model: profile.model, status: failures.count > 0 ? 'degraded' as const : 'ok' as const, ...scored }
           } catch (error) {
-            // An aborted caller re-throws so the run fails as aborted instead of
-            // masquerading as a failed judge panel.
-            if (exec.signal.aborted) throw error
+            // An aborted caller (or the Phase 8 wall-clock deadline) re-throws
+            // so the run fails as aborted instead of masquerading as a failed
+            // judge panel.
+            if (aborted()) throw error
             return { name, model: profile.model, status: 'failed' as const, bestIndex: -1, meanPreference: [], nComparisons: 0 }
           }
         }))
@@ -421,9 +519,9 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
         // and the user, through the rendered result — sees the degradation
         // instead of an unexplained preference shift.
         const baseText = renderFused(fused, candidates, fusable.length)
-        const text = failedJudgeNames.length > 0
+        const text = (failedJudgeNames.length > 0
           ? `${baseText}\n\nverify: ${failedJudgeNames.length} judge(s) degraded or failed (${failedJudgeNames.join(', ')})`
-          : baseText
+          : baseText) + gateNote(gateFor(scoresByCandidate, fused.bestIndex))
         return {
           text,
           index: fused.bestIndex,
@@ -431,6 +529,7 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
           ranking: fused.fusedRanking,
           nComparisons: fusable.reduce((sum, o) => sum + o.nComparisons, 0),
           judges: outcomes.map(o => ({ model: o.model, status: o.status })),
+          gate: gateFor(scoresByCandidate, fused.bestIndex),
           ...(failedJudgeNames.length > 0 ? { failedJudges: failedJudgeNames } : {}),
         }
       }
@@ -448,7 +547,7 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
       const startedSingle = Date.now()
       const failures = { count: 0 }
       const tournament = await runTournament(candidates.length, seed, Math.min(pivotsArg, candidates.length), async (a, b) =>
-        scorePairOnSeam(callModelTee, route, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, exec.signal, maxCallTokens, failures))
+        scorePairOnSeam(callModelTee, route, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, runSignal, maxCallTokens, failures))
       const judgeStatus = failures.count > 0 ? 'degraded' as const : 'ok' as const
       const detailPathSingle = writeDetail({
         childSessionIds,
@@ -481,11 +580,12 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
       ]
       if (judgeStatus !== 'ok') lines.push(`verify: scoring degraded — ${failures.count} call(s) failed and were scored as ties`)
       return {
-        text: lines.join('\n'),
+        text: lines.join('\n') + gateNote(gateFor(scores, tournament.bestIndex)),
         index: tournament.bestIndex,
         scores,
         ranking,
         nComparisons: tournament.nComparisons,
+        gate: gateFor(scores, tournament.bestIndex),
         ...(judgeStatus !== 'ok' ? { failedJudges: [model] } : {}),
       }
     },
@@ -565,7 +665,7 @@ function writeVerifyDetail(
   try {
     const dir = path.join(artifactRoot, sessionId, 'verify')
     mkdirSync(dir, { recursive: true })
-    const file = path.join(dir, `${Date.now()}.json`)
+    const file = path.join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.json`)
     writeFileSync(file, JSON.stringify(payload), 'utf8')
     return file
   } catch {

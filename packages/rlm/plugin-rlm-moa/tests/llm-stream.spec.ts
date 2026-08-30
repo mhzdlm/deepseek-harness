@@ -42,6 +42,7 @@ describe('moa over the real llm seam', () => {
       aggregator: { provider: 'p-agg', model: 'aggregator', label: 'aggregator@p-agg', mode: 'llm' as const, providerFromDefault: false },
       referenceMaxTokens: 256,
       referenceTimeoutMs: 30_000,
+      aggregatorTimeoutMs: 30_000,
       degradedPolicy: 'loud' as const,
     }
     const tool = createMoaTool({

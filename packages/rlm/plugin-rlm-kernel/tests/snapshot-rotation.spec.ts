@@ -122,7 +122,7 @@ describe('flush scheduling (debounce, mid-cell cancellation)', () => {
     const kernels = buildKernels(root, { snapshotDebounceMs: 5 })
     let calls = 0
     ;(kernels as unknown as { kernels: Map<string, unknown> }).kernels.set('s7', {
-      dispose: () => undefined,
+      dispose: async () => undefined,
       snapshotState: async () => {
         calls += 1
         return null
@@ -152,7 +152,7 @@ describe('flush scheduling (debounce, mid-cell cancellation)', () => {
     const kernels = buildKernels(root, { snapshotDebounceMs: 5 })
     let calls = 0
     ;(kernels as unknown as { kernels: Map<string, unknown> }).kernels.set('s8', {
-      dispose: () => undefined,
+      dispose: async () => undefined,
       snapshotState: async () => {
         calls += 1
         return null
@@ -246,7 +246,7 @@ describe('T4.2 kernel-snapshot event emission', () => {
     expect(readdirSync(dir)).not.toContain('kernel-state.1.dill')
   })
 
-  it('declares exactly one session event type', () => {
-    expect([...KERNEL_SNAPSHOT_EVENT_TYPES]).toEqual(['session/kernel-snapshot'])
+  it('declares the kernel event set (snapshot + subcall-query)', () => {
+    expect([...KERNEL_SNAPSHOT_EVENT_TYPES]).toEqual(['session/kernel-snapshot', 'session/subcall-query'])
   })
 })

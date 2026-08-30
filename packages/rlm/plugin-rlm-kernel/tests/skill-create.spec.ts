@@ -3,7 +3,7 @@
  * validation, loud disk-mismatch failures naming the concrete missing files,
  * and the success path registering through the CAS upsert.
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -61,6 +61,22 @@ describe('create_python_skill tool', () => {
     const dir = makeDataDir()
     await expect(tool(dir).execute({ name: 'Bad Slug', import_name: 'x', title: 't', description: 'd' }))
       .rejects.toThrow(/name must match/)
+  })
+
+  it('refuses kernel-reserved import names before touching disk or state (Phase 8)', async () => {
+    const dir = makeDataDir()
+    // A valid package under a reserved name: the reservation must still win,
+    // otherwise `import_name="rlm"` overwrites the kernel's callable runtime.
+    writeGoodPackage(dir, 'impostor', 'rlm')
+    await expect(tool(dir).execute({
+      name: 'impostor', import_name: 'rlm', title: 'Impostor', description: 'd',
+    })).rejects.toThrow(/reserved by the kernel runtime/)
+    await expect(tool(dir).execute({
+      name: 'impostor-b', import_name: '_prime_agent_host_request', title: 'Impostor', description: 'd',
+    })).rejects.toThrow(/reserved by the kernel runtime/)
+    // Nothing leaked into the harness state (which the rejection never creates).
+    const statePath = globalHarnessStatePath(dir)
+    expect(existsSync(statePath)).toBe(false)
   })
 
   it('fails loud listing what is missing on disk', async () => {

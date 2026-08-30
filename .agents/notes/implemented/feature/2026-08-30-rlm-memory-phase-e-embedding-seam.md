@@ -4,141 +4,42 @@ Status: implemented
 
 ## Problem
 
-Phase B (T5.1, `2026-08-30-rlm-memory-phase-b-read-path.md`) shipped keyword/BM25
-recall and deferred vector recall because the dsh LLM seam exposes no embeddings
-API (REME.md §12 open question 1, source-verified: `adapter.spec.ts:2224`'s
-"embedding" is a fixture, not a vector interface). REME.md §12.1's wanted design —
-a real `EmbeddingService` optionally fused with the lexical index — could therefore
-only be sketched. The knowledge base stays keyword-only: notes phrased differently
-from the query (synonymy/semantic paraphrase) are unreachable, and the Continual
-Harness paper's retrieval-quality strategy has no vector leg. The blocker is
-infrastructure, not design: dsh has no `Embedding` Service in `packages/core`, and
-DeepSeek ships no embeddings endpoint, so the seam cannot call the LLM provider.
+Phase B (T5.1, `2026-08-30-rlm-memory-phase-b-read-path.md`) shipped keyword/BM25 recall and deferred vector recall because the dsh LLM seam exposes no embeddings API (REME.md §12 open question 1, source-verified: `adapter.spec.ts:2224`'s "embedding" is a fixture, not a vector interface). REME.md §12.1's wanted design — a real `EmbeddingService` optionally fused with the lexical index — could therefore only be sketched. The knowledge base stays keyword-only: notes phrased differently from the query (synonymy/semantic paraphrase) are unreachable, and the Continual Harness paper's retrieval-quality strategy has no vector leg. The blocker is infrastructure, not design: dsh has no `Embedding` Service in `packages/core`, and DeepSeek ships no embeddings endpoint, so the seam cannot call the LLM provider.
 
 ## Decision
 
-`packages/rlm/plugin-rlm-memory` gains Phase E (T5.4), a small, default-off
-embeddings seam that keeps the committed suite byte-identical and lets the plugin
-use any OpenAI-compatible embeddings endpoint:
+`packages/rlm/plugin-rlm-memory` gains Phase E (T5.4), a small, default-off embeddings seam that keeps the committed suite byte-identical and lets the plugin use any OpenAI-compatible embeddings endpoint:
 
 - `src/embedding.ts` —
-  - `EmbeddingService` interface: `{ readonly dim: number; embed(texts: string[]):
-    Promise<number[][]> }`. It is the swap boundary: when dsh later ships a native
-    seam, a `DshEmbeddingProvider` implementing the same interface replaces the
-    external one with zero consumer changes.
-  - `createExternalEmbeddingProvider({ baseURL, apiKey, model, dim?, fetchImpl?,
-    batchSize? })`: speaks `POST {baseURL}/embeddings` with `{ model, input }`
-    (OpenAI shape), reads `{ data: [{ embedding, index }] }`, batches by `batchSize`
-    (default 32), infers `dim` from the first response (or uses `dim` when given),
-    and fails loud on a non-OK HTTP response. `baseURL` is the OpenAI-compatible
-    base (e.g. `https://api.openai.com/v1`); the `/embeddings` path is appended.
-  - `createFakeEmbeddingService(dim = 16)`: deterministic hash-of-token
-    pseudo-vectors for tests (vocabulary overlap ⇒ higher cosine).
+  - `EmbeddingService` interface: `{ readonly dim: number; embed(texts: string[]): Promise<number[][]> }`. It is the swap boundary: when dsh later ships a native seam, a `DshEmbeddingProvider` implementing the same interface replaces the external one with zero consumer changes.
+  - `createExternalEmbeddingProvider({ baseURL, apiKey, model, dim?, fetchImpl?, batchSize? })`: speaks `POST {baseURL}/embeddings` with `{ model, input }` (OpenAI shape), reads `{ data: [{ embedding, index }] }`, batches by `batchSize` (default 32), infers `dim` from the first response (or uses `dim` when given), and fails loud on a non-OK HTTP response. `baseURL` is the OpenAI-compatible base (e.g. `https://api.openai.com/v1`); the `/embeddings` path is appended.
+  - `createFakeEmbeddingService(dim = 16)`: deterministic hash-of-token pseudo-vectors for tests (vocabulary overlap ⇒ higher cosine).
   - `cosine(a, b)`: returns 0 for empty/zero vectors (no signal, not NaN).
-- `src/storage.ts` — `embeddingCacheDir(memoryDir)`, `writeEmbedding`,
-  `readEmbedding`, `deleteEmbedding`: a per-promoted-note cached vector under
-  `index/embeddings/<relPath>.json` (keyed by the published relPath, separators
-  normalized). This is the one written artifact under `index/`; the keyword index
-  itself stays derived.
-- `src/search.ts` — `hybridSearch(memoryDir, query, limit, kind, embeddingService)`:
-  async lexical + vector blend. Builds the same inverted index as `search`, scores
-  each candidate with `lex = lexScore/maxLex` (BM25, normalized), reads the cached
-  embedding, `vecNorm = max(0, cosine(query, note))` (ReLU so an unrelated note
-  cannot score half-relevant), then `score = 0.5*lex + 0.5*vecNorm`. Drops
-  `score <= 0` and returns the same `SearchHit` shape as `search`, so the
-  `memory_search` tool renders unchanged. The synchronous `search` path is
-  untouched (its 8 tests stay green).
-- `src/consolidate.ts` — `ConsolidateOptions.embeddingService?`; when provided, the
-  promotion step embeds `source + '\n' + body` and caches the vector after the
-  published note is written. Best-effort: a provider/embed/IO failure is swallowed
-  (a note that cannot get a vector still gets promoted; it just scores 0 on the
-  vector axis and is still lexically recallable).
-- `src/index.ts` — the Config (schemastery, no hardcoded tunables) gains
-  `embeddingsProvider` (`off | external`, default `off`), `embeddingsBaseURL`,
-  `embeddingsApiKey`, `embeddingsApiKeyEnv`, `embeddingsModel` (all string),
-  `embeddingsDim`/`embeddingsBatchSize` (natural). Resolution is explicit in `apply`:
-  default `off`; `external` requires `baseURL`, `model`, and exactly one of
-  `embeddingsApiKey`/`embeddingsApiKeyEnv` (env key read via `process.env`), failing
-  loud at load on any gap. When resolved, the `embeddingService` is conditionally
-  wired into the tool as `hybridSearch` (`...(embeddingService ? { embeddingService }
-  : {})`) and into `consolidate` the same way. `recallMode` keeps its Phase B meaning
-  but is not a selector today: the path is driven by `embeddingService` present
-  (`hybridSearch` when a provider is configured, keyword otherwise), regardless of
-  `recallMode`. `recallMode: 'auto'` with no provider logs the downgrade once.
-- `tests/embedding.spec.ts` (6) + `tests/hybrid-search.spec.ts` (6): fake-service
-  determinism/cosine ordering, external provider maps a fake OpenAI response and
-  infers dim, correct `POST {base}/embeddings` with Bearer auth + model, fails loud
-  on 401, batches by `batchSize`, the lex→hybrid path ranks a token-overlapping note
-  first after caching, lexical fallback with no cache, zero-score filtering, and
-  consolidation leaving no cache without a provider. Both files are listed in the
-  `test` script (CI silently skips unlisted specs).
-- `tests/rlm-memory-real.e2e.ts` — adds one real-key `memory embeddings` e2e that
-  self-skips unless `EMBEDDINGS_BASE_URL` + `EMBEDDINGS_API_KEY` +
-  `EMBEDDINGS_MODEL` are set (DeepSeek has no embeddings API, so this points at an
-  OpenAI-compatible endpoint); it consolidates with a real provider and asserts
-  `hybridSearch` recalls a token-disjoint but semantically-close note. (Real-key
-  count grows 4 → 5 e2e in that file.)
+- `src/storage.ts` — `embeddingCacheDir(memoryDir)`, `writeEmbedding`, `readEmbedding`, `deleteEmbedding`: a per-promoted-note cached vector under `index/embeddings/<relPath>.json` (keyed by the published relPath, separators normalized). This is the one written artifact under `index/`; the keyword index itself stays derived.
+- `src/search.ts` — `hybridSearch(memoryDir, query, limit, kind, embeddingService)`: async lexical + vector blend. Builds the same inverted index as `search`, scores each candidate with `lex = lexScore/maxLex` (BM25, normalized), reads the cached embedding, `vecNorm = max(0, cosine(query, note))` (ReLU so an unrelated note cannot score half-relevant), then `score = 0.5*lex + 0.5*vecNorm`. Drops `score <= 0` and returns the same `SearchHit` shape as `search`, so the `memory_search` tool renders unchanged. The synchronous `search` path is untouched (its 8 tests stay green).
+- `src/consolidate.ts` — `ConsolidateOptions.embeddingService?`; when provided, the promotion step embeds `source + '\n' + body` and caches the vector after the published note is written. Best-effort: a provider/embed/IO failure is swallowed (a note that cannot get a vector still gets promoted; it just scores 0 on the vector axis and is still lexically recallable).
+- `src/index.ts` — the Config (schemastery, no hardcoded tunables) gains `embeddingsProvider` (`off | external`, default `off`), `embeddingsBaseURL`, `embeddingsApiKey`, `embeddingsApiKeyEnv`, `embeddingsModel` (all string), `embeddingsDim`/`embeddingsBatchSize` (natural). Resolution is explicit in `apply`: default `off`; `external` requires `baseURL`, `model`, and exactly one of `embeddingsApiKey`/`embeddingsApiKeyEnv` (env key read via `process.env`), failing loud at load on any gap. When resolved, the `embeddingService` is conditionally wired into the tool as `hybridSearch` (`...(embeddingService ? { embeddingService } : {})`) and into `consolidate` the same way. `recallMode` keeps its Phase B meaning but is not a selector today: the path is driven by `embeddingService` present (`hybridSearch` when a provider is configured, keyword otherwise), regardless of `recallMode`. `recallMode: 'auto'` with no provider logs the downgrade once.
+- `tests/embedding.spec.ts` (6) + `tests/hybrid-search.spec.ts` (6): fake-service determinism/cosine ordering, external provider maps a fake OpenAI response and infers dim, correct `POST {base}/embeddings` with Bearer auth + model, fails loud on 401, batches by `batchSize`, the lex→hybrid path ranks a token-overlapping note first after caching, lexical fallback with no cache, zero-score filtering, and consolidation leaving no cache without a provider. Both files are listed in the `test` script (CI silently skips unlisted specs).
+- `tests/rlm-memory-real.e2e.ts` — adds one real-key `memory embeddings` e2e that self-skips unless `EMBEDDINGS_BASE_URL` + `EMBEDDINGS_API_KEY` + `EMBEDDINGS_MODEL` are set (DeepSeek has no embeddings API, so this points at an OpenAI-compatible endpoint); it consolidates with a real provider and asserts `hybridSearch` recalls a token-disjoint but semantically-close note. (Real-key count grows 4 → 5 e2e in that file.)
 
-Provenance: this is a **transition make-do**, not a ReMe or Continual-Harness
-concept. ReMe's `embed`/ReMeDOC and the paper's retrieval-quality strategy inspire
-the "blend lexical + vector" goal, but the concrete interface/provider/Config is
-dsh-native and default-off. Per REME.md §8 D-style, the borrow is logged here as a
-D-(defer) transition decision: the vector leg ships behind an opt-in seam so it can
-be exercised now and swapped to a native dsh seam later, without ever changing
-default behavior.
+Provenance: this is a **transition make-do**, not a ReMe or Continual-Harness concept. ReMe's `embed`/ReMeDOC and the paper's retrieval-quality strategy inspire the "blend lexical + vector" goal, but the concrete interface/provider/Config is dsh-native and default-off. Per REME.md §8 D-style, the borrow is logged here as a D-(defer) transition decision: the vector leg ships behind an opt-in seam so it can be exercised now and swapped to a native dsh seam later, without ever changing default behavior.
 
 ## Alternatives considered
 
-**Ship vector fusion unconditionally (make it the default).** Rejected: it would
-force every deploy to supply an embeddings endpoint and add network + an
-`index/embeddings/` write to the captured default experience, changing the committed
-63+4/75+5 suite's behavior and bill. `recallMode: 'auto'` already signals the user
-wants semantic recall; keeping `embeddingsProvider` default `off` preserves the
-keyword-contract that Phase B acceptance pins, and the vector leg is purely additive
-when enabled.
+**Ship vector fusion unconditionally (make it the default).** Rejected: it would force every deploy to supply an embeddings endpoint and add network + an `index/embeddings/` write to the captured default experience, changing the committed 63+4/75+5 suite's behavior and bill. `recallMode: 'auto'` already signals the user wants semantic recall; keeping `embeddingsProvider` default `off` preserves the keyword-contract that Phase B acceptance pins, and the vector leg is purely additive when enabled.
 
-**Reuse the LLM provider for embeddings (call DeepSeek).** Rejected: DeepSeek
-exposes no embeddings API, so a provider carve-out would fabricate a contract for a
-non-existent endpoint. The OpenAI-compatible `ExternalEmbeddingProvider` is a real,
-vendor-swappable surface (`baseURL`/`apiKey`/`model`) that works against any
-OpenAI-compatible vendor today.
+**Reuse the LLM provider for embeddings (call DeepSeek).** Rejected: DeepSeek exposes no embeddings API, so a provider carve-out would fabricate a contract for a non-existent endpoint. The OpenAI-compatible `ExternalEmbeddingProvider` is a real, vendor-swappable surface (`baseURL`/`apiKey`/`model`) that works against any OpenAI-compatible vendor today.
 
-**Build a dsh-native `EmbeddingService` into `packages/core` now.** Rejected as
-scope creep for this plugin phase: it would require a new Service Definition +
-Provider + Consumer seam across the host composition and is the eventual migration
-target (the interface is already provider-agnostic), not this PR's job. `plugins/rlm`
-stays self-contained behind its own interface.
+**Build a dsh-native `EmbeddingService` into `packages/core` now.** Rejected as scope creep for this plugin phase: it would require a new Service Definition + Provider + Consumer seam across the host composition and is the eventual migration target (the interface is already provider-agnostic), not this PR's job. `plugins/rlm` stays self-contained behind its own interface.
 
-**Persist `index/embeddings/<relPath>.json` vs re-embed on every search.** The former
-is chosen: re-embedding every query against every note is a network multiply per
-recall and defeats the purpose. The release commit gates the vector cache under the
-publish path, and `deleteEmbedding` covers retire; a rebuild from `published/` is a
-possible future optimization, mirroring the keyword index's derivability.
+**Persist `index/embeddings/<relPath>.json` vs re-embed on every search.** The former is chosen: re-embedding every query against every note is a network multiply per recall and defeats the purpose. The release commit gates the vector cache under the publish path, and `deleteEmbedding` covers retire; a rebuild from `published/` is a possible future optimization, mirroring the keyword index's derivability.
 
 ## Consequences
 
-- Offered: `memory_search` can now surface notes the keyword index cannot reach
-  (synonymy/paraphrase) whenever an OpenAI-compatible embeddings endpoint is
-  configured, and consolidation keeps each promoted note's vector cached. When
-  `embeddingsProvider` is `off` (the default), behavior is exactly Phase B/D:
-  keyword only, no network, no `index/embeddings/` writes — the committed suite is
-  unchanged.
-- Cost: an external embeddings endpoint is required before `external` is viable; a
-  gone/flaky provider degrades recall to lexical (never crashes the tool) but a
-  failed embed during a single promotion is swallowed, so a partially-populated
-  cache is possible. The `index/embeddings/` store is stale-safe (per-hit `read` +
-  publish-time write; retire deletes); the keyword index remains derived and the
-  vector cache is a writable, optional companion.
-- The `recallMode: 'auto'` ambiguity from Phase B is resolved in effect: the path is
-  set by the seam (`hybridSearch` whenever a provider is configured, keyword when
-  not); `recallMode: 'auto'` with no provider just logs a one-time downgrade.
-- Not yet done: `packages/core` has no native `Embedding`/vector Service, so the
-  seam is the external provider until a native one ships; the plugin's own
-  `EmbeddingService` interface is the intended migration point. Future dsh native
-  work should add the core seam and reference this note.
+- Offered: `memory_search` can now surface notes the keyword index cannot reach (synonymy/paraphrase) whenever an OpenAI-compatible embeddings endpoint is configured, and consolidation keeps each promoted note's vector cached. When `embeddingsProvider` is `off` (the default), behavior is exactly Phase B/D: keyword only, no network, no `index/embeddings/` writes — the committed suite is unchanged.
+- Cost: an external embeddings endpoint is required before `external` is viable; a gone/flaky provider degrades recall to lexical (never crashes the tool) but a failed embed during a single promotion is swallowed, so a partially-populated cache is possible. The `index/embeddings/` store is stale-safe (per-hit `read` + publish-time write; retire deletes); the keyword index remains derived and the vector cache is a writable, optional companion.
+- The `recallMode: 'auto'` ambiguity from Phase B is resolved in effect: the path is set by the seam (`hybridSearch` whenever a provider is configured, keyword when not); `recallMode: 'auto'` with no provider just logs a one-time downgrade.
+- Not yet done: `packages/core` has no native `Embedding`/vector Service, so the seam is the external provider until a native one ships; the plugin's own `EmbeddingService` interface is the intended migration point. Future dsh native work should add the core seam and reference this note.
 
 Related:
-- [Phase B read path](./2026-08-30-rlm-memory-phase-b-read-path.md) deferred the
-  vector leg; this Phase E note supersedes that deferral (partial supersession,
-  kept cross-linked — the keyword default and `recallMode` semantics from Phase B
-  are unchanged besides the new opt-in).
+- [Phase B read path](./2026-08-30-rlm-memory-phase-b-read-path.md) deferred the vector leg; this Phase E note supersedes that deferral (partial supersession, kept cross-linked — the keyword default and `recallMode` semantics from Phase B are unchanged besides the new opt-in).

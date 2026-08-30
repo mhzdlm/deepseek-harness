@@ -67,9 +67,11 @@ function pubNote(dir: string, slug: string, over: Partial<NoteFrontmatter> = {})
 }
 
 // Write a published note whose relPath slug is `slug` (so listPublished/archived match it).
+// Phase 8: the explicit relPath keeps these fixtures addressable by bare slug —
+// production promotions gain a session suffix, but these seeds are hand-placed.
 function writePublishedWithSource(dir: string, slug: string, base: Note): string {
   const note: Note = { ...base, frontmatter: { ...base.frontmatter, source: slug } }
-  return writePublished(dir, note)
+  return writePublished(dir, note, `published/${note.frontmatter.kind}/${slug}.md`)
 }
 
 const OFF: RetireOptions = { exitMode: 'off', agingMinAgeDays: 180, agingMinUseCount: 1 }

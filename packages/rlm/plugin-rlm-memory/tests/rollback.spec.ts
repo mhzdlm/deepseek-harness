@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ensureMemoryDirs, writeDraft, writeDialog, writePublished, parseNote, type NoteFrontmatter } from '../src/storage.ts'
+import { ensureMemoryDirs, writeDraft, writeDialog, writePublished, parseNote, publishedRelFor, type NoteFrontmatter } from '../src/storage.ts'
 import { consolidate, rollbackNote, type ConsolidateOptions } from '../src/consolidate.ts'
 
 const roots: string[] = []
@@ -39,13 +39,16 @@ describe('rollback reverse-snapshot override-warning', () => {
     const dir = tmp()
     ensureMemoryDirs(dir)
     // Pre-seed a published note (with frontmatter) so the promotion overwrites it and
-    // reverse-snapshots the prior content (D11).
-    writePublished(dir, { frontmatter: fm('turn:0', 1), body: '# Pre-existing\nprior content' })
+    // reverse-snapshots the prior content (D11). Phase 8: seed at the exact
+    // session-disambiguated path the promotion derives (same-session
+    // re-promotion; the cross-session collision no longer exists by design).
+    const draft = { frontmatter: fm('turn:0'), body: '# Original\noriginal content' }
+    const publishedRel = publishedRelFor(draft)
+    writePublished(dir, { frontmatter: fm('turn:0', 1), body: '# Pre-existing\nprior content' }, publishedRel)
     writeDialog(dir, 'sess-1', JSON.stringify({ role: 'user', content: 'x' }) + '\n')
-    writeDraft(dir, { frontmatter: fm('turn:0'), body: '# Original\noriginal content' }, 'sess-1', 'turn:0')
+    writeDraft(dir, draft, 'sess-1', 'turn:0')
     await consolidate(dir, OBSERVE)
 
-    const publishedRel = 'published/personal/turn-0.md'
     const publishedAbs = join(dir, publishedRel)
     expect(existsSync(publishedAbs)).toBe(true)
     expect(parseNote(publishedAbs)!.body).toBe('# Original\noriginal content')
@@ -78,12 +81,14 @@ describe('rollback reverse-snapshot override-warning', () => {
   it('rolls back cleanly when no user edit intervened', async () => {
     const dir = tmp()
     ensureMemoryDirs(dir)
-    // Pre-seed so promotion overwrites + snapshots a prior version.
-    writePublished(dir, { frontmatter: fm('turn:0', 1), body: '# Pre-existing\nprior content' })
+    // Pre-seed so promotion overwrites + snapshots a prior version (Phase 8:
+    // seed at the derived session-disambiguated path).
+    const draft = { frontmatter: fm('turn:0'), body: '# Original\noriginal content' }
+    const publishedRel = publishedRelFor(draft)
+    writePublished(dir, { frontmatter: fm('turn:0', 1), body: '# Pre-existing\nprior content' }, publishedRel)
     writeDialog(dir, 'sess-1', JSON.stringify({ role: 'user', content: 'x' }) + '\n')
-    writeDraft(dir, { frontmatter: fm('turn:0'), body: '# Original\noriginal content' }, 'sess-1', 'turn:0')
+    writeDraft(dir, draft, 'sess-1', 'turn:0')
     await consolidate(dir, OBSERVE)
-    const publishedRel = 'published/personal/turn-0.md'
     const publishedAbs = join(dir, publishedRel)
     // No edit: published mtime <= latest snapshot mtime, so no override warning.
     const out = await rollbackNote(dir, publishedRel, false)

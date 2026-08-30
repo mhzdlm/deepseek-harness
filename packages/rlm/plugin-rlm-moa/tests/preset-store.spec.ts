@@ -4,7 +4,7 @@
  * remove-only-managed rule. All filesystem work runs in per-test tmp roots.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createPresetView, loadPresetStoreSync, savePresetStoreSync } from '../src/preset-store.ts'
@@ -61,6 +61,30 @@ describe('preset view layering', () => {
     expect(existsSync(storePath)).toBe(false)
     const quarantined = readdirSync(root).filter(name => name.startsWith('moa-presets.json.corrupt-'))
     expect(quarantined.length).toBe(1)
+  })
+
+  it('a read failure (file exists but unreadable) fails loud without quarantining', () => {
+    const root = tmpRoot()
+    // A directory at the store path: readFileSync throws EISDIR on every
+    // platform — a transient/unreadable error, NOT content corruption. The
+    // old behavior quarantined the path and silently returned an empty store,
+    // so the next save would have destroyed whatever the path pointed at.
+    const storePath = join(root, 'moa-presets.json')
+    mkdirSync(storePath)
+    writeFileSync(join(storePath, 'precious.txt'), 'keep me', 'utf8')
+    expect(() => loadPresetStoreSync(storePath)).toThrow()
+    // Nothing was renamed aside: the path (and everything under it) is intact.
+    expect(existsSync(join(storePath, 'precious.txt'))).toBe(true)
+    expect(readdirSync(root).filter(name => name.startsWith('moa-presets.json.corrupt-'))).toEqual([])
+  })
+
+  it('repeated saves win last-write and leave no tmp residue', () => {
+    const root = tmpRoot()
+    const storePath = join(root, 'moa-presets.json')
+    savePresetStoreSync(storePath, { presets: { managed: MANAGED_PRESET }, defaultPreset: 'managed' })
+    savePresetStoreSync(storePath, { defaultPreset: 'configOnly' })
+    expect(loadPresetStoreSync(storePath)).toEqual({ defaultPreset: 'configOnly' })
+    expect(readdirSync(root).filter(name => name.includes('.tmp-'))).toEqual([])
   })
 })
 

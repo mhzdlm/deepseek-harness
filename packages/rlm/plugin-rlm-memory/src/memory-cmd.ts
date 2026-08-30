@@ -1,18 +1,20 @@
 /**
- * `/memory` command handlers: `list | show | delete | consolidate | rollback`. Pure
+ * `/memory` command handlers: `list | show | delete | consolidate | rollback | retire | archived | unretire`. Pure
  * functions over the file store so the Cordis command registration in index.ts stays a
  * thin switch (mirrors plugin-rlm-moa/moa-cmd.ts). `delete` operates on drafts only;
  * published notes go through the Phase C promotion/rollback gate (REME.md §5.1,
  * §10 Phase A acceptance: `delete` is drafts-only). `consolidate` runs the publish gate
  * + growth budget + reverse-snapshot promotion (REME.md §5.3); `rollback <noteId>`
  * restores the latest snapshot over a published note, honoring the override-warning
- * discipline (REME.md §5.3 D11).
+ * discipline (REME.md §5.3 D11). Phase D: `retire <noteId> [force]` moves a published
+ * note to `archived/` under `exitMode` (off|observe|enforce); `archived` lists retired
+ * notes; `unretire <noteId>` restores one (REME.md §5.4 D12).
  *
  * @module @deepseek-ai/dsh-plugin-rlm-memory/memory-cmd
  */
 
 import { basename, isAbsolute } from 'node:path'
-import { listDrafts, parseNote, deleteDraft, readNote, listPublished, listArchived } from './storage.ts'
+import { listDrafts, parseNote, deleteDraft, readNote, listPublished, listArchived, toPublishedRel } from './storage.ts'
 import { consolidate, rollbackNote, type ConsolidateOptions } from './consolidate.ts'
 import { retireNote, unretireNote, type RetireOptions } from './retire.ts'
 
@@ -185,7 +187,9 @@ export function archivedText(memoryDir: string): string {
   if (paths.length === 0) return '(no archived notes)'
   const lines: string[] = []
   for (const abs of paths) {
-    const rel = abs.split(/[\\/]/).filter(Boolean).join('/')
+    // Phase 8: print the feedable `/memory unretire` id (root-relative), not
+    // the absolute path.
+    const rel = abs.startsWith(memoryDir) ? abs.slice(memoryDir.length).replace(/^[\\/]/, '').split(/[\\/]/).filter(Boolean).join('/') : abs.split(/[\\/]/).filter(Boolean).join('/')
     const note = parseNote(abs)
     const title = note ? (note.body.split('\n')[0] ?? '').replace(/^#\s*/, '').trim() || note.frontmatter.source : '(unreadable)'
     lines.push(`- ${rel}  [${note?.frontmatter.kind ?? '?'}/${note?.frontmatter.scope ?? '?'}]  retired_at: ${note?.frontmatter.retired_at ?? '?'}  ${title}`)
@@ -197,12 +201,56 @@ export function archivedText(memoryDir: string): string {
  * `/memory unretire <noteId>`: move an archived note back to `published/` (REME.md §5.4
  * D12, "retirement is reversible"). The note id is the SAME relPath it had under
  * `published/`; a basename is resolved against `archived/`.
+ *
+ * Phase 8 (review round 6): the id resolves against the ARCHIVED tree. The old
+ * code ran the published-tree resolver here, so every hand-fed id — bare
+ * basename, `basename.md`, or the absolute path `/memory archived` prints —
+ * failed to resolve and the command always answered "not found". Accepted
+ * forms: `archived/<kind>/<slug>.md`, `<kind>/<slug>.md`, `<slug>`,
+ * `<slug>.md`, or an absolute path inside `memoryDir/archived/`.
  * @param memoryDir - resolved memory root.
- * @param noteId - the archived note id (relative path or basename).
+ * @param noteId - the archived note id (relative path, basename, or absolute archived path).
  * @returns a human-readable outcome (restored, or a not-found notice).
  */
 export async function unretireText(memoryDir: string, noteId: string): Promise<string> {
-  return unretireNote(memoryDir, resolvePublishedRel(memoryDir, noteId))
+  return unretireNote(memoryDir, resolveArchivedId(memoryDir, noteId))
+}
+
+/**
+ * Normalize a `/memory unretire` argument to the PUBLISHED-form relPath
+ * `unretireNote` consumes (it swaps the `published/` prefix for `archived/`
+ * itself). Accepted forms: `archived/<kind>/<slug>.md`, `<kind>/<slug>.md`,
+ * `<slug>`, `<slug>.md`, or an absolute path inside `memoryDir`. Rejects `..`
+ * segments and paths escaping the memory root.
+ */
+function resolveArchivedId(memoryDir: string, name: string): string {
+  if (name.includes('..')) throw new Error(`invalid noteId "${name}": ".." segments are not allowed`)
+  let archivedRel: string
+  if (isAbsolute(name)) {
+    // An absolute path (as `/memory archived` prints) must name a file inside
+    // the memory root, then re-express it relative to the root.
+    const norm = name.split(/[\\/]/).filter(Boolean).join('/')
+    const rootNorm = memoryDir.split(/[\\/]/).filter(Boolean).join('/')
+    if (!norm.startsWith(rootNorm + '/')) throw new Error(`invalid noteId "${name}": must resolve under ${memoryDir}`)
+    archivedRel = norm.slice(rootNorm.length + 1)
+  } else if (name.includes('/') || name.includes('\\')) {
+    archivedRel = name.split(/[\\/]/).join('/')
+  } else {
+    // Bare basename: match against the archived listing (with or without .md).
+    const candidates = [name, name.endsWith('.md') ? name : `${name}.md`]
+    const match = listArchived(memoryDir)
+      .map(p => toPublishedRel(memoryDir, p))
+      .find((r) => {
+        const base = r.split('/').pop() ?? ''
+        return candidates.some(c => c === base)
+      })
+    if (match === undefined) throw new Error(`unretire: no archived note matches "${name}" (run /memory archived to list ids)`)
+    archivedRel = match
+  }
+  if (archivedRel.startsWith('published/')) archivedRel = `archived/${archivedRel.slice('published/'.length)}`
+  if (!archivedRel.startsWith('archived/')) archivedRel = `archived/${archivedRel}`
+  // unretireNote consumes the PUBLISHED-form id (it swaps the prefix itself).
+  return archivedRel.replace(/^archived\//, 'published/')
 }
 
 /** Re-export so the command layer and tests share the read helper. */

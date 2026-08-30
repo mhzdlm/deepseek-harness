@@ -30,7 +30,7 @@ RLM 插件家族此前只有选择面（`verify`，对候选做 best-of-N），�
 
 ## Consequences
 
-RLM 组合获得可与 `verify` 组合的综合原语（moa 起草 → verify 选优；或 verify.auto_spawn 出候选 → moa 综合），两个工具之间暂无硬接线。代价：每次 `moa` 调用是 N+1 次提供方往返，只受工具描述的使用引导和 `referenceMaxTokens` 约束；preset 点名未配置路由的 provider 时按槽失败，由降级路径吸收。这类旁路调用的 `purpose` 归因待 dsh-llm 封闭的 `GenerateOptions.purpose` 联合类型扩展。
+RLM 组合获得可与 `verify` 组合的综合原语（moa 起草 → verify 选优；或 verify.auto_spawn 出候选 → moa 综合），两个工具之间暂无硬接线。代价：每次 `moa` 调用是 N+1 次提供方往返，受工具描述的使用引导、`referenceMaxTokens` 以及 preset 级 `referenceTimeoutMs`/`aggregatorTimeoutMs` 墙钟预算约束（聚合器预算 2026-08-30 落地，见调用面超时 note）；preset 点名未配置路由的 provider 时按槽失败，由降级路径吸收。这类旁路调用的 `purpose` 归因待 dsh-llm 封闭的 `GenerateOptions.purpose` 联合类型扩展。
 
 ## Testing
 

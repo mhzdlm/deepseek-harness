@@ -91,6 +91,15 @@
       delivery, rank them with `verify` then pass the top-K to `moa`. See MOA.md
       for the full recipes.
 
+      Fan-out is not free. For most tasks, doing the work directly beats
+      planning and delegating: keep `rlm` and subcall fan-out for
+      information-dense work that needs semantic transformation, never per
+      line or per trivial step. When you do decompose, plan a DAG of subcalls,
+      dispatch each layer as one batch, verify every answer with the cheapest
+      deterministic check before it propagates, and assemble the result with
+      plain dict/formatting logic: root compute is dict lookup, string
+      formatting, and correctness checks.
+
 # ── RLM stack: kernel + verifier + continual harness ───────────────────────
 
 - id: rlm-stack

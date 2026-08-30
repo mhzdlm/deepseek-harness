@@ -118,4 +118,27 @@ describe('ExternalEmbeddingProvider', () => {
     expect(calls).toBe(2) // 3 texts, batch 2 -> 2 requests
     expect(out).toHaveLength(3)
   })
+
+  it('rejects when a request exceeds the wall-clock budget instead of hanging the turn', async () => {
+    // A fetch that never resolves unless its signal aborts — the timeout is
+    // what ends the request (memory_search embeds on its synchronous path).
+    const fetchImpl = (async (_url: string, init?: { signal?: AbortSignal }) =>
+      new Promise<never>((_resolve, reject) => {
+        if (init?.signal?.aborted) {
+          reject(new Error('aborted'))
+          return
+        }
+        init?.signal?.addEventListener('abort', () => reject(new Error('timed out')), { once: true })
+      })) as unknown as typeof globalThis.fetch
+    const svc = createExternalEmbeddingProvider({
+      baseURL: 'https://x.test/v1',
+      apiKey: 'K',
+      model: 'm',
+      timeoutMs: 20,
+      fetchImpl,
+    })
+    const started = Date.now()
+    await expect(svc.embed(['a'])).rejects.toThrow()
+    expect(Date.now() - started).toBeLessThan(5_000)
+  })
 })

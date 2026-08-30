@@ -224,7 +224,11 @@ export class SessionKernelRegistry {
         if (this.inflight.get(sessionId) === provisioning) {
           this.kernels.set(sessionId, manager)
         } else {
-          void manager.dispose()
+          // A concurrent disposeSession owns this manager now; our speculative
+          // dispose must not surface as an unhandledRejection.
+          void manager.dispose().catch((error) => {
+            console.warn('[rlm-kernel] speculative kernel dispose failed:', error)
+          })
         }
         return manager
       })
@@ -393,10 +397,22 @@ export class SessionKernelRegistry {
       }
       // The kernel couldn't be interrupted (blocking C call on Windows, or
       // slow startup past the interrupt grace window). Recreate from the
-      // dill snapshot — the snapshot flush happened inside disposeSession.
-      this.disposeSession(sessionId)
+      // dill snapshot — disposeSession awaits the old kernel's final flush
+      // before forSession provisions the replacement (T7.6).
+      // Phase 8 (review round 6): disposeSession treats disposal as terminal
+      // and clears the session's leases, but this session is NOT terminating —
+      // re-arm any pins after the swap so a verifier's keep-HOT lease survives
+      // instead of silently lapsing (the fresh kernel would then be reclaim/LRU
+      // eligible while the holder still believes it is pinned).
+      const heldLeases = this.leases.get(sessionId)
+      await this.disposeSession(sessionId)
       try {
         kernel = await this.forSession(sessionId)
+        if (heldLeases) {
+          for (const [reason, count] of heldLeases) {
+            for (let i = 0; i < count; i++) this.pin(sessionId, reason)
+          }
+        }
         // P1-fix: tag the retry result so callers detect double-execution.
         const result = await kernel.execute(code, opts)
         this.scheduleSnapshot(sessionId)
@@ -496,9 +512,11 @@ export class SessionKernelRegistry {
     const pinned = this.pinnedSessions()
     const exclude = new Set([...this.busy, ...pinned])
     for (const sessionId of this.idle.expired([...this.kernels.keys()], exclude, nowMs)) {
-      this.disposeSession(sessionId)
       disposed.push(sessionId)
     }
+    // T7.6: wait for every manager's final dill flush before the sweep returns,
+    // so a follow-up forSession on the same session never races the flush.
+    await Promise.all(disposed.map(id => this.disposeSession(id)))
     await this.enforceLiveCap(disposed, nowMs)
     return disposed
   }
@@ -529,8 +547,12 @@ export class SessionKernelRegistry {
    * leased ones, each only after its forced snapshot succeeds.
    */
   private async enforceLiveCap(disposed: string[], nowMs: number): Promise<void> {
-    const cap = this.options.maxLiveKernels
-    if (cap === undefined || cap <= 0) return
+    // Phase 8 (review round 6): DEFAULT_MAX_LIVE_KERNELS was defined but never
+    // wired, so an unconfigured deployment had no cap despite INSTALL/LIFETIME
+    // documenting "defaults to 4". An explicit `0` keeps its documented
+    // "unlimited" meaning.
+    const cap = this.options.maxLiveKernels ?? DEFAULT_MAX_LIVE_KERNELS
+    if (cap <= 0) return
     let excess = this.kernels.size - cap
     if (excess <= 0) return
     // Busy kernels are hard-exempt. Leased kernels are soft-exempt: they are
@@ -542,20 +564,29 @@ export class SessionKernelRegistry {
       ...candidates.filter(id => !pinnedNow.has(id)),
       ...candidates.filter(id => pinnedNow.has(id)),
     ]
+    const toDispose: string[] = []
     for (const sessionId of ordered) {
       if (excess <= 0) break
       if (pinnedNow.has(sessionId) && !(await this.canSafelyEvictLeased(sessionId, nowMs))) continue
-      this.disposeSession(sessionId)
+      toDispose.push(sessionId)
       disposed.push(sessionId)
       excess -= 1
     }
+    // T7.6: same ordering contract as disposeIdle — eviction waits for the
+    // manager's final dill flush before the cap call returns.
+    await Promise.all(toDispose.map(id => this.disposeSession(id)))
   }
 
   /**
-   * Tear down a session's kernel, clearing idle/busy/lease state and any in-flight provision.
+   * Tear down a session's kernel, clearing idle/busy/lease state and any
+   * in-flight provision. Resolves after the manager's final dill flush settles,
+   * so a subsequent `forSession` on the same session (interrupt recovery, idle
+   * re-provision) never races the old kernel's snapshot write — the old
+   * `void manager.dispose()` let the flush and the next provision write the
+   * same dill concurrently (T7.6).
    * @param sessionId - Session whose kernel is torn down.
    */
-  disposeSession(sessionId: string): void {
+  async disposeSession(sessionId: string): Promise<void> {
     this.cancelScheduledFlush(sessionId)
     this.idle.remove(sessionId)
     this.busy.delete(sessionId)
@@ -567,14 +598,14 @@ export class SessionKernelRegistry {
     if (manager) {
       this.kernels.delete(sessionId)
       this.pendingRestore.delete(sessionId)
-      void manager.dispose().catch(error => console.warn('[rlm-kernel] kernel dispose failed:', error))
+      await manager.dispose().catch(error => console.warn('[rlm-kernel] kernel dispose failed:', error))
     }
     // A kernel still mid-provision must not be left to register after the
     // session is gone: drop the in-flight promise (so forSession's claim
     // check misses) and dispose the result once it materializes.
     const pending = this.inflight.get(sessionId)
     this.inflight.delete(sessionId)
-    if (pending) void pending.then(m => m.dispose()).catch(error => console.warn('[rlm-kernel] dispose of in-flight kernel failed:', error))
+    if (pending) await pending.then(m => m.dispose()).catch(error => console.warn('[rlm-kernel] dispose of in-flight kernel failed:', error))
   }
 
   /**
@@ -682,10 +713,11 @@ export class SessionKernelRegistry {
   }
 
   /** Dispose every live and in-flight kernel, leaving the registry empty. */
-  disposeAll(): void {
-    for (const sessionId of [...this.kernels.keys()]) {
-      this.disposeSession(sessionId)
-    }
+  async disposeAll(): Promise<void> {
+    // Phase 8 (review round 6): in-flight provisions were skipped — a warmup
+    // racing teardown leaked its still-spawning kernel process.
+    const sessionIds = new Set<string>([...this.kernels.keys(), ...this.inflight.keys()])
+    await Promise.all([...sessionIds].map(sessionId => this.disposeSession(sessionId)))
   }
 
   private async provision(sessionId: string): Promise<KernelManager> {
@@ -724,44 +756,52 @@ export class SessionKernelRegistry {
 
     await manager.start()
 
-    // restore must run before the RLM bootstrap so the freshly injected
-    // `rlm`/skill handles override any revived stale objects.
-    const restore = await manager.restoreState()
-    if (restore) {
-      this.pendingRestore.set(sessionId, restore)
-      // P2-A: surface the revival/loss immediately as a model-visible notice
-      // (prime's <ipython_state_restored>), so the model knows the kernel
-      // namespace was restored before it issues the next cell — not only when
-      // the next ipython tool result is prefixed (consumeRestoreNotice).
-      this.appendRestoreNotice(sessionId, restore)
-    }
-
-    const bootstrap = await manager.execute(buildRlmBootstrapCode(pythonSkills))
-    if (bootstrap.status !== 'ok') {
-      await manager.dispose()
-      throw new Error(
-        `Failed to initialize rlm runtime: ${bootstrap.error?.traceback?.join('\n') ?? bootstrap.stderr}`,
-      )
-    }
-
-    // T2.2: the prompt layer now promises every requested skill as callable.
-    // Verify that promise against ground truth from inside the kernel — a
-    // skill that cannot import fails provisioning here, naming each offender,
-    // instead of surfacing as a runtime stub error on first use. A probe that
-    // itself misbehaves is warned, not fatal: it is our own code, not a skill
-    // mismatch.
-    if (pythonSkills !== undefined && pythonSkills.length > 0) {
-      const probe = await manager.execute(buildSkillImportProbe())
-      const errors = probe.status === 'ok' ? parseSkillImportErrors(probe.stdout) : null
-      if (errors === null) {
-        console.warn('[rlm-kernel] skill import probe returned no parsable output; skipping verification')
-      } else if (Object.keys(errors).length > 0) {
-        const detail = Object.entries(errors)
-          .map(([name, message]) => `  - ${name}: ${message.split('\n')[0]}`)
-          .join('\n')
-        await manager.dispose()
-        throw new Error(`Python skills failed to import in the kernel venv:\n${detail}`)
+    // Phase 8 (review round 6): any failure past a successful start must
+    // dispose the spawned kernel process before propagating — a restore or
+    // bootstrap throw used to leak a live kernel no registry entry pointed at.
+    try {
+      // restore must run before the RLM bootstrap so the freshly injected
+      // `rlm`/skill handles override any revived stale objects.
+      const restore = await manager.restoreState()
+      if (restore) {
+        this.pendingRestore.set(sessionId, restore)
+        // P2-A: surface the revival/loss immediately as a model-visible notice
+        // (prime's <ipython_state_restored>), so the model knows the kernel
+        // namespace was restored before it issues the next cell — not only when
+        // the next ipython tool result is prefixed (consumeRestoreNotice).
+        this.appendRestoreNotice(sessionId, restore)
       }
+
+      const bootstrap = await manager.execute(buildRlmBootstrapCode(pythonSkills))
+      if (bootstrap.status !== 'ok') {
+        throw new Error(
+          `Failed to initialize rlm runtime: ${bootstrap.error?.traceback?.join('\n') ?? bootstrap.stderr}`,
+        )
+      }
+
+      // T2.2: the prompt layer now promises every requested skill as callable.
+      // Verify that promise against ground truth from inside the kernel — a
+      // skill that cannot import fails provisioning here, naming each offender,
+      // instead of surfacing as a runtime stub error on first use. A probe that
+      // itself misbehaves is warned, not fatal: it is our own code, not a skill
+      // mismatch.
+      if (pythonSkills !== undefined && pythonSkills.length > 0) {
+        const probe = await manager.execute(buildSkillImportProbe())
+        const errors = probe.status === 'ok' ? parseSkillImportErrors(probe.stdout) : null
+        if (errors === null) {
+          console.warn('[rlm-kernel] skill import probe returned no parsable output; skipping verification')
+        } else if (Object.keys(errors).length > 0) {
+          const detail = Object.entries(errors)
+            .map(([name, message]) => `  - ${name}: ${message.split('\n')[0]}`)
+            .join('\n')
+          throw new Error(`Python skills failed to import in the kernel venv:\n${detail}`)
+        }
+      }
+    } catch (error) {
+      await manager.dispose().catch((disposeError) => {
+        console.warn('[rlm-kernel] kernel dispose after failed provision failed:', disposeError)
+      })
+      throw error
     }
 
     return manager

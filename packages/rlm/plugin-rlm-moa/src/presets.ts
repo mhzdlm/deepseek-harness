@@ -22,6 +22,9 @@ export const DEFAULT_REFERENCE_MAX_TOKENS = 4_096
 /** Per-reference wall-clock budget; an expired slot fails without failing the turn. */
 export const DEFAULT_REFERENCE_TIMEOUT_MS = 120_000
 
+/** Aggregator wall-clock budget; an expired synthesis fails the tool loud (references are already logged). */
+export const DEFAULT_AGGREGATOR_TIMEOUT_MS = 300_000
+
 /** One model slot: a provider route, a model id, optional bounds, and mode. */
 export interface MoaSlotConfig {
   /**
@@ -54,6 +57,7 @@ export interface MoaResolvedPreset {
   aggregator: MoaResolvedSlot
   referenceMaxTokens: number
   referenceTimeoutMs: number
+  aggregatorTimeoutMs: number
   /** `loud` surfaces failed references to the aggregator; `quiet` drops them silently. */
   degradedPolicy: 'loud' | 'quiet'
 }
@@ -89,8 +93,12 @@ function normalizePreset(raw: unknown): Omit<MoaResolvedPreset, 'name'> | null {
     typeof preset.referenceTimeoutMs === 'number' && Number.isFinite(preset.referenceTimeoutMs)
       ? Math.max(1_000, Math.floor(preset.referenceTimeoutMs))
       : DEFAULT_REFERENCE_TIMEOUT_MS
+  const aggregatorTimeoutMs =
+    typeof preset.aggregatorTimeoutMs === 'number' && Number.isFinite(preset.aggregatorTimeoutMs)
+      ? Math.max(1_000, Math.floor(preset.aggregatorTimeoutMs))
+      : DEFAULT_AGGREGATOR_TIMEOUT_MS
   const degradedPolicy = preset.degradedPolicy === 'quiet' ? 'quiet' : 'loud'
-  return { references: enabled, aggregator, referenceMaxTokens, referenceTimeoutMs, degradedPolicy }
+  return { references: enabled, aggregator, referenceMaxTokens, referenceTimeoutMs, aggregatorTimeoutMs, degradedPolicy }
 }
 
 /**
@@ -110,6 +118,7 @@ export function defaultPreset(): MoaResolvedPreset {
     aggregator: { provider: DEFAULT_SLOT_PROVIDER, model: 'deepseek-v4-flash', label: `deepseek-v4-flash@${DEFAULT_SLOT_PROVIDER}`, mode: 'llm', providerFromDefault: false },
     referenceMaxTokens: DEFAULT_REFERENCE_MAX_TOKENS,
     referenceTimeoutMs: DEFAULT_REFERENCE_TIMEOUT_MS,
+    aggregatorTimeoutMs: DEFAULT_AGGREGATOR_TIMEOUT_MS,
     degradedPolicy: 'loud',
   }
 }

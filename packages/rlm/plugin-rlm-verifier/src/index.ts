@@ -58,6 +58,20 @@ export interface Config {
    * and the result event carries the path. Defaults to `~/.dsh/rlm`.
    */
   dataDir?: string
+  /**
+   * Phase 8 (review round 6): hard cap on the candidate pool per verify call.
+   * Defaults to 24; larger lists fail loud naming the knob.
+   */
+  maxCandidates?: number
+  /** Phase 8: cap on `n_evaluations` (scoring passes per pair). Defaults to 8. */
+  maxEvaluations?: number
+  /** Phase 8: cap on the `auto_spawn` child count. Defaults to 8. */
+  maxAutoSpawn?: number
+  /**
+   * Phase 8: whole-verify wall-clock budget in ms — a hanging judge endpoint
+   * must not pin the turn forever. Defaults to 600000.
+   */
+  verifyTimeoutMs?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -66,7 +80,11 @@ export const Config: z<Config> = z.object({
   subagentProvider: z.string().min(1),
   maxChildChars: z.natural().min(1),
   privacyFilter: z.string(),
-  dataDir: z.string(),
+  dataDir: z.string().min(1),
+  maxCandidates: z.natural().min(1),
+  maxEvaluations: z.natural().min(1),
+  maxAutoSpawn: z.natural().min(1),
+  verifyTimeoutMs: z.natural().min(1),
   judgeProfiles: z.dict(z.object({
     model: z.string().required(),
     provider: z.string(),
@@ -153,6 +171,12 @@ export function apply(ctx: Context, config: Config): void {
     ...(subagents !== undefined ? { subagents } : {}),
     ...(config.subagentProvider !== undefined ? { subagentProvider: config.subagentProvider } : {}),
     ...(config.maxChildChars !== undefined ? { maxChildChars: config.maxChildChars } : {}),
+    // Phase 8 (review round 6): fan-out governors — the comparison count
+    // scales with the pool, so an unbounded verify call was an unbounded bill.
+    ...(config.maxCandidates !== undefined ? { maxCandidates: config.maxCandidates } : {}),
+    ...(config.maxEvaluations !== undefined ? { maxEvaluations: config.maxEvaluations } : {}),
+    ...(config.maxAutoSpawn !== undefined ? { maxAutoSpawn: config.maxAutoSpawn } : {}),
+    ...(config.verifyTimeoutMs !== undefined ? { verifyTimeoutMs: config.verifyTimeoutMs } : {}),
     privacyFilter,
     // T2.6 fix: full-spectrum credential/PII masking for the durable detail
     // archive under `full` privacy (shared kernel-package redactor).

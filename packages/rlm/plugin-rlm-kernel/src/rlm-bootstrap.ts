@@ -102,6 +102,24 @@ class _PrimeAgentTranscript:
 transcript = _PrimeAgentTranscript()
 
 
+class _PrimeAgentLlmQuery:
+    """Direct model-call bridge (T7.10, LAYERS.md §2): cheap inner-loop
+    subcalls without spawning a full child session. A single prompt string is
+    one subcall; an array payload is a batch (the paper's llm_batch analog).
+    Runs on the host through the kernel Config's subcall route (R2);
+    'degenerate' answers flag the sub-model give-up pattern for the caller to
+    chunk itself (LAYERS.md §2.4).
+    """
+
+    async def query(self, prompt=None, prompts=None, **kwargs):
+        payload = {"prompt": prompt, "prompts": prompts}
+        payload.update(kwargs)
+        return await _prime_agent_host_request("llm.query", payload)
+
+
+llm_query = _PrimeAgentLlmQuery().query
+
+
 class _PrimeAgentMessage:
     """Follow-up messaging for retained children (spawned with retained=True).
 

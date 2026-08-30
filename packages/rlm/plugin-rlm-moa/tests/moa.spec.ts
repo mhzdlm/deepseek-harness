@@ -34,6 +34,7 @@ function twoSlotPreset(overrides: Partial<MoaResolvedPreset> = {}): MoaResolvedP
     aggregator: { provider: 'p-agg', model: 'agg', label: 'agg@p-agg', mode: 'llm', providerFromDefault: false },
     referenceMaxTokens: 512,
     referenceTimeoutMs: 120_000,
+    aggregatorTimeoutMs: 300_000,
     degradedPolicy: 'loud',
     ...overrides,
   }
@@ -212,6 +213,51 @@ describe('moa orchestration', () => {
     )
     expect(value.failedLabels).toEqual(['model-a@p-a'])
     expect(value.synthesis).toBe('fast advice')
+  }, 10_000)
+
+  it('a caller cancel propagates instead of degrading into "all references failed" (Phase 8)', async () => {
+    const controller = new AbortController()
+    const callModel: MoaCallModel = async (slot, request, signal) => {
+      if (slot.label === 'agg@p-agg') return { text: 'final' }
+      // The first reference aborts the caller mid-flight, then hangs on the
+      // slot signal — exactly the disposed-session shape.
+      controller.abort()
+      return hangingModel()(slot, request, signal, undefined)
+    }
+    const tool = createMoaTool({
+      resolvePreset: () => { throw new Error('no preset resolver in this test') },
+      availablePresets: () => [],
+      privacyFilter: '',
+      callModel,
+    })
+    await expect(tool.execute(
+      { problem: 'p' },
+      { signal: controller.signal } as Parameters<typeof tool.execute>[1],
+    )).rejects.toThrow()
+    // The pre-Phase-8 swallow produced the misleading "all references failed"
+    // message here; the caller's abort must surface instead.
+  }, 10_000)
+
+  it('an aggregator that exceeds its wall-clock budget fails the tool instead of hanging', async () => {
+    const callModel: MoaCallModel = async (slot, _request, signal) => {
+      if (slot.label === 'agg@p-agg') {
+        return hangingModel()(slot, { system: '', userText: '' }, signal, undefined)
+      }
+      return { text: 'fast advice' }
+    }
+    const started = Date.now()
+    await expect(
+      runTool(
+        {
+          ...singlePreset(twoSlotPreset({ aggregatorTimeoutMs: 50 })),
+          privacyFilter: '',
+          callModel,
+        },
+        { problem: 'p' },
+      ),
+    ).rejects.toThrow()
+    // The budget, not the hung provider, ends the tool call.
+    expect(Date.now() - started).toBeLessThan(5_000)
   }, 10_000)
 
   it('candidates mode numbers each draft and asks for independent verdicts', async () => {

@@ -657,7 +657,7 @@ Source: [`packages/core/session/src/types.ts:324`](../packages/core/session/src/
 'session/kernel-snapshot': KernelSnapshotEventData
 ```
 
-Source: [`packages/rlm/plugin-rlm-kernel/src/events.ts:46`](../packages/rlm/plugin-rlm-kernel/src/events.ts)
+Source: [`packages/rlm/plugin-rlm-kernel/src/events.ts:69`](../packages/rlm/plugin-rlm-kernel/src/events.ts)
 
 <a id="sessionloop-round-done--log-only"></a>
 
@@ -703,6 +703,17 @@ Source: [`packages/rlm/plugin-rlm-loop/src/events.ts:47`](../packages/rlm/plugin
 
 Source: [`packages/rlm/plugin-rlm-memory/src/events.ts:55`](../packages/rlm/plugin-rlm-memory/src/events.ts)
 
+<a id="sessionmemory-recall-inject--log-only"></a>
+
+#### `session/memory-recall-inject` — log-only
+
+```ts persistence-catalog
+/** Log-only record of one recall-injection evaluation at harness section render. */
+'session/memory-recall-inject': MemoryRecallInjectEventData
+```
+
+Source: [`packages/rlm/plugin-continual-harness/src/events.ts:37`](../packages/rlm/plugin-continual-harness/src/events.ts)
+
 <a id="sessionmoa-reference--log-only"></a>
 
 #### `session/moa-reference` — log-only
@@ -724,6 +735,17 @@ Source: [`packages/rlm/plugin-rlm-moa/src/events.ts:45`](../packages/rlm/plugin-
 ```
 
 Source: [`packages/rlm/plugin-rlm-moa/src/events.ts:47`](../packages/rlm/plugin-rlm-moa/src/events.ts)
+
+<a id="sessionsubcall-query--log-only"></a>
+
+#### `session/subcall-query` — log-only
+
+```ts persistence-catalog
+/** Log-only record of one `llm.query` subcall batch (the §5 evaluation data source). */
+'session/subcall-query': SubcallQueryEventData
+```
+
+Source: [`packages/rlm/plugin-rlm-kernel/src/events.ts:71`](../packages/rlm/plugin-rlm-kernel/src/events.ts)
 
 <a id="sessiontitle--log-only"></a>
 

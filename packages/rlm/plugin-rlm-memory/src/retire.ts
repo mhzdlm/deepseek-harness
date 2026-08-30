@@ -110,7 +110,11 @@ function daysSince(iso: string, now: number = Date.now()): number {
 export function isRetireCandidate(note: Note, options: RetireOptions, now: number = Date.now()): boolean {
   const lastIso = note.frontmatter.last_accessed || note.frontmatter.updated_at
   const ageDays = daysSince(lastIso, now)
-  return ageDays > options.agingMinAgeDays && note.frontmatter.use_count < options.agingMinUseCount
+  // Phase 8: `Number(...) || 0` — a hand-written note without `use_count` used
+  // to compare `undefined < 1 === false` and became permanently exempt from
+  // aging. A missing (or non-numeric) counter counts as zero.
+  const useCount = Number(note.frontmatter.use_count) || 0
+  return ageDays > options.agingMinAgeDays && useCount < options.agingMinUseCount
 }
 
 /**
