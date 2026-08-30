@@ -316,7 +316,7 @@ export async function writeHarnessStates(
   }
 }
 
-const HARNESS_KINDS = ['prompt', 'memory', 'skill', 'subagent'] as const
+export const HARNESS_KINDS = ['prompt', 'memory', 'skill', 'subagent'] as const
 
 /**
  * Merge global + local into one working view for rendering and /refine.

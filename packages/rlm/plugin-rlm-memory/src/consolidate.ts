@@ -222,7 +222,7 @@ export async function promoteDraft(memoryDir: string, draftPath: string, options
       if (options.gateMode === 'enforce') {
         const reason = `growth budget exceeded (count=${budget.count}/${options.maxPublishedNotes}, bytes=${budget.bytes}/${options.maxPublishedBytes})`
         const rejected = markRejected(note, reason)
-        writeRejectedDraft(memoryDir, draftPath, rejected)
+        writeRejectedDraft(draftPath, rejected)
         return { kind: 'reject', note: rejected, draftPath, reason }
       }
       return { kind: 'skip-budget', note, draftPath }
@@ -234,7 +234,7 @@ export async function promoteDraft(memoryDir: string, draftPath: string, options
       if (!sourceLocatesInDialog(note.frontmatter.source, dialogTurns)) {
         const rejected = markRejected(note, `enforce gate: source "${note.frontmatter.source}" does not locate in ${note.frontmatter.source_conversation}`)
         // Persist the rejection note into the draft so it is recorded (stays a draft).
-        writeRejectedDraft(memoryDir, draftPath, rejected)
+        writeRejectedDraft(draftPath, rejected)
         return { kind: 'reject', note: rejected, draftPath, reason: rejected.frontmatter.rejection ?? 'enforce gate failed' }
       }
     }
@@ -354,14 +354,12 @@ function markRejected(note: Note, reason: string): Note {
 
 /**
  * Rewrite a draft note on disk with rejection frontmatter (it stays under `drafts/`).
- * @param memoryDir - resolved memory root (unused; kept for signature symmetry).
  * @param draftPath - absolute draft path.
  * @param rejected - the stamped note.
  */
-function writeRejectedDraft(memoryDir: string, draftPath: string, rejected: Note): void {
+function writeRejectedDraft(draftPath: string, rejected: Note): void {
   // Reuse the draft file in place: serialize with the rejection fields present.
   writeFileSync(draftPath, serializeNote(rejected), 'utf8')
-  void memoryDir
 }
 
 /**

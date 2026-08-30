@@ -15,6 +15,7 @@
  */
 
 import type { HarnessKind, HarnessStateFile } from './harness-file.ts'
+import { HARNESS_KINDS } from './harness-file.ts'
 
 const KIND_HEADINGS: Record<HarnessKind, string> = {
   prompt: '## Persistent instructions',
@@ -58,7 +59,7 @@ export function renderHarnessOverview(
   let totalChars = 0
 
   outer:
-  for (const kind of ['prompt', 'memory', 'skill', 'subagent'] as const) {
+  for (const kind of HARNESS_KINDS) {
     const entries = state.entries[kind]
     if (!entries) continue
     const sorted = Object.values(entries).sort((a, b) =>
