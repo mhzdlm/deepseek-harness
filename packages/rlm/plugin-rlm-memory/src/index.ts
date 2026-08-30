@@ -269,7 +269,6 @@ export function apply(ctx: Context, config: Config): void {
     () => ctx.tools.register(createMemorySearchTool({
       memoryDir,
       recallTopK,
-      recallMode,
       ...(embeddingService ? { embeddingService } : {}),
     })),
     'register memory_search tool',

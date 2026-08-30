@@ -39,7 +39,7 @@ function fakeExec(sessionId: string) {
 }
 
 describe('memory_search tool schema', () => {
-  const tool = createMemorySearchTool({ memoryDir: tmp(), recallTopK: 5, recallMode: 'keyword' })
+  const tool = createMemorySearchTool({ memoryDir: tmp(), recallTopK: 5 })
 
   it('declares query as a required parameter (schema snapshot)', () => {
     // `defineTool` compiles the field-map into a JSON Schema object: requiredness
@@ -64,7 +64,7 @@ describe('memory_search tool execute', () => {
     const dir = tmp()
     ensureMemoryDirs(dir)
     const path = writePublished(dir, sampleNote('recall-target', '# Deploy Checklist\nSteps to deploy the service safely.'))
-    const tool = createMemorySearchTool({ memoryDir: dir, recallTopK: 5, recallMode: 'keyword' })
+    const tool = createMemorySearchTool({ memoryDir: dir, recallTopK: 5 })
 
     const before = parseNote(path)!
     expect(before.frontmatter.use_count).toBe(0)
@@ -81,7 +81,7 @@ describe('memory_search tool execute', () => {
 
   it('throws without an owning session (mirrors loop-tool sessionId guard)', async () => {
     const dir = tmp()
-    const tool = createMemorySearchTool({ memoryDir: dir, recallTopK: 5, recallMode: 'keyword' })
+    const tool = createMemorySearchTool({ memoryDir: dir, recallTopK: 5 })
     await expect(tool.execute({ query: 'x' }, {} as never)).rejects.toThrow(/requires an owning agent session/)
   })
 
@@ -89,7 +89,7 @@ describe('memory_search tool execute', () => {
     const dir = tmp()
     ensureMemoryDirs(dir)
     writePublished(dir, sampleNote('a', '# A\nalpha content.'))
-    const tool = createMemorySearchTool({ memoryDir: dir, recallTopK: 5, recallMode: 'keyword' })
+    const tool = createMemorySearchTool({ memoryDir: dir, recallTopK: 5 })
     const result = await tool.execute({ query: 'nonexistent-term-zzz' }, fakeExec('sess-2') as never) as { text: string; count: number }
     expect(result.count).toBe(0)
     expect(result.text).toContain('no published note matched')

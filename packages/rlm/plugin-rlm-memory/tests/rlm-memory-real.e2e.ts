@@ -157,7 +157,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('memory_search with-key e2e', () 
     // so we do not depend on the model choosing to call it (covers the recall path
     // deterministically). The fake exec shape mirrors loop-tool's sessionIdOf.
     const { createMemorySearchTool } = await import('../src/memory-search-tool.ts')
-    const tool = createMemorySearchTool({ memoryDir: root, recallTopK: 5, recallMode: 'keyword' })
+    const tool = createMemorySearchTool({ memoryDir: root, recallTopK: 5 })
     const result = await tool.execute(
       { query: 'deployment server IP', limit: 5 },
       { agent: { session: agent.session } } as never,
@@ -196,7 +196,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('memory consolidation with-key e2
     // Drive memory_search directly (no dependency on the model choosing it) to prove the
     // promoted note is now in the recall index (publish-gate admits it into recall, D8).
     const { createMemorySearchTool } = await import('../src/memory-search-tool.ts')
-    const tool = createMemorySearchTool({ memoryDir: root, recallTopK: 5, recallMode: 'keyword' })
+    const tool = createMemorySearchTool({ memoryDir: root, recallTopK: 5 })
     const agent = ctx.agentLoop.create(SessionId('consolidate-search-e2e'), {
       provider: 'deepseek-official',
       model: 'deepseek-v4-flash',

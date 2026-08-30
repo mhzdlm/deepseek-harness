@@ -42,12 +42,6 @@ export interface MemorySearchToolOptions {
   /** Default top-K (used when the caller omits `limit`). */
   recallTopK: number
   /**
-   * Recall mode, accepted for the REME.md §12.1 seam but not a selector today: the
-   * path is driven by `embeddingService` (hybridSearch when present, keyword when
-   * absent). `'auto'` with no provider logs a downgrade once in index.ts.
-   */
-  recallMode: 'keyword' | 'auto'
-  /**
    * Optional embedding provider (Phase E, REME.md §12.1). When present, the tool runs
    * `hybridSearch` (lexical BM25 fused with cached-embedding cosine); otherwise it runs
    * the lexical `search`. The closure carries it so a dsh-native provider later needs no
@@ -81,13 +75,6 @@ function renderHits(hits: SearchHit[]): string {
  * @returns a `defineTool` tool object implementing `memory_search`.
  */
 export function createMemorySearchTool(options: MemorySearchToolOptions): ReturnType<typeof defineTool> {
-  // `recallMode` is accepted by the Config and logged centrally (index.ts) when it
-  // downgrades to keyword. The embedding seam (Phase E, REME.md §12.1) lives on the
-  // optional `embeddingService` closure: when present this tool runs `hybridSearch`,
-  // otherwise the lexical `search`. Keep the value on the closure so a dsh-native
-  // provider later needs no tool change.
-  void options.recallMode
-
   return defineTool({
     name: 'memory_search',
     description:
