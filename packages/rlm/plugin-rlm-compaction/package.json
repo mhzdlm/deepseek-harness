@@ -12,7 +12,7 @@
   "main": "lib/types/index.js",
   "types": "lib/types/index.d.ts",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run --root ../../../"
   },
   "exports": {
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/types/index.js" },

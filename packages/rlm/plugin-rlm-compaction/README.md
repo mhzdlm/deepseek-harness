@@ -1,5 +1,7 @@
 # @deepseek-ai/dsh-plugin-rlm-compaction
 
+English | [中文](README.zh.md)
+
 RLM-specific compaction provider. A `BasicCompactionEngine` subclass that keeps
 the official replay-aware, tool-pairing-aligned compaction transaction unchanged
 but swaps in a **split-turn-aware summarizer** (P1-B) and a **Files Touched

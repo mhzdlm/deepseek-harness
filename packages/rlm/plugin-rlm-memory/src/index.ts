@@ -275,6 +275,10 @@ export function apply(ctx: Context, config: Config): void {
     'register memory_search tool',
   )
 
+  // Safety cap so a pathological session cannot grow the capture buffer without bound
+  // (the dialog is best-effort; exceeding it drops the oldest turns, REME.md §3 D2, T6.19).
+  const MAX_CAPTURE_TURNS = 10000
+
   /** Append one turn to a session's buffer, applying the privacy pass when on. */
   const bufferTurn = (sessionId: string, turn: CaptureTurn): void => {
     let entry = buffers.get(sessionId)
@@ -283,6 +287,7 @@ export function apply(ctx: Context, config: Config): void {
       buffers.set(sessionId, entry)
     }
     entry.turns.push(applyPrivacy(turn, privacyFilter))
+    if (entry.turns.length > MAX_CAPTURE_TURNS) entry.turns.shift()
   }
 
   /** Whether a session is eligible for capture under rootAgentsOnly. */
@@ -306,7 +311,12 @@ export function apply(ctx: Context, config: Config): void {
         const entry = buffers.get(id)
         if (entry) {
           const agent = agentsBySession.get(id) ?? (session as unknown as Agent)
-          void runCapture(ctx, memoryDir, entry, agent).then(() => buffers.delete(id))
+          void runCapture(ctx, memoryDir, entry, agent)
+            .then(() => buffers.delete(id))
+            .catch((error) => {
+              buffers.delete(id)
+              ctx.logger.warn(`[rlm-memory] interval capture failed for ${id}: ${error instanceof Error ? error.message : String(error)}`)
+            })
         }
       }
     }
@@ -323,7 +333,9 @@ export function apply(ctx: Context, config: Config): void {
     counts.delete(id)
     const agent = agentsBySession.get(id) ?? (session as unknown as Agent)
     agentsBySession.delete(id)
-    void runCapture(ctx, memoryDir, entry, agent)
+    void runCapture(ctx, memoryDir, entry, agent).catch((error) => {
+      ctx.logger.warn(`[rlm-memory] capture on dispose failed for ${id}: ${error instanceof Error ? error.message : String(error)}`)
+    })
   })
 
   // `/memory list|show|delete` — drafts-only delete (Phase C owns published).

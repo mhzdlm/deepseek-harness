@@ -20,7 +20,7 @@
  * @module @deepseek-ai/dsh-plugin-rlm-memory/storage
  */
 
-import { mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, existsSync, statSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, existsSync, statSync, utimesSync } from 'node:fs'
 import { join, sep, dirname, relative } from 'node:path'
 
 /** The three ReMe-style buckets (REME.md §4 D4: tri-bucket borrows ReMe `dream_bucket_enum`). */
@@ -65,7 +65,7 @@ export interface Note {
  * Subdirectory names under `memoryDir` (REME.md §4 layout).
  * `snapshots/` added in Phase C (D11); `archived/` is the Phase D retire target (D12).
  */
-export const SUBDIRS = ['published', 'drafts', 'archive', 'dialog', 'index', 'logs', 'snapshots', 'archived'] as const
+export const SUBDIRS = ['published', 'drafts', 'dialog', 'index', 'logs', 'snapshots', 'archived'] as const
 
 /**
  * Create the memory directory tree if absent. Idempotent.
@@ -295,9 +295,11 @@ export function publishedRelFor(note: Note): string {
  * @param note - the note to write (frontmatter + body).
  * @returns the absolute path written.
  */
-export function writePublished(memoryDir: string, note: Note): string {
-  const path = publishedPath(memoryDir, note.frontmatter.kind, note.frontmatter.source)
-  mkdirSync(join(memoryDir, 'published', note.frontmatter.kind), { recursive: true })
+export function writePublished(memoryDir: string, note: Note, targetRel?: string): string {
+  const path = targetRel
+    ? join(memoryDir, ...targetRel.split('/'))
+    : publishedPath(memoryDir, note.frontmatter.kind, note.frontmatter.source)
+  mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, serializeNote(note), 'utf8')
   return path
 }
@@ -411,6 +413,11 @@ export function updateUsage(memoryDir: string, relPath: string, nowIso: string):
   const path = relPath.startsWith(memoryDir) ? relPath : join(memoryDir, relPath)
   const note = parseNote(path)
   if (!note) return
+  // Capture the mtime BEFORE rewriting so the usage touch does not move it. Otherwise
+  // every recall would shift the file mtime and make `/memory rollback` always flag a
+  // spurious "user edit" against the reverse-snapshot override-warning (REME.md §5.3 D11, T6.5).
+  let priorMtime: number | undefined
+  try { priorMtime = statSync(path).mtimeMs } catch { /* missing stat is harmless */ }
   const updated: Note = {
     frontmatter: {
       ...note.frontmatter,
@@ -420,6 +427,9 @@ export function updateUsage(memoryDir: string, relPath: string, nowIso: string):
     body: note.body,
   }
   writeFileSync(path, serializeNote(updated), 'utf8')
+  if (priorMtime !== undefined) {
+    try { utimesSync(path, priorMtime / 1000, priorMtime / 1000) } catch { /* best-effort */ }
+  }
 }
 
 /**
@@ -522,6 +532,9 @@ export function archivedDir(memoryDir: string): string {
  * @returns the absolute archived note path written.
  */
 export function archiveNote(memoryDir: string, relPath: string): string {
+  if (!relPath.startsWith('published/')) {
+    throw new Error(`archiveNote: ${relPath} must be a published/ relPath`)
+  }
   const src = relPath.startsWith(memoryDir) ? relPath : join(memoryDir, relPath.split(/[\\/]/).filter(Boolean).join('/'))
   if (!existsSync(src)) throw new Error(`archiveNote: ${relPath} does not exist under published/`)
   const note = parseNote(src)

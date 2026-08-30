@@ -340,6 +340,11 @@ export function createHostHandlers(
       await record.run?.dispose().catch(() => undefined)
       runs.delete(target)
       if (runs.size === 0) sessionRuns.delete(sid)
+      const controllers = sessionControllers.get(sid)
+      if (controllers) {
+        controllers.delete(record.controller)
+        if (controllers.size === 0) sessionControllers.delete(sid)
+      }
       return {
         subagent: subagentDescriptor(dataDir, target, record.label, 'inactive'),
       }

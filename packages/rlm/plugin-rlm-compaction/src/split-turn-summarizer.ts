@@ -233,8 +233,16 @@ class TextAssembler {
 function finishError(finish: { kind: string; failure?: { message: string; code?: string } }): Error | undefined {
   switch (finish.kind) {
     case 'error':
-    case 'aborted':
-      return new Error(finish.failure?.message ?? 'summarization failed') as Error & { code?: string }
+    case 'aborted': {
+      const error = new Error(finish.failure?.message ?? 'summarization failed') as Error & { code?: string }
+      if (finish.failure?.code !== undefined) error.code = finish.failure.code
+      return error
+    }
+    case 'max-tokens': {
+      const error = new Error('summarization truncated at the token cap (incomplete checkpoint)') as Error & { code?: string }
+      error.code = 'MAX_TOKENS'
+      return error
+    }
     default:
       return undefined
   }
@@ -314,8 +322,7 @@ export async function summarizeRlm(
     throw new Error('RLM summarization produced no text summary content')
   }
   const fullText = summary.map(block => block.text).join('\n')
-  const { filesTouched, turnPrefix } = parseRlmSummary(fullText)
-  void turnPrefix
+  const { filesTouched } = parseRlmSummary(fullText)
   return {
     summary,
     rawOutput,

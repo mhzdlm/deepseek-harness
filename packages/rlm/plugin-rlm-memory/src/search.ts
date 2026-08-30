@@ -230,6 +230,7 @@ export async function hybridSearch(
   if (notes.length === 0) return []
 
   const queryTerms = tokenize(query)
+  if (queryTerms.size === 0) return []
   const N = notes.length
   const lexScores = new Map<string, number>()
   for (const note of notes) {
@@ -245,8 +246,14 @@ export async function hybridSearch(
     lexScores.set(note.relPath, score)
   }
 
-  const qvec = await embeddingService.embed([query])
-  const q = qvec[0] ?? []
+  let q: number[] = []
+  try {
+    const qvec = await embeddingService.embed([query])
+    q = (qvec ?? [])[0] ?? []
+  } catch {
+    // Embedding unavailable: degrade to lexical-only recall rather than failing the search.
+    return search(memoryDir, query, limit, kind)
+  }
   const maxLex = Math.max(1, ...lexScores.values())
   const blended: Array<{ note: IndexedNote; score: number }> = []
   for (const note of notes) {

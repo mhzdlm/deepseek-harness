@@ -265,15 +265,14 @@ export async function promoteDraft(memoryDir: string, draftPath: string, options
       } satisfies NoteFrontmatter,
       body: note.body,
     }
-    writePublished(memoryDir, promoted)
+    writePublished(memoryDir, promoted, targetRel)
     // Phase E embedding cache (REME.md §12.1): cache the promoted note's vector so
     // hybridSearch can fuse it with lexical BM25. Best-effort — a failure must never
     // fail promotion.
     if (options.embeddingService) {
       try {
-        const rel = publishedRelFor(promoted)
         const [vec] = await options.embeddingService.embed([`${promoted.frontmatter.source}\n${promoted.body}`])
-        if (vec) writeEmbedding(memoryDir, rel, vec)
+        if (vec) writeEmbedding(memoryDir, targetRel, vec)
       } catch {
         // embedding cache is observability for recall; ignore on failure
       }

@@ -6,7 +6,15 @@
 #   - the `verify` tool (plugin-rlm-verifier): LLM-as-a-Verifier best-of-N
 #     selection over candidate trajectories,
 #   - the continual harness (plugin-continual-harness): durable harness state
-#     + `/refine` self-refinement with reversible updates.
+#     + `/refine` self-refinement with reversible updates,
+#   - the `moa` tool (plugin-rlm-moa): multi-reference-model fan-out with an
+#     aggregator synthesis (host LLM seam, no subprocess bridge),
+#   - cross-session memory (plugin-rlm-memory): `memory_search` + `/memory`
+#     over a file-authoritative knowledge base (capture → evidence gate →
+#     consolidation → archived retirement),
+#   - split-turn compaction (plugin-rlm-compaction): the RLM compaction
+#     provider that adds split-turn prefix summarization + Files Touched
+#     carry-over on top of the official compaction-basic engine.
 #
 # This file is an AGENT-PLANE composition. It is mounted under one agent's
 # scope context, so every tool / prompt section / command it registers belongs

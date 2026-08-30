@@ -85,7 +85,7 @@ export function createExternalEmbeddingProvider(opts: ExternalEmbeddingOptions):
           throw new Error(`[plugin-rlm-memory] embeddings request failed (${res.status}): ${text.slice(0, 200)}`)
         }
         const json = (await res.json()) as OpenAIEmbedResponse
-        for (const item of json.data) {
+        for (const item of json.data ?? []) {
           const at = i + item.index
           if (at >= 0 && at < texts.length) out[at] = item.embedding
           if (dim === 0) dim = item.embedding.length

@@ -89,7 +89,9 @@ export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defi
     try {
       await upsertMemoryEntry(options.dataDir, sid, { id, title, content })
       return true
-    } catch {
+    } catch (error) {
+      // A failed landing must be observable (the verdict is otherwise lost silently).
+      console.warn(`[rlm-loop] failed to land memory entry ${id} for session ${sid}:`, error)
       return false
     }
   }

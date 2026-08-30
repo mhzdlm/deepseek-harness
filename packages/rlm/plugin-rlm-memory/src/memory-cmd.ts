@@ -11,7 +11,7 @@
  * @module @deepseek-ai/dsh-plugin-rlm-memory/memory-cmd
  */
 
-import { basename } from 'node:path'
+import { basename, isAbsolute } from 'node:path'
 import { listDrafts, parseNote, deleteDraft, readNote, listPublished, listArchived } from './storage.ts'
 import { consolidate, rollbackNote, type ConsolidateOptions } from './consolidate.ts'
 import { retireNote, unretireNote, type RetireOptions } from './retire.ts'
@@ -42,7 +42,12 @@ export function listMemoryText(memoryDir: string): string {
  * @returns the formatted note text, or an error message when not found.
  */
 export function showMemoryText(memoryDir: string, name: string): string {
-  const path = resolveDraftPath(memoryDir, name)
+  let path: string
+  try {
+    path = resolveDraftPath(memoryDir, name)
+  } catch {
+    return `Unknown draft "${name}". Use /memory list to see drafts.`
+  }
   const note = parseNote(path)
   if (!note) return `Unknown draft "${name}". Use /memory list to see drafts.`
   const fm = note.frontmatter
@@ -67,8 +72,8 @@ export function showMemoryText(memoryDir: string, name: string): string {
  * @returns a confirmation or an error message.
  */
 export function deleteMemoryText(memoryDir: string, name: string): string {
-  const path = resolveDraftPath(memoryDir, name)
   try {
+    const path = resolveDraftPath(memoryDir, name)
     deleteDraft(memoryDir, path)
     return `Deleted draft "${basename(path)}".`
   } catch (error) {
@@ -76,11 +81,16 @@ export function deleteMemoryText(memoryDir: string, name: string): string {
   }
 }
 
-/** Resolve a `/memory` argument to a draft note path (basename or existing path). */
+/** Resolve a `/memory` argument to a draft note path (basename only).
+ * Path separators, `..`, and unknown names are rejected so a leaked argument can
+ * never be used as a path outside the drafts tree. */
 function resolveDraftPath(memoryDir: string, name: string): string {
-  if (name.includes('/') || name.includes('\\')) return name
+  if (name.includes('/') || name.includes('\\') || name.includes('..')) {
+    throw new Error(`invalid draft name "${name}": path separators and ".." are not allowed`)
+  }
   const candidate = listDrafts(memoryDir).find(p => basename(p) === name)
-  return candidate ?? name
+  if (!candidate) throw new Error(`no draft note named "${name}"`)
+  return candidate
 }
 
 /**
@@ -122,14 +132,31 @@ export async function rollbackText(memoryDir: string, noteId: string, force: boo
   return outcome.message
 }
 
+/** Normalize a `/memory` note argument to a relative path strictly under `published/`.
+ * Rejects `..` segments, absolute paths, and any resolved path that escapes the
+ * published tree — a leaked id must never reach `join(memoryDir, rel)` outside the
+ * memory root. */
+function resolvePublishedRel(memoryDir: string, name: string): string {
+  if (name.includes('..')) throw new Error(`invalid noteId "${name}": ".." segments are not allowed`)
+  if (isAbsolute(name)) throw new Error(`invalid noteId "${name}": absolute paths are not allowed`)
+  let rel: string
+  if (name.includes('/') || name.includes('\\')) {
+    rel = name.split(/[\\/]/).join('/')
+  } else {
+    const match = listPublished(memoryDir)
+      .map(p => (p.startsWith(memoryDir) ? p.slice(memoryDir.length).replace(/^[\\/]/, '') : p))
+      .find(r => r.split(/[\\/]/).pop() === name)
+    rel = match ?? `published/${name}`
+  }
+  if (!rel.startsWith('published/') || rel.slice('published/'.length).includes('..')) {
+    throw new Error(`invalid noteId "${name}": must resolve under published/`)
+  }
+  return rel
+}
+
 /** Resolve a `/memory rollback` argument to a published note relative path. */
 function resolvePublishedId(memoryDir: string, name: string): string {
-  if (name.includes('/') || name.includes('\\')) return name.split(/[\\/]/).join('/')
-  // `noteId` may be a basename; match it against published/ relPaths.
-  const match = listPublished(memoryDir)
-    .map(p => (p.startsWith(memoryDir) ? p.slice(memoryDir.length).replace(/^[\\/]/, '') : p))
-    .find(rel => rel.split(/[\\/]/).pop() === name)
-  return match ?? `published/${name}`
+  return resolvePublishedRel(memoryDir, name)
 }
 
 /**
@@ -144,7 +171,7 @@ function resolvePublishedId(memoryDir: string, name: string): string {
  * @returns a human-readable outcome (the note stays put unless `enforce` + candidate).
  */
 export async function retireText(memoryDir: string, noteId: string, force: boolean, options: RetireOptions): Promise<string> {
-  return retireNote(memoryDir, noteId, options, force)
+  return retireNote(memoryDir, resolvePublishedRel(memoryDir, noteId), options, force)
 }
 
 /**
@@ -175,7 +202,7 @@ export function archivedText(memoryDir: string): string {
  * @returns a human-readable outcome (restored, or a not-found notice).
  */
 export async function unretireText(memoryDir: string, noteId: string): Promise<string> {
-  return unretireNote(memoryDir, noteId)
+  return unretireNote(memoryDir, resolvePublishedRel(memoryDir, noteId))
 }
 
 /** Re-export so the command layer and tests share the read helper. */

@@ -61,10 +61,10 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  provider: z.string(),
-  model: z.string(),
-  subagentProvider: z.string(),
-  maxChildChars: z.natural(),
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  subagentProvider: z.string().min(1),
+  maxChildChars: z.natural().min(1),
   privacyFilter: z.string(),
   dataDir: z.string(),
   judgeProfiles: z.dict(z.object({

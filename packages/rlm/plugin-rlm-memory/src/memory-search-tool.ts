@@ -13,10 +13,12 @@
  * the system prompt (REME.md §5.2 dual-channel; harness overview stays
  * time-indexed).
  *
- * Recall is keyword/BM25-ish only (REME.md §12 open question 1: dsh has no
- * embeddings API, so no vector call is invented). When `recallMode === 'auto'`
- * but embeddings are unavailable, the caller must fall back to keyword before
- * constructing this tool (see index.ts); this tool is the keyword implementation.
+ * Recall path is selected by the optional `embeddingService` closure: when one is
+ * wired (`embeddingsProvider: 'external'`, Phase E REME.md §12.1) the tool runs
+ * `hybridSearch` (lexical BM25 fused with cached-embedding cosine); otherwise it runs
+ * the keyword/BM25-ish `search`. `recallMode` is accepted by the Config but does not
+ * select the path today — both `'keyword'` and `'auto'` behave the same; `'auto'` with
+ * no configured provider surfaces a one-time downgrade warning in index.ts.
  *
  * NOTE: `defineTool` (packages/core/tools/src/schema.ts `DefineToolOptions`) does
  * NOT accept a `purpose` field, so no `purpose: 'memory'` attribution is set here;
@@ -40,9 +42,9 @@ export interface MemorySearchToolOptions {
   /** Default top-K (used when the caller omits `limit`). */
   recallTopK: number
   /**
-   * Recall mode. Phase B ships `'keyword'` only; `'auto'` is accepted by the
-   * Config but falls back to keyword at construction (REME.md §12 open question 1
-   * — no embeddings seam). The tool itself is the keyword implementation.
+   * Recall mode, accepted for the REME.md §12.1 seam but not a selector today: the
+   * path is driven by `embeddingService` (hybridSearch when present, keyword when
+   * absent). `'auto'` with no provider logs a downgrade once in index.ts.
    */
   recallMode: 'keyword' | 'auto'
   /**

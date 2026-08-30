@@ -846,6 +846,8 @@ export const DEFAULT_AUTO_REFINE: AutoRefineConfig = {
 interface AutoRefineState {
   turns: number
   lastRunMs: number
+  /** In-flight refine controller, so a new trigger can cancel a prior run. */
+  controller: AbortController | undefined
 }
 
 const AUTO_REFINE_META_FILE = '.auto-refine.json'
@@ -972,7 +974,7 @@ export function registerAutoRefine(
           const sessionId = payload.agent.id
           if (typeof sessionId !== 'string') return
 
-          const state = states.get(payload.agent) ?? { turns: 0, lastRunMs: 0 }
+          const state = states.get(payload.agent) ?? { turns: 0, lastRunMs: 0, controller: undefined }
           state.turns += 1
           states.set(payload.agent, state)
 
@@ -988,16 +990,30 @@ export function registerAutoRefine(
           await writeLastRun(dataDir, sessionId, now)
 
           const parent = payload.agent
+          // Cancel any in-flight refine from a prior trigger before starting a new one.
+          if (state.controller && !state.controller.signal.aborted) {
+            state.controller.abort()
+          }
+          const controller = new AbortController()
+          state.controller = controller
           let shouldRefine = false
           try {
-            const review = await reviewAutoRefine(ctx, sessionId, parent, provider, new AbortController().signal)
-            shouldRefine = review.shouldRefine
-          } catch {
+            const review = await reviewAutoRefine(ctx, sessionId, parent, provider, controller.signal)
+            if (typeof review.shouldRefine !== 'boolean') {
+              ctx.logger.warn(`[continual-harness] auto-refine review returned an unexpected shape; skipping (session ${sessionId})`)
+              shouldRefine = false
+            } else {
+              shouldRefine = review.shouldRefine
+            }
+          } catch (error) {
+            ctx.logger.warn(`[continual-harness] auto-refine review failed (session ${sessionId}): ${error instanceof Error ? error.message : String(error)}`)
             return // review failure is non-fatal; cooldown already stamped
           }
           if (!shouldRefine) return
           // Reuse the manual pipeline; its own CAS + validation guards apply.
-          await runRefine(ctx, sessionId, dataDir, parent, provider, new AbortController().signal, maxEvents).catch(() => undefined)
+          await runRefine(ctx, sessionId, dataDir, parent, provider, controller.signal, maxEvents).catch((error) => {
+            ctx.logger.warn(`[continual-harness] auto-refine run failed (session ${sessionId}): ${error instanceof Error ? error.message : String(error)}`)
+          })
         },
         { global: true },
       ),

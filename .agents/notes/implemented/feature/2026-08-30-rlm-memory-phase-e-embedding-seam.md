@@ -61,9 +61,10 @@ use any OpenAI-compatible embeddings endpoint:
   `embeddingsApiKey`/`embeddingsApiKeyEnv` (env key read via `process.env`), failing
   loud at load on any gap. When resolved, the `embeddingService` is conditionally
   wired into the tool as `hybridSearch` (`...(embeddingService ? { embeddingService }
-  : {})`) and into `consolidate` the same way. `recallMode` keeps its Phase B
-  meaning: `auto` now uses `hybridSearch` only when a provider is configured, and
-  still falls back to keyword (logging the downgrade once) when it is not.
+  : {})`) and into `consolidate` the same way. `recallMode` keeps its Phase B meaning
+  but is not a selector today: the path is driven by `embeddingService` present
+  (`hybridSearch` when a provider is configured, keyword otherwise), regardless of
+  `recallMode`. `recallMode: 'auto'` with no provider logs the downgrade once.
 - `tests/embedding.spec.ts` (6) + `tests/hybrid-search.spec.ts` (6): fake-service
   determinism/cosine ordering, external provider maps a fake OpenAI response and
   infers dim, correct `POST {base}/embeddings` with Bearer auth + model, fails loud
@@ -128,8 +129,9 @@ possible future optimization, mirroring the keyword index's derivability.
   cache is possible. The `index/embeddings/` store is stale-safe (per-hit `read` +
   publish-time write; retire deletes); the keyword index remains derived and the
   vector cache is a writable, optional companion.
-- The `recallMode: 'auto'` ambiguity from Phase B is now resolvable at runtime: a
-  configured provider makes it semantic, an absent one keeps it lexical (logged).
+- The `recallMode: 'auto'` ambiguity from Phase B is resolved in effect: the path is
+  set by the seam (`hybridSearch` whenever a provider is configured, keyword when
+  not); `recallMode: 'auto'` with no provider just logs a one-time downgrade.
 - Not yet done: `packages/core` has no native `Embedding`/vector Service, so the
   seam is the external provider until a native one ships; the plugin's own
   `EmbeddingService` interface is the intended migration point. Future dsh native

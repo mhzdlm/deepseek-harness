@@ -567,14 +567,14 @@ export class SessionKernelRegistry {
     if (manager) {
       this.kernels.delete(sessionId)
       this.pendingRestore.delete(sessionId)
-      void manager.dispose()
+      void manager.dispose().catch(error => console.warn('[rlm-kernel] kernel dispose failed:', error))
     }
     // A kernel still mid-provision must not be left to register after the
     // session is gone: drop the in-flight promise (so forSession's claim
     // check misses) and dispose the result once it materializes.
     const pending = this.inflight.get(sessionId)
     this.inflight.delete(sessionId)
-    if (pending) void pending.then(m => m.dispose()).catch(() => undefined)
+    if (pending) void pending.then(m => m.dispose()).catch(error => console.warn('[rlm-kernel] dispose of in-flight kernel failed:', error))
   }
 
   /**

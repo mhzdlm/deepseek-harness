@@ -309,8 +309,8 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
           model: request.route.model,
           // Archive copy only — the live scoring request above stays verbatim.
           userText: maskForArchive(request.userText),
-          rawText: out.text,
-          chosenLogprobs: out.logprobs,
+          rawText: maskForArchive(out.text),
+          chosenLogprobs: out.logprobs.map(e => ({ ...e, token: maskForArchive(e.token) })),
         })
         return out
       }
@@ -636,6 +636,9 @@ async function scorePairOnSeam(
         ra = extractScore(out.text, tokens, positions, '<score_A>')
         rb = extractScore(out.text, tokens, positions, '<score_B>')
       } catch {
+        // An abort in flight must terminate the tournament, not degrade into a
+        // neutral tie (REME.md § verification discipline, T6.13).
+        if (signal.aborted) throw new Error('verify scoring aborted')
         // on_error "tie": a failed call contributes a neutral 0.5/0.5 for this
         // repetition instead of failing the whole comparison. The failure is
         // still counted so the judge surfaces as degraded instead of silently

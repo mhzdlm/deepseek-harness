@@ -94,9 +94,9 @@ export interface Config {
  * (interpreter, data dir, idle/snapshot/reclaim bounds, and run fan-out caps).
  */
 export const Config: z<Config> = z.object({
-  python: z.string(),
+  python: z.string().min(1),
   dataDir: z.string(),
-  subagentProvider: z.string(),
+  subagentProvider: z.string().min(1),
   idleTimeoutMs: z.natural(),
   maxOutputChars: z.natural(),
   snapshotDebounceMs: z.natural(),
@@ -105,7 +105,7 @@ export const Config: z<Config> = z.object({
   maxLiveKernels: z.natural(),
   reclaimSnapshotGraceMs: z.natural(),
   maxChildrenPerSession: z.natural(),
-  maxRunPromptChars: z.natural(),
+  maxRunPromptChars: z.natural().min(1),
 })
 
 /**

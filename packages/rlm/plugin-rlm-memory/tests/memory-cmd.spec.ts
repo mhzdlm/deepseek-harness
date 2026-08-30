@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ensureMemoryDirs, writeDraft, type Note, type NoteFrontmatter } from '../src/storage.ts'
-import { listMemoryText, showMemoryText, deleteMemoryText } from '../src/memory-cmd.ts'
+import { listMemoryText, showMemoryText, deleteMemoryText, rollbackText } from '../src/memory-cmd.ts'
 
 const roots: string[] = []
 const tmp = (): string => {
@@ -81,6 +81,23 @@ describe('/memory delete', () => {
   it('refuses to delete outside drafts/ (published notes await Phase C)', () => {
     const dir = tmp()
     const out = deleteMemoryText(dir, join(dir, 'published', 'x.md'))
-    expect(out).toContain('not inside')
+    expect(out).toContain('not allowed')
+  })
+})
+
+describe('/memory argument sanitization', () => {
+  it('rejects draft names with path separators or ".."', () => {
+    const dir = tmp()
+    ensureMemoryDirs(dir)
+    expect(deleteMemoryText(dir, '../escape')).toContain('not allowed')
+    expect(deleteMemoryText(dir, 'a/b')).toContain('not allowed')
+    expect(deleteMemoryText(dir, '..')).toContain('not allowed')
+  })
+
+  it('rejects rollback noteIds that escape published/', async () => {
+    const dir = tmp()
+    ensureMemoryDirs(dir)
+    await expect(rollbackText(dir, '../../etc/passwd', false)).rejects.toThrow(/not allowed|\.\.|must resolve under published/)
+    await expect(rollbackText(dir, '/abs/note.md', false)).rejects.toThrow(/not allowed|absolute|must resolve under published/)
   })
 })

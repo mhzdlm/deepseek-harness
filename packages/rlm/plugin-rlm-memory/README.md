@@ -1,5 +1,7 @@
 # @deepseek-ai/dsh-plugin-rlm-memory
 
+English | [中文](README.zh.md)
+
 RLM cross-session memory layer — Phase A (write path) + Phase B (recall) + Phase C
 (evolution) + Phase D (retire/archive) + Phase E (embeddings seam). ReMe's
 file-authoritative form, the Continual Harness paper's evidence/audit discipline,
@@ -37,7 +39,7 @@ are resolved explicitly in `apply`, never hidden behind `??`.
 | `rootAgentsOnly` | boolean | `true` | Only root (non-subagent) sessions enter capture (REME.md §5.1 D5). |
 | `privacyFilter` | `'' \| display \| full` | `''` | `full` masks credential/PII-shaped material before the dialog jsonl lands; `display` is accepted but has no display surface in Phase A. |
 | `recallTopK` | natural | `5` | Default top-K returned by `memory_search` (REME.md §9/§10 Phase B acceptance). |
-| `recallMode` | `keyword \| auto` | `keyword` | Recall mode. Phase B ships only the keyword/BM25-ish implementation; `auto` is accepted but falls back to keyword (REME.md §12 open question 1 — no embeddings seam). |
+| `recallMode` | `keyword \| auto` | `keyword` | Recall mode. Accepted for Phase E (REME.md §12.1) but not a selector today: the path is driven by `embeddingsProvider` — `hybridSearch` when `external`, keyword otherwise. `auto` with no provider logs a one-time downgrade to keyword. |
 | `language` | string | `en` | Language for the session-start hint: `en` or `zh`. |
 | `gateMode` | `off \| observe \| enforce` | `observe` | Phase C publish gate (REME.md §5.3 D10): `off` no promotion (logged no-op); `observe` promotes every eligible draft, flagging gate `'observe'` (non-blocking even without a valid `source`); `enforce` promotes only drafts whose `source` locates in their `dialog` via `admitByEvidence` (REME.md §5.1 D6), rejecting the rest (they stay drafts with `rejected_at`/`rejection`). |
 | `maxPublishedNotes` | natural | `200` | Phase C growth budget: max `published/` notes before a NEW promotion is skipped (`observe`) or rejected (`enforce`) (REME.md §5.3 D2). |
@@ -91,7 +93,7 @@ D12, "retirement is reversible"); clears `retired_at` and re-enters the recall i
 <memoryDir>/
   published/<kind>/<slug>.md   # Phase B recall scope; search reads ONLY here (publish-gate semantics, REME.md §5.2 D8)
   drafts/<kind>/<slug>.md      # admitted draft notes (evidence-gated); not indexed by recall
-  archive/<kind>/<slug>.md     # Phase D retire target: moved (never deleted) published notes, reversible via /memory unretire (REME.md §5.4 D12)
+  archived/<kind>/<slug>.md    # Phase D retire target: moved (never deleted) published notes, reversible via /memory unretire (REME.md §5.4 D12)
   dialog/<sessionId>.jsonl     # sanitized captured conversation (tool results stripped)
   snapshots/<relPath>/<iso>.md # Phase C reverse-snapshot store; one timestamped prior version per published note, restored by /memory rollback (REME.md §5.3 D11)
   index/                       # keyword index is NOT persisted — rebuilt from published/ each call (REME.md §5.2). `index/embeddings/` IS written when `embeddingsProvider: 'external'`: one `<relPath>.json` cached vector per promoted note (Phase E, REME.md §12.1).
@@ -113,14 +115,6 @@ inside the cited `dialog/<id>.jsonl` (REME.md §5.1 D6).
   (never delete), gated by `exitMode` off|observe|enforce, with conservative defaults
   (exitMode:off, agingMinAgeDays:180, agingMinUseCount:1) so normal use never retires
   (REME.md §5.4 D12).
-
-## Commands
-
-`/memory list | show | delete` — `delete` is drafts-only by design (user-owned published
-notes are demoted only via reverse-snapshot rollback, never deleted). Phase B recall is
-exposed as the `memory_search` tool; Phase D retirement is exposed as `/memory retire`
-(move to `archive/`, reversible) and `/memory unretire`, plus `/memory archived` to list
-retired notes.
 
 ## Storage read path (Phase B)
 
@@ -175,11 +169,11 @@ agent loop. Recall does not reshape any other prefix.
   When `embeddingsProvider: 'external'` is configured with `embeddingsBaseURL`,
   `embeddingsModel`, and a key, `memory_search` blends cached cosine similarity with the
   keyword index (`hybridSearch`) and consolidation writes one vector per promoted note
-  under `index/embeddings/`. DeepSeek exposes no embeddings API, so the external provider
-  points at an OpenAI-compatible endpoint; `recallMode: 'auto'` without a configured
-  provider still falls back to keyword (logs the downgrade once). The seam is a Phase E
-  make-do: a future dsh-native `Embedding` capability (`packages/core`) should replace
-  `external` without touching call sites (REME.md §12.1).
+  under `index/embeddings/`. The blend runs whenever `external` is set (it is not gated by
+  `recallMode`); `recallMode: 'auto'` without a provider just logs the downgrade once.
+  DeepSeek exposes no embeddings API, so the external provider points at an OpenAI-compatible
+  endpoint. The seam is a Phase E make-do: a future dsh-native `Embedding` capability
+  (`packages/core`) should replace `external` without touching call sites (REME.md §12.1).
 - **Index rebuilt per call** — the keyword index is derived from `published/` on
   every `memory_search`; on a large knowledge base an incremental/maintained index
   (the `index/` dir reserved in layout) is a Phase C/D optimization, not a

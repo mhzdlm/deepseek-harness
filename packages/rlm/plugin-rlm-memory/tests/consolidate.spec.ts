@@ -136,4 +136,23 @@ describe('promoteDraft direct', () => {
     const snapDir = join(dir, 'snapshots', 'published', 'personal')
     expect(existsSync(snapDir)).toBe(true)
   })
+
+  it('reverse-snapshots an existing published note before overwrite (slug collision, dedup target)', async () => {
+    const dir = tmp()
+    ensureMemoryDirs(dir)
+    // Pre-existing published note (version 1) at a distinct slug so the dedup path is exercised.
+    const seed = writePublished(dir, draftNote('turn:0', '# Deployment notes\n10.0.0.7 and 10.0.0.8 are the servers'))
+    const targetPath = seed
+    // Draft shares most tokens but carries a DISTINCT source slug (turn:42).
+    const path = writeDraft(dir, draftNote('turn:42', '# Deployment notes\n10.0.0.7 and 10.0.0.8 are the servers updated today'), 'sess-1', 'Deployment notes')
+    const decision = await promoteDraft(dir, path, OBSERVE)
+    expect(decision.kind).toBe('promote')
+    const after = listPublished(dir)
+    // Dedup must overwrite the existing note, NOT write a second file derived from the draft slug.
+    expect(after.length).toBe(1)
+    expect(after[0]).toBe(targetPath)
+    const note = parseNote(after[0]!)
+    expect(note!.body).toContain('updated today')
+    expect(note!.frontmatter.version).toBe(2)
+  })
 })

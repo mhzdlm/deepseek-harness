@@ -21,9 +21,11 @@
 #
 # This composition is self-contained: it mounts the rlm-stack group, goal,
 # compaction, and schedule exactly like the plain `rlm` preset, plus
-# `plugin-rlm-loop`. The five `@deepseek-ai/dsh-plugin-rlm-*` packages must
-# be present in the loader's resolution closure (they are added to
-# apps/cli/package.json so the shipped CLI can assemble this preset).
+# `plugin-rlm-loop`. The five `@deepseek-ai/dsh-plugin-rlm-*` packages
+# (kernel, verifier, moa, compaction, loop — `plugin-rlm-memory` is
+# intentionally not mounted here) must be present in the loader's resolution
+# closure (they are added to apps/cli/package.json so the shipped CLI can
+# assemble this preset).
 
 # ── identity: the manager protocol ──────────────────────────────────────────
 

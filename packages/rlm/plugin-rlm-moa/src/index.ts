@@ -100,8 +100,8 @@ export const Config: z<Config> = z.object({
   defaultPreset: z.string(),
   privacyFilter: z.string(),
   trace: z.boolean(),
-  subagentProvider: z.string(),
-  maxChildChars: z.natural(),
+  subagentProvider: z.string().min(1),
+  maxChildChars: z.natural().min(1),
 })
 
 /**
