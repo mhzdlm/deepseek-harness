@@ -1,0 +1,77 @@
+/**
+ * Render the harness state into a system-prompt section. Budget-truncated per
+ * kind (newest first) so a large harness cannot blow the prompt. The defaults
+ * mirror prime-agent's injected-overview hints-only philosophy
+ * (`DEFAULT_OVERVIEW_ENTRY_LIMIT=6` / `CONTENT_LIMIT=180`): surface only
+ * routing hints, forcing the model to read the underlying entry on demand
+ * (`/harness show <id>`) rather than dumping the whole harness into context.
+ *
+ * FIX-10: budgets are enforced at two levels — per-entry content length and a
+ * total character ceiling for the whole section — so a single oversized entry
+ * cannot inflate every assembled prompt (the old cap counted entries only).
+ * FIX-2: every rendered line carries a short id prefix so the agent (and the
+ * /refine proposal prompt) can reference entries for update/delete.
+ * @module @deepseek-ai/dsh-plugin-continual-harness
+ */
+import { HARNESS_KINDS } from "./harness-file.js";
+const KIND_HEADINGS = {
+    prompt: '## Persistent instructions',
+    memory: '## Memories',
+    skill: '## Skills',
+    subagent: '## Subagents',
+};
+/**
+ * Render the harness state into a system-prompt section, budget-truncated per
+ * kind (newest first) so a large harness cannot blow the prompt.
+ *
+ * @param state - The harness state file whose entries are rendered.
+ * @param options - Truncation and character-budget controls.
+ * @returns The assembled, budget-truncated overview string.
+ */
+export function renderHarnessOverview(state, options = {}) {
+    // Hints-only budget aligned with prime-agent's injected overview
+    // (6 entries / 180 chars / bounded total); the model reads full entries on
+    // demand, so the per-turn injected section stays a routing index, not a dump.
+    const max = options.maxEntriesPerKind ?? 6;
+    const maxCharsPerEntry = options.maxCharsPerEntry ?? 180;
+    const maxTotalChars = options.maxTotalChars ?? 6_000;
+    const lines = [];
+    let totalChars = 0;
+    outer: for (const kind of HARNESS_KINDS) {
+        const entries = state.entries[kind];
+        if (!entries)
+            continue;
+        const sorted = Object.values(entries).sort((a, b) => String(b.updated_at ?? b.created_at).localeCompare(String(a.updated_at ?? a.created_at)));
+        if (sorted.length === 0)
+            continue;
+        const heading = KIND_HEADINGS[kind];
+        totalChars += heading.length + 1;
+        if (totalChars > maxTotalChars)
+            break;
+        lines.push(heading);
+        const shown = sorted.slice(0, max);
+        for (const entry of shown) {
+            const scoped = entry.scope === 'global' ? ' [global]' : '';
+            // FIX-10: truncate content per entry so one huge memory can't blow
+            // the prompt; the title and id prefix always stay visible.
+            const content = entry.content.length > maxCharsPerEntry
+                ? entry.content.slice(0, maxCharsPerEntry) + '…'
+                : entry.content;
+            // FIX-2: expose a short id prefix so the agent (and the /refine
+            // proposal prompt) can reference entries for update/delete.
+            const line = `- [${entry.id.slice(0, 8)}] ${entry.title}${scoped}: ${content}`;
+            if (totalChars + line.length > maxTotalChars) {
+                lines.push('- … remaining entries omitted (char budget)');
+                break outer;
+            }
+            lines.push(line);
+            totalChars += line.length + 1;
+        }
+        if (sorted.length > shown.length) {
+            lines.push(`- … ${sorted.length - shown.length} more entries omitted`);
+            totalChars += 24;
+        }
+    }
+    return lines.join('\n');
+}
+//# sourceMappingURL=prompt.js.map

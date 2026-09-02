@@ -106,6 +106,14 @@ export function mapStopReason(message: AssistantMessage, contextWindow?: number)
   }
 
   switch (message.stopReason) {
+    case 'pending': return {
+      kind: 'error',
+      failure: { message: `pi-ai stream for model "${message.model}" ended pending`, code: 'PI_AI_ERROR' },
+    }
+    case 'deferred': return {
+      kind: 'error',
+      failure: { message: `pi-ai deferred response for model "${message.model}" is not supported`, code: 'PI_AI_ERROR' },
+    }
     case 'stop':
       // A terminal stop that produced no content blocks is a degenerate
       // provider completion, not a successful (empty) assistant message.
@@ -144,6 +152,7 @@ export function mapStopReason(message: AssistantMessage, contextWindow?: number)
 export async function* toStreamChunks(
   events: AsyncIterable<AssistantMessageEvent>,
   contextWindow?: number,
+  callerSignal?: AbortSignal,
 ): AsyncGenerator<StreamChunk> {
   // pi-ai contentIndex ↔ our block index map 1:1 (both count blocks from 0
   // in stream order), but we track ids per index for tool calls.
@@ -217,7 +226,13 @@ export async function* toStreamChunks(
         // In-stream error delivery (pi-ai's style) → error finish chunk
         // (the harness's other sanctioned error path besides throwing).
         yield { type: 'usage', usage: mapUsage(event.error.usage) }
-        yield { type: 'finish', reason: mapStopReason(event.error, contextWindow) }
+        yield {
+          type: 'finish',
+          reason: mapStopReason(
+            callerSignal?.aborted ? { ...event.error, stopReason: 'aborted' } : event.error,
+            contextWindow,
+          ),
+        }
         return
       // no default: AssistantMessageEvent is pi-ai's closed union; a new
       // event type should fail compilation here via tsc's exhaustiveness

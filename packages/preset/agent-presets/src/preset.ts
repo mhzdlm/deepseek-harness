@@ -1,6 +1,5 @@
 /** Agent-preset vocabulary shared by discovery, mounting, and consumers. */
 
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ModuleResolver } from './discovery.ts'
 
 /**
