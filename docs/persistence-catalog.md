@@ -659,105 +659,6 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 
 Source: [`packages/core/session/src/types.ts:319`](../packages/core/session/src/types.ts)
 
-<a id="sessionkernel-snapshot--log-only"></a>
-
-#### `session/kernel-snapshot` — log-only
-
-```ts persistence-catalog
-/** Log-only record of one kernel dill snapshot flush. */
-'session/kernel-snapshot': KernelSnapshotEventData
-```
-
-Source: [`packages/rlm/plugin-rlm-kernel/src/events.ts:69`](../packages/rlm/plugin-rlm-kernel/src/events.ts)
-
-<a id="sessionloop-round-done--log-only"></a>
-
-#### `session/loop-round-done` — log-only
-
-```ts persistence-catalog
-/** Log-only record of one recorded loop round. */
-'session/loop-round-done': LoopRoundDoneEventData
-```
-
-Source: [`packages/rlm/plugin-rlm-loop/src/events.ts:49`](../packages/rlm/plugin-rlm-loop/src/events.ts)
-
-<a id="sessionloop-start--log-only"></a>
-
-#### `session/loop-start` — log-only
-
-```ts persistence-catalog
-/** Log-only record of one loop run start. */
-'session/loop-start': LoopStartEventData
-```
-
-Source: [`packages/rlm/plugin-rlm-loop/src/events.ts:47`](../packages/rlm/plugin-rlm-loop/src/events.ts)
-
-<a id="sessionmemory-captured--log-only"></a>
-
-#### `session/memory-captured` — log-only
-
-```ts persistence-catalog
-/**
- * Log-only record that the memory plugin captured a completed session:
- * wrote `dialog/<sessionId>.jsonl` and landed zero or more admission-gated
- * draft notes. Carries the dialog turn count and the number of drafts the
- * evidence gate admitted, so a reader can reconstruct what was memorized
- * without reopening the memory store.
- * @param sessionId - the captured session id (the dialog jsonl basename).
- * @param dialogTurns - turns written to the sanitized dialog jsonl.
- * @param draftsAdmitted - draft notes the evidence gate admitted.
- * @param extractionRan - whether the extraction subagent returned a proposal.
- * @param draftChars - total characters across admitted draft bodies.
- */
-'session/memory-captured': MemoryCapturedEventData
-```
-
-Source: [`packages/rlm/plugin-rlm-memory/src/events.ts:55`](../packages/rlm/plugin-rlm-memory/src/events.ts)
-
-<a id="sessionmemory-recall-inject--log-only"></a>
-
-#### `session/memory-recall-inject` — log-only
-
-```ts persistence-catalog
-/** Log-only record of one recall-injection evaluation at harness section render. */
-'session/memory-recall-inject': MemoryRecallInjectEventData
-```
-
-Source: [`packages/rlm/plugin-continual-harness/src/events.ts:37`](../packages/rlm/plugin-continual-harness/src/events.ts)
-
-<a id="sessionmoa-reference--log-only"></a>
-
-#### `session/moa-reference` — log-only
-
-```ts persistence-catalog
-/** Log-only record of one settled moa reference slot. */
-'session/moa-reference': MoaReferenceEventData
-```
-
-Source: [`packages/rlm/plugin-rlm-moa/src/events.ts:45`](../packages/rlm/plugin-rlm-moa/src/events.ts)
-
-<a id="sessionmoa-synthesis--log-only"></a>
-
-#### `session/moa-synthesis` — log-only
-
-```ts persistence-catalog
-/** Log-only record of one moa aggregation result. */
-'session/moa-synthesis': MoaSynthesisEventData
-```
-
-Source: [`packages/rlm/plugin-rlm-moa/src/events.ts:47`](../packages/rlm/plugin-rlm-moa/src/events.ts)
-
-<a id="sessionsubcall-query--log-only"></a>
-
-#### `session/subcall-query` — log-only
-
-```ts persistence-catalog
-/** Log-only record of one `llm.query` subcall batch (the §5 evaluation data source). */
-'session/subcall-query': SubcallQueryEventData
-```
-
-Source: [`packages/rlm/plugin-rlm-kernel/src/events.ts:71`](../packages/rlm/plugin-rlm-kernel/src/events.ts)
-
 <a id="sessiontitle--log-only"></a>
 
 #### `session/title` — log-only
@@ -786,28 +687,6 @@ Source: [`packages/session/session-title/src/index.ts:76`](../packages/session/s
 Types: [SessionTitleLlmRequestEventData](subsystems/session-title.md)
 
 Source: [`packages/session/session-title-llm/src/index.ts:44`](../packages/session/session-title-llm/src/index.ts)
-
-<a id="sessionverify-request--log-only"></a>
-
-#### `session/verify-request` — log-only
-
-```ts persistence-catalog
-/** Log-only pre-dispatch record of one verify run. */
-'session/verify-request': VerifyRequestEventData
-```
-
-Source: [`packages/rlm/plugin-rlm-verifier/src/events.ts:69`](../packages/rlm/plugin-rlm-verifier/src/events.ts)
-
-<a id="sessionverify-result--log-only"></a>
-
-#### `session/verify-result` — log-only
-
-```ts persistence-catalog
-/** Log-only post-settlement record of one verify run. */
-'session/verify-result': VerifyResultEventData
-```
-
-Source: [`packages/rlm/plugin-rlm-verifier/src/events.ts:71`](../packages/rlm/plugin-rlm-verifier/src/events.ts)
 
 ### `session-log-deepseek/*`
 

@@ -3,4 +3,4 @@
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-30-rlm-phase6-hardening-batch.md
 2026-08-30-rlm-phase6-hardening-batch.md: ede30d1df31eabba62266d0e22868fb22f05e5eb
-2026-08-30-rlm-phase6-hardening-batch.zh.md: 4728d9d3d16d2f484b69a68984310cb9bb22c36a
+2026-08-30-rlm-phase6-hardening-batch.zh.md: 9305c91ef1b256eedcae227e4c50adb3a495ddc7
