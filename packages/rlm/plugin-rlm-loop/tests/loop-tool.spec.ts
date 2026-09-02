@@ -1,7 +1,13 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
+/**
+ * Loop tool tests against the unified store (Phase A authority flip): begin /
+ * record write action boundaries and check judgments; only clean audits land
+ * beliefs; the store view (beliefs + actions) rebuilds exactly.
+ */
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { withBaseCriteria, RlmStore } from '@deepseek-ai/dsh-plugin-rlm-store'
 import { createLoopTool, type LoopToolResult } from '../src/loop-tool.ts'
 
 const CLEAN_REPORT = [
@@ -20,63 +26,60 @@ const DIRTY_REPORT = [
   'Missing: the report file.',
 ].join('\n')
 
-interface RecordedEvent {
-  name: string
-  payload: unknown
-}
+let root: string
 
-function fakeExec(events: RecordedEvent[]) {
+beforeEach(async () => {
+  root = await mkdtemp(path.join(tmpdir(), 'loop-tool-'))
+})
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true })
+})
+
+function fakeExec(sid = 'sess-loop-1') {
   return {
-    agent: {
-      session: {
-        id: 'sess-loop-1',
-        append: (name: string, payload: unknown) => {
-          events.push({ name, payload })
-        },
-      },
-    },
+    agent: { session: { id: sid } },
     signal: new AbortController().signal,
   }
 }
 
-async function call(tool: { execute: unknown }, args: Record<string, unknown>, events: RecordedEvent[]): Promise<LoopToolResult> {
+async function call(
+  tool: { execute: unknown },
+  args: Record<string, unknown>,
+  sid = 'sess-loop-1',
+): Promise<LoopToolResult> {
   const execute = tool.execute as unknown as
     (args: Record<string, unknown>, exec: unknown) => Promise<LoopToolResult>
-  return execute(args, fakeExec(events))
+  return execute(args, fakeExec(sid))
 }
 
-function harnessState(tmpDir: string): string {
-  const file = join(tmpDir, 'session-artifacts', 'sess-loop-1', 'harness', 'harness_state.json')
-  return readFileSync(file, 'utf8')
-}
-
-describe('loop tool', () => {
-  it('begin opens a run and lands the contract as a memory entry', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'loop-tool-'))
-    const events: RecordedEvent[] = []
-    const tool = createLoopTool({ dataDir: dir, maxRounds: 8 })
+describe('loop tool (store authority)', () => {
+  it('begin appends an action boundary carrying task + contract', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
 
     const result = await call(tool, {
       action: 'begin',
       task: 'Write the report file.',
       contract: 'Report exists at report.md with three sections.',
-    }, events)
+    })
 
     expect(result.runId).toMatch(/^loop_/)
     expect(result.text).toContain('opened')
-    expect(events).toHaveLength(1)
-    expect(events[0]?.name).toBe('session/loop-start')
-    const state = harnessState(dir)
-    expect(state).toContain('"memory"')
-    expect(state).toContain(`${result.runId}/contract`)
-    expect(state).toContain('plugin-rlm-loop')
+    const view = store.view({ kind: 'session', id: 'sess-loop-1' })
+    expect(view.seq).toBe(1)
+    expect(view.actions).toHaveLength(1)
+    expect(view.actions[0]?.payload).toMatchObject({
+      action: 'loop-begin',
+      runId: result.runId,
+      task: 'Write the report file.',
+      contract: 'Report exists at report.md with three sections.',
+    })
   })
 
-  it('record lands verified progress only for a clean audit', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'loop-tool-'))
-    const events: RecordedEvent[] = []
-    const tool = createLoopTool({ dataDir: dir, maxRounds: 8 })
-    const begin = await call(tool, { action: 'begin', task: 't', contract: 'c' }, events)
+  it('record lands a check judgment; a clean audit with a note becomes a belief', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
+    const begin = await call(tool, { action: 'begin', task: 't', contract: 'c' })
 
     const good = await call(tool, {
       action: 'record',
@@ -84,60 +87,35 @@ describe('loop tool', () => {
       route: 'cli',
       audit_report: CLEAN_REPORT,
       progress_note: 'report.md exists with the agreed sections.',
-    }, events)
+    })
 
     expect(good.accepted).toBe(true)
     expect(good.landed).toBe(true)
     expect(good.status).toBe('complete')
-    const state = harnessState(dir)
-    expect(state).toContain(`${begin.runId}/round_002`)
-    expect(state).toContain('[Verified via audit round 2: complete/clean/aligned]')
 
-    const done = await call(tool, {
-      action: 'record',
-      round: 3,
-      route: 'done',
-      audit_report: CLEAN_REPORT.replace('aligned', 'unknown'),
-      progress_note: 'ignored',
-    }, events)
-
-    expect(done.accepted).toBe(false)
-    expect(done.landed).toBe(false)
-    expect(done.text).toContain('Route done REJECTED')
-    expect(done.text).not.toContain('VERIFIED progress')
-
-    const roundEvents = events.filter(e => e.name === 'session/loop-round-done')
-    expect(roundEvents).toHaveLength(2)
-    expect(roundEvents[0]?.payload).toMatchObject({ accepted: true, landed: true })
-    expect(roundEvents[1]?.payload).toMatchObject({ accepted: false, landed: false, route: 'done' })
+    const scope = { kind: 'session' as const, id: 'sess-loop-1' }
+    const beliefs = store.beliefs(scope)
+    expect(beliefs).toHaveLength(1)
+    expect(beliefs[0]).toMatchObject({
+      kind: 'procedural',
+      grade: 'provisional',
+      status: 'active',
+      criterionRef: 'crit/loop-three-line-header',
+      content: 'report.md exists with the agreed sections.',
+      subject: begin.runId,
+      lastVerified: { channel: 'loop-three-line-header' },
+    })
+    // Provenance anchors the judgment to the run: [begin boundary, record boundary].
+    const judgment = store.view(scope).countsByType['rlm/judgment']
+    expect(judgment).toBe(1)
+    expect(store.view(scope).seq).toBe(3) // begin + record boundary + judgment
+    expect(store.view(scope).actions).toHaveLength(2) // begin + record boundaries
   })
 
-  it('record refuses an unparseable header instead of guessing', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'loop-tool-'))
-    const events: RecordedEvent[] = []
-    const tool = createLoopTool({ dataDir: dir, maxRounds: 8 })
-    await call(tool, { action: 'begin', task: 't' }, events)
-
-    const result = await call(tool, {
-      action: 'record',
-      round: 1,
-      route: 'cli',
-      audit_report: 'Looks fine to me!',
-      progress_note: 'nope',
-    }, events)
-
-    expect(result.accepted).toBe(false)
-    expect(result.status).toBe('unparsed')
-    expect(result.text).toContain('three-line header')
-    expect(() => harnessState(dir)).toThrowError()
-  })
-
-  it('a dirty verdict never becomes progress even with a note', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'loop-tool-'))
-    const events: RecordedEvent[] = []
-    const tool = createLoopTool({ dataDir: dir, maxRounds: 8 })
-    const begin = await call(tool, { action: 'begin', task: 't', contract: 'c' }, events)
-    const before = harnessState(dir)
+  it('a dirty verdict lands check-doubt and never becomes a belief', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
+    await call(tool, { action: 'begin', task: 't', contract: 'c' })
 
     const result = await call(tool, {
       action: 'record',
@@ -145,134 +123,152 @@ describe('loop tool', () => {
       route: 'cli',
       audit_report: DIRTY_REPORT,
       progress_note: 'should not land',
-    }, events)
+    })
 
     expect(result.accepted).toBe(false)
-    expect(harnessState(dir)).toBe(before)
-    expect(harnessState(dir)).not.toContain(`${begin.runId}/round_001`)
+    expect(result.landed).toBe(false)
+    expect(result.text).toContain('NOT trusted')
+    const scope = { kind: 'session' as const, id: 'sess-loop-1' }
+    expect(store.beliefs(scope)).toHaveLength(0)
+    // The check-doubt still landed as a judgment event — density accounting
+    // never mistakes a rejection for absence.
+    expect(store.view(scope).countsByType['rlm/judgment']).toBe(1)
   })
 
-  it('status summarizes recorded rounds; record before begin throws', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'loop-tool-'))
-    const events: RecordedEvent[] = []
-    const tool = createLoopTool({ dataDir: dir, maxRounds: 8 })
+  it('record refuses an unparseable header before writing anything', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
+    await call(tool, { action: 'begin', task: 't' })
 
-    await expect(call(tool, {
-      action: 'record', round: 1, route: 'cli', audit_report: CLEAN_REPORT,
-    }, events)).rejects.toThrow(/no active run/i)
+    const result = await call(tool, {
+      action: 'record',
+      round: 1,
+      route: 'cli',
+      audit_report: 'Looks fine to me!',
+      progress_note: 'nope',
+    })
 
-    await call(tool, { action: 'begin', task: 'Summarize files.', contract: 'c' }, events)
+    expect(result.accepted).toBe(false)
+    expect(result.status).toBe('unparsed')
+    expect(result.text).toContain('three-line header')
+    // Nothing trusted, nothing written past the begin boundary.
+    expect(store.view({ kind: 'session', id: 'sess-loop-1' }).seq).toBe(1)
+  })
+
+  it('duplicate rounds are refused without a second judgment', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
+    await call(tool, { action: 'begin', task: 't', contract: 'c' })
     await call(tool, {
       action: 'record', round: 1, route: 'cli', audit_report: CLEAN_REPORT,
-      progress_note: 'ok facts',
-    }, events)
+      progress_note: 'facts once',
+    })
 
-    const status = await call(tool, { action: 'status' }, events)
-    expect(status.text).toContain('1 recorded rounds')
-    expect(status.text).toContain('1 verified')
+    const again = await call(tool, {
+      action: 'record', round: 1, route: 'cli', audit_report: CLEAN_REPORT,
+      progress_note: 'facts twice',
+    })
+
+    expect(again.status).toBe('duplicate')
+    expect(store.beliefs({ kind: 'session', id: 'sess-loop-1' })).toHaveLength(1)
   })
 
-  it('clean verdict without a note warns that nothing landed', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'loop-tool-'))
-    const events: RecordedEvent[] = []
-    const tool = createLoopTool({ dataDir: dir, maxRounds: 8 })
-    await call(tool, { action: 'begin', task: 't', contract: 'c' }, events)
+  it('a clean verdict without a note warns that nothing landed', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
+    await call(tool, { action: 'begin', task: 't', contract: 'c' })
 
     const result = await call(tool, {
       action: 'record', round: 1, route: 'cli', audit_report: CLEAN_REPORT,
-    }, events)
+    })
 
     expect(result.accepted).toBe(true)
     expect(result.landed).toBe(false)
     expect(result.text).toContain('no progress_note given')
+    // check-pass landed as an event; no belief without a note.
+    expect(store.beliefs({ kind: 'session', id: 'sess-loop-1' })).toHaveLength(0)
+    expect(store.view({ kind: 'session', id: 'sess-loop-1' }).countsByType['rlm/judgment']).toBe(1)
   })
 
-  it('emits the round-done event with the full verdict payload', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'loop-tool-'))
-    const events: RecordedEvent[] = []
-    const tool = createLoopTool({ dataDir: dir, maxRounds: 8 })
-    await call(tool, { action: 'begin', task: 'Ship the thing.', contract: 'It ships.' }, events)
+  it('route done is rejected unless the audit is clean', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
+    await call(tool, { action: 'begin', task: 't', contract: 'c' })
 
-    await call(tool, {
-      action: 'record', round: 2, route: 'cli', audit_report: CLEAN_REPORT,
-      progress_note: 'file verified on disk',
-    }, events)
-
-    expect(events.map(e => e.name)).toEqual(['session/loop-start', 'session/loop-round-done'])
-    const start = (events[0] as { payload: Record<string, unknown> }).payload
-    expect(start).toMatchObject({ runId: expect.stringMatching(/^loop_/), taskChars: 15, contractChars: 9 })
-
-    const done = (events[1] as { payload: Record<string, unknown> }).payload
-    expect(done).toMatchObject({
-      runId: (events[0] as { payload: { runId: string } }).payload.runId,
-      round: 2,
-      route: 'cli',
-      status: 'complete',
-      integrity: 'clean',
-      contractAudit: 'aligned',
-      accepted: true,
-      landed: true,
-      noteChars: 'file verified on disk'.length,
+    const done = await call(tool, {
+      action: 'record', round: 3, route: 'done',
+      audit_report: CLEAN_REPORT.replace('aligned', 'unknown'),
+      progress_note: 'ignored',
     })
+
+    expect(done.accepted).toBe(false)
+    expect(done.text).toContain('Route done REJECTED')
+    expect(done.text).not.toContain('VERIFIED progress')
   })
 
-  it('an event-persistence failure never fails the recording itself', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'loop-tool-'))
-    const tool = createLoopTool({ dataDir: dir, maxRounds: 8 })
-    const brokenExec = {
-      agent: {
-        session: {
-          id: 'sess-loop-broken',
-          append: () => {
-            throw new Error('session log unavailable')
-          },
-        },
-      },
-      signal: new AbortController().signal,
-    }
-    const execute = tool.execute as unknown as
-      (args: Record<string, unknown>, exec: unknown) => Promise<LoopToolResult>
+  it('status summarizes recorded rounds; record before begin throws', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
 
-    const begin = await execute({ action: 'begin', task: 't', contract: 'c' }, brokenExec)
-    expect(begin.runId).toMatch(/^loop_/)
+    await expect(call(tool, {
+      action: 'record', round: 1, route: 'cli', audit_report: CLEAN_REPORT,
+    })).rejects.toThrow(/no active run/i)
 
-    const record = await execute({
-      action: 'record', round: 1, route: 'done', audit_report: CLEAN_REPORT,
-      progress_note: 'verified facts',
-    }, brokenExec)
-    // The trust gate and harness landing still run; only the event is lost.
-    expect(record.accepted).toBe(true)
-    expect(record.landed).toBe(true)
+    await call(tool, { action: 'begin', task: 'Summarize files.', contract: 'c' })
+    await call(tool, {
+      action: 'record', round: 1, route: 'cli', audit_report: CLEAN_REPORT,
+      progress_note: 'ok facts',
+    })
+
+    const status = await call(tool, { action: 'status' })
+    expect(status.text).toContain('1 recorded rounds')
+    expect(status.text).toContain('1 verified')
   })
 
-  it('begin supersedes the previous run while durable facts remain', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'loop-tool-'))
-    const events: RecordedEvent[] = []
-    const tool = createLoopTool({ dataDir: dir, maxRounds: 8 })
+  it('a second begin replaces the live run; both runs stay in the stream', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
 
-    const first = await call(tool, { action: 'begin', task: 'first task', contract: 'c1' }, events)
+    const first = await call(tool, { action: 'begin', task: 'first task', contract: 'c1' })
     await call(tool, {
       action: 'record', round: 1, route: 'cli', audit_report: CLEAN_REPORT,
       progress_note: 'round one facts',
-    }, events)
+    })
 
-    const second = await call(tool, { action: 'begin', task: 'second task', contract: 'c2' }, events)
+    const second = await call(tool, { action: 'begin', task: 'second task', contract: 'c2' })
     expect(second.runId).not.toBe(first.runId)
     expect(second.text).toContain(`Previous run ${first.runId} (1 recorded rounds) is replaced`)
 
-    // The new run starts with an empty round ledger.
-    const status = await call(tool, { action: 'status' }, events)
+    const status = await call(tool, { action: 'status' })
     expect(status.text).toContain('0 recorded rounds')
-    expect(status.text).toContain('second task')
 
-    // Round numbering restarts under the new run id; the old entry id is never reused.
-    const record = await call(tool, {
+    const scope = { kind: 'session' as const, id: 'sess-loop-1' }
+    const begins = store.view(scope).actions.filter(a => (a.payload as { action?: string }).action === 'loop-begin')
+    expect(begins).toHaveLength(2)
+    // The first run's belief stays durable in the stream — replaced runs do
+    // not retroactively lose their verified progress.
+    expect(store.beliefs(scope)).toHaveLength(1)
+    expect(store.beliefs(scope)[0]?.subject).toBe(first.runId)
+  })
+
+  it('the store view (beliefs + actions) rebuilds exactly after loop activity', async () => {
+    const store = withBaseCriteria(new RlmStore(root))
+    const tool = createLoopTool({ store, maxRounds: 8 })
+    await call(tool, { action: 'begin', task: 'rebuild me', contract: 'contract text' })
+    await call(tool, {
       action: 'record', round: 1, route: 'cli', audit_report: CLEAN_REPORT,
-      progress_note: 'fresh run facts',
-    }, events)
-    expect(record.runId).toBe(second.runId)
-    const state = harnessState(dir)
-    expect(state).toContain(`${first.runId}/round_001`)
-    expect(state).toContain(`${second.runId}/round_001`)
+      progress_note: 'durable facts',
+    })
+    await call(tool, {
+      action: 'record', round: 2, route: 'cli', audit_report: DIRTY_REPORT,
+      progress_note: 'not trusted',
+    })
+
+    const before = store.view({ kind: 'session', id: 'sess-loop-1' })
+    const store2 = withBaseCriteria(new RlmStore(root))
+    const after = await store2.ensureLoaded({ kind: 'session', id: 'sess-loop-1' })
+    expect(after.beliefs).toEqual(before.beliefs)
+    expect(after.actions).toEqual(before.actions)
+    expect(after.seq).toBe(before.seq)
   })
 })

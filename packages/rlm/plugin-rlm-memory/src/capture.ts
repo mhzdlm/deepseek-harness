@@ -31,8 +31,12 @@ export interface CaptureBufferEntry {
  * @param nowIso - ISO timestamp for created/updated/last_accessed.
  * @returns the frontmatter block for a fresh observe/pass draft.
  */
-function draftFrontmatter(sessionId: string, source: string, nowIso: string): NoteFrontmatter {
+function draftFrontmatter(sessionId: string, source: string, nowIso: string, title?: string): NoteFrontmatter {
   return {
+    // Phase 10 (T6.19): the model-generated title lands in the frontmatter.
+    // It used to be validated and then dropped — the draft slug came from the
+    // body — so the extractor's most human-readable field was thrown away.
+    ...(title !== undefined && title.length > 0 ? { title } : {}),
     kind: 'personal',
     scope: 'session',
     session_id: sessionId,
@@ -84,7 +88,7 @@ export function parseExtractionProposal(proposalText: string, sessionId: string)
     if (typeof title !== 'string' || typeof body !== 'string') continue
     const allowedKind = kind === 'procedure' || kind === 'wiki' ? kind : 'personal'
     notes.push({
-      frontmatter: { ...draftFrontmatter(sessionId, source, nowIso), kind: allowedKind },
+      frontmatter: { ...draftFrontmatter(sessionId, source, nowIso, title), kind: allowedKind },
       body,
     })
   }
@@ -131,10 +135,10 @@ export function persistCapture(
 /**
  * Run the extraction subagent for one completed session. Spawns a host-owned
  * non-reasoning child (provider `'spawn'`) whose parent is the captured
- * session's owning Agent, following the moa/verifier subagent-call shape. The
- * call is best-effort: any failure resolves to `[]` so the durable dialog still
- * lands. Extra subagent request fields are NOT added (REME.md Phase A: keep the
- * call minimal — `{ prompt, parent, signal }`).
+ * session's owning Agent, following the moa/verifier subagent-call shape. An
+ * empty dialog resolves to `[]` without spawning; anything else is
+ * fail-loud — see `@returns`. Extra subagent request fields are NOT added
+ * (REME.md Phase A: keep the call minimal — `{ prompt, parent, signal }`).
  * @param subagents - the `ctx.subagents` runtime.
  * @param parent - the captured session's owning Agent (the extraction parent).
  * @param sessionId - the captured session id.
@@ -142,10 +146,11 @@ export function persistCapture(
  * @param signal - caller cancellation.
  * @param timeoutMs - wall-clock budget for the child's run (default 120_000); an
  * expired budget aborts the child.
- * @returns the candidate notes; `[]` when the dialog is empty or extraction
- * found nothing. A child failure (spawn error, rejected run) is rethrown — a
- * failed extraction must be auditable as a failure, never reads as "nothing to
- * extract".
+ * @returns the candidate notes; `[]` only when the dialog is empty or
+ * extraction found nothing. A child failure (spawn error, rejected run) is
+ * rethrown — a failed extraction must be auditable as a failure, never reads
+ * as "nothing to extract" (the runCapture caller catches, warns, and records
+ * `extractionRan: false`; the dialog still lands).
  */
 export async function extractDrafts(
   subagents: SubagentRuntime,

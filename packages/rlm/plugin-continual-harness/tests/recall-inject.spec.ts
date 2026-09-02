@@ -72,6 +72,7 @@ function makeSectionHarness(config: Record<string, unknown>, messages: FakeMsg[]
   }
   const ctx = {
     effect: (fn: () => unknown) => fn(),
+    get: (_key: string) => undefined,
     systemPrompt: {
       section: (spec: { text: (context: unknown) => string }) => {
         render = spec.text

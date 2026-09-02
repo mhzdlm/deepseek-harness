@@ -2,12 +2,13 @@
  * Continual harness plugin.
  *
  * Injects the harness overview (persistent instructions / memories / skills /
- * subagents) into every assembled system prompt and provides `/refine` (and
- * `/refine-rollback`) for evidence-backed, reversible harness updates.
- *
- * Harness state is the file written by the kernel runtime
- * (`harness.py`), shared with `@deepseek-ai/dsh-plugin-rlm-kernel` via the
- * same `<dataDir>/session-artifacts/<sessionId>/harness` layout.
+ * subagents) into every assembled system prompt. Since the Phase A authority
+ * flip (BUILD.md) the local `harness_state.json` is a PROJECTION of the
+ * session's unified-store view: producers write the store, the change
+ * listener here re-renders the file, and the prompt renderer reads it
+ * synchronously as before. `/refine` is frozen until its Phase B
+ * channelization; the global-scope file is frozen read-only until the Phase C
+ * mailbox migration.
  * @module @deepseek-ai/dsh-plugin-continual-harness
  */
 
@@ -36,10 +37,12 @@ import { emitRecallInjectEvent } from './events.ts'
 // `readHarnessStateDetailed` serve the kernel package's skill collector (T2.1).
 export { HarnessConflictError, globalHarnessStatePath, harnessStatePath, readHarnessStateDetailed, readHarnessStatesDetailed, writeHarnessStates } from './harness-file.ts'
 export type { HarnessEntry, HarnessStateFile, RefinementEvent } from './harness-file.ts'
-import { deleteHarnessEntry, listHarness, showHarnessEntry } from './harness-cmd.ts'
+import { listHarness, showHarnessEntry } from './harness-cmd.ts'
 import { createHarnessOverviewCache } from './prompt-cache.ts'
 import { renderHarnessOverview } from './prompt.ts'
-import { rollbackRefine, runRefine, registerAutoRefine, DEFAULT_MAX_REFINEMENT_EVENTS, DEFAULT_AUTO_REFINE } from './refine.ts'
+import { registerStoreProjection } from './projection.ts'
+import { runRefineChannelized } from './refine.ts'
+import type { RlmStore } from '@deepseek-ai/dsh-plugin-rlm-store'
 
 export const name = 'plugin-continual-harness'
 export const inject = ['systemPrompt', 'commands', 'sessions', 'agents', 'subagents']
@@ -159,6 +162,19 @@ export function apply(ctx: Context, config: Config): void {
   // overview is the time-index channel, the recall is the relevance channel.
   // `observe` (default) records what WOULD be injected without touching the
   // prompt; `enforce` appends the injected section.
+  // Phase A authority flip (BUILD.md): harness_state.json (local scope) is a
+  // pure projection of the session's store view. Producers (loop now; verify/
+  // moa/kernel-relay in this phase) write the store; this listener re-renders
+  // the file. Absent store (standalone test assemblies) the file keeps its
+  // last content — an honest stale cache, warned once.
+  const store: RlmStore | undefined = ctx.get('rlm.store')
+  if (store) {
+    const unregister = registerStoreProjection(store, dataDir)
+    ctx.effect(() => unregister, 'rlm-store projection listener')
+  } else {
+    console.warn('[continual-harness] rlm.store service absent — harness projection frozen at its last content (assemble plugin-rlm-store before this plugin)')
+  }
+
   const recallMode: 'off' | 'observe' | 'enforce' =
     config.recallInject === 'off' || config.recallInject === 'enforce' ? config.recallInject : 'observe'
   const recallTopN = config.recallInjectTopN && config.recallInjectTopN > 0 ? config.recallInjectTopN : 3
@@ -206,34 +222,26 @@ export function apply(ctx: Context, config: Config): void {
     'register continual-harness section',
   )
 
+  // Phase B item 6: /refine is channelized — the extraction subagent only
+  // proposes; every landing goes through the judgment channel with the
+  // deterministic whitelist criterion (evidence locatable in the transcript).
+  // No proposal touches the projection file directly.
   ctx.commands.register({
     name: 'refine',
-    description: 'Review the trajectory and apply small, evidence-backed harness updates',
+    description: 'Review the trajectory and land evidence-backed memories through the judgment channel',
     handler: async (invocation: CommandInvocation) => {
-      const sessionId = invocation.agent.session.id
-      const summary = await runRefine(
+      const store: RlmStore | undefined = ctx.get('rlm.store')
+      if (!store) return { kind: 'error' as const, text: '/refine needs the rlm.store service (mount @deepseek-ai/dsh-plugin-rlm-store)' }
+      const sessionId = String(invocation.agent.session.id)
+      const outcome = await runRefineChannelized(
         ctx,
+        store,
         sessionId,
-        dataDir,
         invocation.agent,
         config.refineProvider ?? 'spawn',
         invocation.signal,
-        config.maxRefinementEvents ?? DEFAULT_MAX_REFINEMENT_EVENTS,
       )
-      return { kind: 'success', text: summary }
-    },
-  })
-
-  ctx.commands.register({
-    name: 'refine-rollback',
-    description: 'Roll back a previous /refine by event id',
-    input: { hint: '<eventId>' },
-    handler: async (invocation: CommandInvocation) => {
-      const sessionId = invocation.agent.session.id
-      const eventId = invocation.rawInput.trim()
-      if (!eventId) return { kind: 'error', text: 'Usage: /refine-rollback <eventId>' }
-      const summary = await rollbackRefine(dataDir, sessionId, eventId, config.maxRefinementEvents ?? DEFAULT_MAX_REFINEMENT_EVENTS)
-      return { kind: 'success', text: summary }
+      return { kind: 'success', text: outcome.text }
     },
   })
 
@@ -244,7 +252,6 @@ export function apply(ctx: Context, config: Config): void {
     handler: async (invocation: CommandInvocation) => {
       const sessionId = String(invocation.agent.session.id)
       const [subcommand, arg] = invocation.rawInput.trim().split(/\s+/, 2)
-      const maxEvents = config.maxRefinementEvents ?? DEFAULT_MAX_REFINEMENT_EVENTS
       switch (subcommand ?? 'list') {
         case 'list':
           return { kind: 'success', text: listHarness(dataDir, sessionId, arg) }
@@ -252,32 +259,14 @@ export function apply(ctx: Context, config: Config): void {
           if (!arg) return { kind: 'error', text: 'Usage: /harness show <id>' }
           return { kind: 'success', text: showHarnessEntry(dataDir, sessionId, arg) }
         case 'delete':
-          if (!arg) return { kind: 'error', text: 'Usage: /harness delete <id>' }
-          return { kind: 'success', text: await deleteHarnessEntry(dataDir, sessionId, arg, maxEvents) }
+          return { kind: 'error', text: '/harness delete is frozen in Phase A: the file is a store projection now — mutate state through the judgment channel (or edit a mailbox note in Phase C), not by deleting projection entries.' }
         default:
           return { kind: 'error', text: `Unknown /harness subcommand "${subcommand}" (list|show|delete)` }
       }
     },
   })
 
-  // P0: automatic refinement scheduler. Reads the opt-in flags and delegates the
-  // turn/idle and root-agent gating to registerAutoRefine, which no-ops when
-  // disabled.
-  registerAutoRefine(
-    ctx,
-    dataDir,
-    {
-      ...(config.refineProvider !== undefined ? { refineProvider: config.refineProvider } : {}),
-      ...(config.maxRefinementEvents !== undefined ? { maxRefinementEvents: config.maxRefinementEvents } : {}),
-    },
-    {
-      enabled: config.autoRefine ?? DEFAULT_AUTO_REFINE.enabled,
-      // Phase 8: 0 would make the `turns % interval` check NaN and silently
-      // disable auto-refine — fall back to the default instead.
-      turnInterval: config.autoRefineTurnInterval && config.autoRefineTurnInterval > 0
-        ? config.autoRefineTurnInterval
-        : DEFAULT_AUTO_REFINE.turnInterval,
-      cooldownMs: config.autoRefineCooldownMs ?? DEFAULT_AUTO_REFINE.cooldownMs,
-    },
-  )
+  // Phase A: the auto-refine scheduler died with /refine's write path
+  // (registerAutoRefine lived in refine.ts). The Config fields stay accepted
+  // (preset compatibility) but nothing schedules until Phase B channelization.
 }

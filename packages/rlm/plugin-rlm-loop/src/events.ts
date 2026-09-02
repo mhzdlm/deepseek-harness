@@ -1,9 +1,10 @@
 /**
- * Log-only process events for the loop tool, following the
- * `session/title-llm-request` and `session/verify-request|result` precedents:
- * appended through the executing agent's own Session so "why is this round
- * trusted" is auditable from the durable log without entering derived model
- * history. Emission is best-effort — event failures never fail a recording.
+ * Retired in Phase A (BUILD.md): the loop tool now writes `rlm/action-boundary`
+ * events and check judgments to the unified store — the host session log is no
+ * longer this plugin's authority. The type declarations stay so historical
+ * session logs containing `session/loop-*` remain loadable (the persistence
+ * read path refuses unknown types; dropping the declarations would brick old
+ * logs). Nothing emits these anymore.
  *
  * @module @deepseek-ai/dsh-plugin-rlm-loop/events
  */

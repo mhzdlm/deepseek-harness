@@ -19,10 +19,10 @@ import { createSkillCreateTool } from './skill-create.ts'
 import { DEFAULT_IDLE_TIMEOUT_MS, IDLE_SWEEP_INTERVAL_MS, SessionKernelRegistry, warmUpSession } from './kernels.ts'
 import { collectPythonSkills, upsertPythonSkillEntry } from './skill-source.ts'
 
-// Re-exported so sibling judgment plugins can consume the shared redaction
-// through this package's compiled entry instead of a cross-package src/*.ts
-// specifier, which plain Node cannot load from node_modules.
-export { redactReferenceText } from './redact.ts'
+// Phase 10 (T9.10): the shared redaction moved to the zero-dependency
+// `@deepseek-ai/dsh-plugin-rlm-redact` package, so moa/verifier no longer
+// import this package (and its native zeromq dependency chain) just to mask
+// reference text.
 
 /**
  * Plugin name registered with the Cordis loader; also the package identity.
@@ -111,6 +111,25 @@ export interface Config {
    * Defaults to 100000.
    */
   maxSubcallPromptChars?: number
+  /**
+   * Phase 10 (LAYERS.md §2.2): session-level subcall budget — cumulative
+   * `llm.query` calls allowed per session before further batches fail loud.
+   * The session-level 总量 guard the per-call caps cannot provide (long-tailed
+   * cost). Defaults to 200.
+   */
+  maxSessionSubcalls?: number
+  /**
+   * Phase 10 (LAYERS.md §2.2): session-level subcall volume budget —
+   * cumulative answer characters per session. Defaults to 1000000.
+   */
+  maxSessionSubcallChars?: number
+  /**
+   * Phase 10: code-enforced recursion ceiling — `llm.query` calls at or above
+   * this `depth` fail loud, replacing the persona-only guard (the paper's
+   * documented weak-model failure mode). `0` disables subcalls entirely
+   * (the evaluation battery's depth=0 baseline). Defaults to 2.
+   */
+  maxRecursionDepth?: number
 }
 
 /**
@@ -140,6 +159,9 @@ export const Config: z<Config> = z.object({
   maxSubcallAnswerChars: z.natural().min(1),
   subcallTimeoutMs: z.natural().min(1),
   maxSubcallPromptChars: z.natural().min(1),
+  maxSessionSubcalls: z.natural().min(1),
+  maxSessionSubcallChars: z.natural().min(1),
+  maxRecursionDepth: z.natural(),
 })
 
 /**
@@ -159,6 +181,9 @@ export function apply(ctx: Context, config: Config): void {
     ...(config.maxSubcallAnswerChars !== undefined ? { maxSubcallAnswerChars: config.maxSubcallAnswerChars } : {}),
     ...(config.subcallTimeoutMs !== undefined ? { subcallTimeoutMs: config.subcallTimeoutMs } : {}),
     ...(config.maxSubcallPromptChars !== undefined ? { maxSubcallPromptChars: config.maxSubcallPromptChars } : {}),
+    ...(config.maxSessionSubcalls !== undefined ? { maxSessionSubcalls: config.maxSessionSubcalls } : {}),
+    ...(config.maxSessionSubcallChars !== undefined ? { maxSessionSubcallChars: config.maxSessionSubcallChars } : {}),
+    ...(config.maxRecursionDepth !== undefined ? { maxRecursionDepth: config.maxRecursionDepth } : {}),
   }, {
     ...(config.subcallModel !== undefined ? { subcallModel: config.subcallModel } : {}),
   })

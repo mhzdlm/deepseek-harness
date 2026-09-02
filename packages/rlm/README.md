@@ -15,12 +15,14 @@ The RLM plugin family implements the recursive-language-model research loop on t
 ## Packages
 
 - `plugin-rlm-kernel` — per-session persistent kernel + host bridge (the only surface the Python side can touch) + python-skill install pipeline.
-- `plugin-rlm-verifier` — LLM-as-a-Verifier best-of-N selection over candidate trajectories with Borda fusion and judge profiles.
+- `plugin-rlm-verifier` — LLM-as-a-Verifier best-of-N selection over candidate trajectories with surviving-judge mean fusion and judge profiles.
 - `plugin-rlm-moa` — multi-reference-model fan-out with aggregator synthesis.
 - `plugin-rlm-memory` — capture → evidence gate → consolidation → archived retirement; `memory_search` recall over `published/`.
 - `plugin-rlm-compaction` — split-turn prefix summarization + Files Touched carry-over on top of the official compaction engine.
 - `plugin-continual-harness` — CAS-backed harness state, `/refine` + `/refine-rollback`, `/harness`, and the per-turn harness-overview prompt section with observe-first recall injection.
 - `plugin-rlm-loop` — minimal loop-recording tool (begin/record/status) with the three-line-heading audit discipline.
+- `plugin-rlm-redact` — zero-dependency shared credential/PII reference-text redactor consumed by verifier and moa (kept out of the kernel package so judgment tools do not drag its native dependency chain).
+- `plugin-rlm-store` — unified storage core: per-scope append-only event streams + materialized views, with the judgment channel as the only belief-writing path; dependency-graph root of the family.
 
 ## Related documentation
 

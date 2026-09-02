@@ -10,7 +10,7 @@
  * so it is deferred. What changes at the tool layer are argument marshalling and
  * the caller loop, not the accounting that these assertions pin.
  */
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, it, expect } from 'vitest'
@@ -161,5 +161,30 @@ describe('T4.11 conversation-level snapshot accounting', () => {
     await sleep(300)
 
     expect(events).toHaveLength(0)
+  })
+
+  rIt('refuses to restore a tampered snapshot payload (Phase 10 #19 integrity)', async () => {
+    const root = tmpRoot()
+    const { session, events } = capturedSession()
+    const kernels = buildKernels(root, { resolveSession: () => session, snapshotDebounceMs: 10 })
+
+    await kernels.execute('tamper', 'secret_marker = 42', {})
+    await waitForCellEvents(events, 1)
+    await kernels.disposeSession('tamper')
+
+    // Flip bytes in the payload AFTER the manifest recorded its digest. The
+    // next provision must refuse the restore (fresh namespace) instead of
+    // unpickling attacker-modified dill bytes — dill.load executes pickled
+    // instructions, so the payload is code, not data.
+    const payloadPath = path.join(root, 'session-artifacts', 'tamper', 'kernel-state.dill')
+    appendFileSync(payloadPath, Buffer.from('TAMPERED'))
+
+    const revived = await kernels.forSession('tamper')
+    const names = (await revived.listNamespaceNames()) ?? []
+    expect(names).not.toContain('secret_marker')
+    // The kernel itself is healthy — the refusal degrades to a fresh namespace.
+    const result = await kernels.execute('tamper', 'post_tamper = 7', {})
+    expect(result.status).toBe('ok')
+    await kernels.disposeSession('tamper')
   })
 })

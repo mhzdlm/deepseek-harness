@@ -22,11 +22,9 @@ import {
   type NoteFrontmatter,
 } from '../src/storage.ts'
 import {
-  scanAging,
   retireNote,
   unretireNote,
   listArchivedNotes,
-  isRetireCandidate,
   type RetireOptions,
 } from '../src/retire.ts'
 
@@ -77,48 +75,6 @@ function writePublishedWithSource(dir: string, slug: string, base: Note): string
 const OFF: RetireOptions = { exitMode: 'off', agingMinAgeDays: 180, agingMinUseCount: 1 }
 const OBSERVE: RetireOptions = { exitMode: 'observe', agingMinAgeDays: 180, agingMinUseCount: 1 }
 const ENFORCE: RetireOptions = { exitMode: 'enforce', agingMinAgeDays: 180, agingMinUseCount: 1 }
-
-describe('scanAging scoring', () => {
-  it('flags a stale, unused note as a candidate and spares a recently-used one', () => {
-    const dir = tmp()
-    ensureMemoryDirs(dir)
-    const stale = writePublishedWithSource(dir, 'stale', {
-      frontmatter: fm({ source: 'stale', last_accessed: daysAgoIso(200), use_count: 0 }),
-      body: '# Stale\nold',
-    })
-    const fresh = writePublishedWithSource(dir, 'fresh', {
-      frontmatter: fm({ source: 'fresh', last_accessed: daysAgoIso(10), use_count: 0 }),
-      body: '# Fresh\nnew',
-    })
-    void stale
-    void fresh
-    const scan = scanAging(dir, ENFORCE, NOW)
-    const staleRel = scan.candidates.find(c => c.relPath.includes('stale'))
-    const freshRel = scan.candidates.find(c => c.relPath.includes('fresh'))
-    expect(staleRel!.isCandidate).toBe(true)
-    expect(freshRel!.isCandidate).toBe(false)
-    expect(scan.retireable).toHaveLength(1)
-  })
-
-  it('spares a note with use_count >= agingMinUseCount even when stale', () => {
-    const dir = tmp()
-    ensureMemoryDirs(dir)
-    writePublishedWithSource(dir, 'used', {
-      frontmatter: fm({ source: 'used', last_accessed: daysAgoIso(400), use_count: 1 }),
-      body: '# Used\nonce',
-    })
-    const scan = scanAging(dir, ENFORCE, NOW)
-    expect(scan.candidates[0]!.isCandidate).toBe(false)
-    expect(scan.retireable).toHaveLength(0)
-  })
-
-  it('isRetireCandidate is pure and deterministic (use_count + recency only)', () => {
-    const note: Note = { frontmatter: fm({ last_accessed: daysAgoIso(200), use_count: 0 }), body: 'x' }
-    expect(isRetireCandidate(note, ENFORCE, NOW)).toBe(true)
-    expect(isRetireCandidate(note, { ...ENFORCE, agingMinAgeDays: 365 }, NOW)).toBe(false)
-    expect(isRetireCandidate({ ...note, frontmatter: { ...note.frontmatter, use_count: 1 } }, ENFORCE, NOW)).toBe(false)
-  })
-})
 
 describe('exitMode off', () => {
   it('retire is a logged no-op; the note stays published', async () => {

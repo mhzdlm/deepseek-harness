@@ -40,6 +40,8 @@ function fakeAgent(session: FakeSession): FakeAgent {
 interface SubagentsMock {
   spawnCalls: Array<{ provider: string; parent: unknown; prompt: unknown }>
   failStart?: boolean
+  /** When set, start() parks until the gate resolves before returning its run. */
+  resultGate?: Promise<void>
 }
 
 function fakeSubagents(mock: SubagentsMock) {
@@ -47,6 +49,7 @@ function fakeSubagents(mock: SubagentsMock) {
     start: async (provider: string, request: { parent: unknown; prompt: unknown }) => {
       mock.spawnCalls.push({ provider, parent: request.parent, prompt: request.prompt })
       if (mock.failStart) throw new Error('spawn failed: provider unavailable')
+      await mock.resultGate
       return {
         result: Promise.resolve({ output: [] }),
         dispose: async () => undefined,
@@ -240,6 +243,32 @@ describe('memory plugin apply()', () => {
       const before = readFileSync(join(h.memoryDir, 'dialog', 's-interval.jsonl'), 'utf8')
       expect(before).not.toContain('third')
     })
+  })
+
+  it('dispose during an in-flight interval capture runs exactly one extraction (Phase 10 race)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const subagents: SubagentsMock = { spawnCalls: [], resultGate: gate }
+    const h = makeHarness({ captureMode: 'intervalTurns', captureIntervalTurns: 2 }, subagents)
+    const session = fakeSession('s-race')
+    h.emitSessionStart(session, fakeAgent(session))
+    h.emitSessionEvent(session, { type: 'user/message', data: { content: 'first' } })
+    h.emitSessionEvent(session, { type: 'assistant/message', data: { message: { content: 'second' } } })
+    // The interval flush is now parked mid-extraction on the gate.
+    await vi.waitFor(() => expect(subagents.spawnCalls.length).toBe(1))
+
+    // Dispose while the extraction is in flight: the disposed handler must NOT
+    // start a second runCapture on the same buffer entry — persistCapture
+    // appends cumulatively, so a second pass would duplicate the window.
+    h.emitDisposed(session)
+    release()
+
+    await vi.waitFor(() => {
+      const jsonl = readFileSync(join(h.memoryDir, 'dialog', 's-race.jsonl'), 'utf8')
+      expect(jsonl.split('first').length - 1).toBe(1)
+      expect(jsonl.split('second').length - 1).toBe(1)
+    })
+    expect(subagents.spawnCalls.length).toBe(1)
   })
 
   it('re-registered agent after dispose is what the next capture uses (T7.5 lifecycle net)', async () => {

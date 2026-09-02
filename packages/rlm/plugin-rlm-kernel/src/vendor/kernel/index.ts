@@ -1805,7 +1805,9 @@ export class KernelManager {
 	async restoreState(): Promise<RestoreResult | null> {
 		const cfg = this.options.snapshot;
 		if (!cfg) return null;
-		const code = buildRestoreCode(cfg.path);
+		// [local patch #19]: the restore script verifies the payload's SHA-256
+		// against the snapshot manifest before any dill call.
+		const code = buildRestoreCode(cfg.path, cfg.manifestPath);
 		try {
 			const r = await this.enqueueExecute(code, { maxOutputChars: SNAPSHOT_MAX_OUTPUT_CHARS, internal: true });
 			if (r.status !== "ok") {

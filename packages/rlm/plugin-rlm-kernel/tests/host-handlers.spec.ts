@@ -668,4 +668,59 @@ describe('llm.query bridge (T7.10)', () => {
     release()
     await expect(inFlight).rejects.toThrow(/aborted/)
   })
+
+  it('a caller at or over maxRecursionDepth fails loud naming its key (Phase 10)', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [])
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxRecursionDepth: 2 })
+
+    await expect(requireHandler(handlers, 'llm.query')({ prompt: 'a', depth: 2 }))
+      .rejects.toThrow(/maxRecursionDepth=2/)
+    // Depth 1 is under the cap and sails through.
+    await expect(queryLlm(handlers, { prompt: 'b', depth: 1 })).resolves.toMatchObject({ model: 'deepseek-v4-flash' })
+    expect(ctx.__llmStreams).toHaveLength(1)
+  })
+
+  it('maxRecursionDepth=0 disables subcalls entirely, including undeclared depths (Phase 10)', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [])
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxRecursionDepth: 0 })
+
+    await expect(requireHandler(handlers, 'llm.query')({ prompt: 'a' }))
+      .rejects.toThrow(/maxRecursionDepth=0/)
+    await expect(requireHandler(handlers, 'llm.query')({ prompt: 'a', depth: 0 }))
+      .rejects.toThrow(/maxRecursionDepth=0/)
+    expect(ctx.__llmStreams).toHaveLength(0)
+  })
+
+  it('the session subcall budget fails loud once the cumulative calls cap is hit (Phase 10)', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [])
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxSessionSubcalls: 3 })
+
+    // Batch of 2 settles at 2 calls; a 1-prompt batch exactly reaches 3.
+    await queryLlm(handlers, { prompts: ['a', 'b'] })
+    await queryLlm(handlers, { prompt: 'c' })
+    // The next single subcall would be call 4 — refused before any seam call.
+    const before = ctx.__llmStreams.length
+    await expect(requireHandler(handlers, 'llm.query')({ prompt: 'd' }))
+      .rejects.toThrow(/maxSessionSubcalls=3/)
+    expect(ctx.__llmStreams).toHaveLength(before)
+    // The settled ledger rides the durable event for the §5 evaluator.
+    expect(parent.__subcallEvents.at(-1)!.payload.sessionSubcalls).toEqual({ calls: 3, chars: 33 })
+  })
+
+  it('the session volume budget uses the per-answer cap as a worst-case pre-check (Phase 10)', async () => {
+    const parent = fakeParent()
+    const ctx = makeCtx(parent, [])
+    const { handlers } = createHostHandlers(ctx, 'spawn', 'unused', { maxSessionSubcallChars: 20, maxSubcallAnswerChars: 10 })
+
+    // First batch: worst case 2×10 = 20 fits exactly; actual answers settle 20.
+    await queryLlm(handlers, { prompts: ['a', 'b'] })
+    // Second batch: worst case 20 + 1×10 overflows before anything burns.
+    await expect(requireHandler(handlers, 'llm.query')({ prompt: 'c' }))
+      .rejects.toThrow(/maxSessionSubcallChars=20/)
+    expect(ctx.__llmStreams).toHaveLength(2)
+    expect(parent.__subcallEvents[0]!.payload.sessionSubcalls).toEqual({ calls: 2, chars: 20 })
+  })
 })

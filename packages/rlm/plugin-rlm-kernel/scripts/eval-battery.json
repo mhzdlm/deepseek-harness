@@ -1,0 +1,37 @@
+{
+  "$comment": "T7.11 first task battery (LAYERS.md §5 R3): OOLONG-style multi-hop questions over this repository's own codebase. Each task is run once per depth variant (maxRecursionDepth 0 / 1 / 2, see EVAL-RUNBOOK.md) with the repo as the agent's working directory. `expect` entries are deterministic, human-checkable answer anchors for grading — they are not executed by CI. Answers must be graded from the transcript; the eval-log-query script supplies the cost/latency half of the report.",
+  "version": 1,
+  "grading": "manual-assisted",
+  "tasks": [
+    {
+      "id": "b01-batch-cap",
+      "prompt": "In this repository, which source file defines the default value of the kernel Config key `maxSubcallBatch`, what is that default, and which handler enforces the per-batch limit? Cite file paths.",
+      "expect": ["packages/rlm/plugin-rlm-kernel/src/host-handlers.ts", "llm.query"]
+    },
+    {
+      "id": "b02-gate-modes",
+      "prompt": "The memory plugin's publish gate (`gateMode`) has three modes. For each mode, state exactly what happens to a draft note with an invalid `source`, and name the file that implements the evidence gate.",
+      "expect": ["off", "observe", "enforce", "evidence.ts"]
+    },
+    {
+      "id": "b03-subcall-event",
+      "prompt": "List every field carried by the `session/subcall-query` session event payload and name the emitter file. Which two optional fields link a subcall to its caller's use/depth?",
+      "expect": ["batchSize", "answerChars", "degenerate", "durationMs", "use", "depth"]
+    },
+    {
+      "id": "b04-aging-signals",
+      "prompt": "Which two frontmatter fields feed the memory plugin's aging scan scoring, and which exported function computes that score? State what happens to the score today in production (is it consumed anywhere outside tests?).",
+      "expect": ["use_count", "last_accessed", "scanAging"]
+    },
+    {
+      "id": "b05-lease-semantics",
+      "prompt": "For kernel keep-alive leases (`pin`/`unpin`): how does a leased session differ between the idle sweep (`disposeIdle`) and live-cap eviction (`enforceLiveCap`)? Name the two functions and the snapshot-failure grace mechanism.",
+      "expect": ["disposeIdle", "enforceLiveCap", "canSafelyEvictLeased"]
+    },
+    {
+      "id": "b06-compaction-inheritance",
+      "prompt": "In the RLM compaction engine, how does a new checkpoint inherit `filesTouched` across turns, and which module implements the split-turn prefix summarization? Name the exported function that carries prior files forward.",
+      "expect": ["priorFilesTouched", "split-turn-summarizer"]
+    }
+  ]
+}

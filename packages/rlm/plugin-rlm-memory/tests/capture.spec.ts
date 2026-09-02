@@ -88,4 +88,19 @@ describe('parseExtractionProposal', () => {
     expect(notes).toHaveLength(1)
     expect(notes[0]?.frontmatter.source).toBe('contains:deploy')
   })
+
+  it('lands the model-generated title in the frontmatter (Phase 10, T6.19)', () => {
+    const text = JSON.stringify([
+      { title: 'Deploy rollback steps', source: 'turn:2', body: 'body one' },
+      { title: '', source: 'turn:3', body: 'body two' },
+    ])
+    const notes = parseExtractionProposal(text, 's1')
+    expect(notes).toHaveLength(2)
+    // A non-empty title survives into the frontmatter instead of being
+    // validated and dropped; an empty one is omitted entirely.
+    expect(notes[0]?.frontmatter.title).toBe('Deploy rollback steps')
+    expect(notes[1]?.frontmatter.title).toBeUndefined()
+    // The title is descriptive only — the body is untouched.
+    expect(notes[0]?.body).toBe('body one')
+  })
 })

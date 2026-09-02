@@ -15,10 +15,14 @@ import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-subagent'
 import z from '@deepseek-ai/schemastery'
 import type { MoaResolvedSlot } from './presets.ts'
+import { DEFAULT_SLOT_PROVIDER } from './presets.ts'
 import type { MoaModelRequest } from './moa-tool.ts'
 import { createMoaTool } from './moa-tool.ts'
+import { createAuditTool } from './audit-tool.ts'
+import { listFrozenForReview, releaseAuditFreeze, runAudit } from '@deepseek-ai/dsh-plugin-rlm-store'
+import type { RlmScope } from '@deepseek-ai/dsh-plugin-rlm-store'
 import { createPresetView } from './preset-store.ts'
-import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel'
+import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-redact'
 import { listMoaPresetsText, removeManagedMoaPreset, showMoaPresetText, useMoaPresetDefault } from './moa-cmd.ts'
 
 /** Plugin id registered with the Cordis loader; also used as the trace/store namespace. */
@@ -60,6 +64,24 @@ export interface MoaPresetConfig {
   degradedPolicy?: string
 }
 
+/** Phase D reverse-filtering audit wiring; absent disables the `rlm_audit` tool with guidance. */
+export interface MoaAuditConfig {
+  /**
+   * Critic slot (hard constraint: a DIFFERENT model than the producer — a
+   * same-model critic is a re-judgment, not an independent audit).
+   */
+  critic?: {
+    /** Provider route for the critic; omitted inherits the default LLM provider. */
+    provider?: string
+    /** Critic model id. */
+    model?: string
+  }
+  /** Producer-model baseline: the session's main model identity. */
+  producerModel?: string
+  /** Critic call wall-clock budget in ms (default 120000). */
+  timeoutMs?: number
+}
+
 /** Top-level plugin configuration: artifact paths, preset definitions, privacy, tracing, and subagent defaults. */
 export interface Config {
   /** Artifact root for traces and the managed preset store; defaults to `~/.dsh/rlm`. */
@@ -79,6 +101,8 @@ export interface Config {
   subagentProvider?: string
   /** Per-child captured text ceiling for subagent reference slots (default 20000). */
   maxChildChars?: number
+  /** Phase D reverse-filtering audit wiring. */
+  audit?: MoaAuditConfig
 }
 
 /** Schema for the plugin's `Config`; all fields mirror the {@link Config} interface. */
@@ -106,6 +130,14 @@ export const Config: z<Config> = z.object({
   trace: z.boolean(),
   subagentProvider: z.string().min(1),
   maxChildChars: z.natural().min(1),
+  audit: z.object({
+    critic: z.object({
+      provider: z.string(),
+      model: z.string(),
+    }),
+    producerModel: z.string(),
+    timeoutMs: z.natural(),
+  }),
 })
 
 /**
@@ -208,6 +240,8 @@ export function apply(ctx: Context, config: Config): void {
     () =>
       ctx.tools.register(
         createMoaTool({
+          // Phase A item 4: absent store degrades to no landing (standalone assemblies).
+          store: ctx.get('rlm.store'),
           resolvePreset: name => view.resolve(name),
           availablePresets: () => view.available(),
           privacyFilter,
@@ -241,13 +275,127 @@ export function apply(ctx: Context, config: Config): void {
     'register moa tool',
   )
 
+  // Phase D reverse-filtering audit (ARCHITECTURE.md §7): the critic slot is
+  // configured, never inferred — naming the wrong model fails loud at use
+  // time instead of silently breaking the independence constraint.
+  const auditCriticRaw = config.audit?.critic
+  const auditCritic: MoaResolvedSlot | undefined = auditCriticRaw?.model !== undefined && auditCriticRaw.model.trim() !== ''
+    ? {
+      provider: auditCriticRaw.provider ?? DEFAULT_SLOT_PROVIDER,
+      model: auditCriticRaw.model,
+      label: `${auditCriticRaw.model}@${auditCriticRaw.provider ?? DEFAULT_SLOT_PROVIDER}`,
+      mode: 'llm',
+      providerFromDefault: auditCriticRaw.provider === undefined,
+    }
+    : undefined
+  const auditTimeoutMs = config.audit?.timeoutMs ?? 120_000
+  const auditProducerModel = config.audit?.producerModel
+
+  ctx.effect(
+    () =>
+      ctx.tools.register(
+        createAuditTool({
+          store: ctx.get('rlm.store'),
+          callModel: (slot, request, signal, maxTokens, sessionId) =>
+            callViaLlm(ctx.llm, slot, request, signal, maxTokens, sessionId),
+          critic: auditCritic,
+          producerModel: auditProducerModel,
+          timeoutMs: auditTimeoutMs,
+        }),
+      ),
+    'register rlm_audit tool',
+  )
+
+  /** Human-triggered single audit, shared by the /moa audit run subcommand. */
+  const runOneAudit = async (beliefId: string, useMailbox: boolean, sessionId: string): Promise<string> => {
+    const store = ctx.get('rlm.store')
+    if (!store) return 'rlm audit: the rlm.store service is unavailable in this assembly'
+    if (auditCritic === undefined) {
+      return 'rlm audit: no critic configured — set audit.critic {provider, model} in the plugin-rlm-moa ' +
+        'configuration, naming a DIFFERENT model than the producer'
+    }
+    if (auditProducerModel === undefined || auditProducerModel.trim() === '') {
+      return 'rlm audit: audit.producerModel is not configured; without it the independence constraint cannot be verified'
+    }
+    const scope: RlmScope = useMailbox ? { kind: 'mailbox' } : { kind: 'session', id: sessionId }
+    const result = await runAudit({
+      store,
+      scope,
+      beliefId,
+      callCritic: request =>
+        callViaLlm(ctx.llm, auditCritic, request, AbortSignal.timeout(auditTimeoutMs), 4_096, undefined),
+      producerModel: auditProducerModel,
+      criticModel: auditCritic.model,
+      criticLabel: auditCritic.label,
+    })
+    const lines = [`rlm audit [${result.criticLabel}] ${result.outcome} belief=${result.beliefId}`]
+    if (result.judgmentSeq !== undefined) lines.push(`judgment landed at seq ${result.judgmentSeq}`)
+    if (result.reason !== undefined) lines.push(result.reason)
+    for (const failure of result.failures) lines.push(`arbiter: ${failure}`)
+    if (result.outcome === 'objection-rejected-frozen') {
+      lines.push('frozen pending human review (/moa audit pending, /moa audit release <id> <note>)')
+    }
+    return lines.join('\n')
+  }
+
+  /** The batch human-review queue, shared by /moa audit pending. */
+  const auditPendingText = async (useMailbox: boolean, sessionId: string): Promise<string> => {
+    const store = ctx.get('rlm.store')
+    if (!store) return 'rlm audit: the rlm.store service is unavailable in this assembly'
+    const scope: RlmScope = useMailbox ? { kind: 'mailbox' } : { kind: 'session', id: sessionId }
+    const items = await listFrozenForReview(store, scope)
+    if (items.length === 0) return `rlm audit: review queue empty (${useMailbox ? 'mailbox' : 'session'} scope)`
+    const lines = [`rlm audit: ${items.length} frozen belief(s) pending human review:`]
+    for (const item of items) {
+      const name = item.title ?? item.subject ?? item.id
+      lines.push(`  ${item.id} [${item.grade}] ${name} — frozen at seq ${item.frozenAt}`)
+      lines.push(`    ${item.contentPreview}`)
+    }
+    lines.push('release with /moa audit release <id> <note>')
+    return lines.join('\n')
+  }
+
+  /** Human batch-review release, shared by /moa audit release. */
+  const auditReleaseText = async (beliefId: string, note: string, useMailbox: boolean, sessionId: string): Promise<string> => {
+    const store = ctx.get('rlm.store')
+    if (!store) return 'rlm audit: the rlm.store service is unavailable in this assembly'
+    const scope: RlmScope = useMailbox ? { kind: 'mailbox' } : { kind: 'session', id: sessionId }
+    const seq = await releaseAuditFreeze(store, scope, beliefId, note)
+    return `rlm audit: freeze released for ${beliefId} (unfreeze judgment at seq ${seq})`
+  }
+
   ctx.commands.register({
     name: 'moa',
-    description: 'Manage MoA panels: /moa list, /moa show <name>, /moa use <name>, /moa remove <name>',
-    input: { hint: 'list | show <name> | use <name> | remove <name>' },
+    description:
+      'Manage MoA panels: /moa list, /moa show <name>, /moa use <name>, /moa remove <name>; ' +
+      'reverse-filtering audit: /moa audit run|pending|release',
+    input: { hint: 'list | show <name> | use <name> | remove <name> | audit run <beliefId> [--mailbox] | audit pending [--mailbox] | audit release <beliefId> <note>' },
     handler: async (invocation: CommandInvocation) => {
-      void invocation.signal
-      const [subcommand, arg] = invocation.rawInput.trim().split(/\s+/, 2)
+      const [subcommand, ...rest] = invocation.rawInput.trim().split(/\s+/)
+      if (subcommand === 'audit') {
+        const sessionId = String(invocation.agent.session.id)
+        const [action, ...actionRest] = rest
+        const useMailbox = actionRest.includes('--mailbox')
+        const positional = actionRest.filter(token => token !== '--mailbox')
+        switch (action) {
+          case 'run': {
+            const beliefId = positional[0]
+            if (!beliefId) return { kind: 'error' as const, text: 'Usage: /moa audit run <beliefId> [--mailbox]' }
+            return { kind: 'success' as const, text: await runOneAudit(beliefId, useMailbox, sessionId) }
+          }
+          case 'pending':
+            return { kind: 'success' as const, text: await auditPendingText(useMailbox, sessionId) }
+          case 'release': {
+            const beliefId = positional[0]
+            if (!beliefId) return { kind: 'error' as const, text: 'Usage: /moa audit release <beliefId> <note> [--mailbox]' }
+            const note = positional.slice(1).join(' ')
+            return { kind: 'success' as const, text: await auditReleaseText(beliefId, note, useMailbox, sessionId) }
+          }
+          default:
+            return { kind: 'error' as const, text: 'Usage: /moa audit run <beliefId> [--mailbox] | /moa audit pending [--mailbox] | /moa audit release <beliefId> <note>' }
+        }
+      }
+      const arg = rest[0]
       switch (subcommand ?? 'list') {
         case 'list':
           return { kind: 'success' as const, text: listMoaPresetsText(view) }
@@ -261,7 +409,7 @@ export function apply(ctx: Context, config: Config): void {
           if (!arg) return { kind: 'error' as const, text: 'Usage: /moa remove <name>' }
           return { kind: 'success' as const, text: removeManagedMoaPreset(storePath, arg) }
         default:
-          return { kind: 'error' as const, text: `Unknown /moa subcommand "${subcommand}" (list|show|use|remove)` }
+          return { kind: 'error' as const, text: `Unknown /moa subcommand "${subcommand}" (list|show|use|remove|audit)` }
       }
     },
   })

@@ -1,0 +1,43 @@
+{
+  "name": "@deepseek-ai/dsh-plugin-rlm-store",
+  "description": "Unified RLM storage core: per-scope append-only event streams with materialized views, and the judgment channel as the only belief-writing path (ARCHITECTURE.r9.md §6, REDESIGN.md §2.1). Dependency-graph root of the rlm family — imports no other rlm package.",
+  "version": "0.1.0-rc.1",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "packages/rlm/plugin-rlm-store"
+  },
+  "type": "module",
+  "main": "lib/types/index.js",
+  "types": "lib/types/index.d.ts",
+  "scripts": {
+    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-store/tests/catalog.spec.ts packages/rlm/plugin-rlm-store/tests/store.spec.ts packages/rlm/plugin-rlm-store/tests/beliefs.spec.ts packages/rlm/plugin-rlm-store/tests/phase-b.spec.ts packages/rlm/plugin-rlm-store/tests/observe.spec.ts packages/rlm/plugin-rlm-store/tests/audit.spec.ts packages/rlm/plugin-rlm-store/tests/hardening.spec.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/types/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.js",
+    "lib/types/**/*.d.ts",
+    "src/**/*"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "workspace:^"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:^"
+  }
+}

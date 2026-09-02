@@ -37,7 +37,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  listPublished,
   parseNote,
   archiveNote,
   unarchiveNote,
@@ -117,30 +116,11 @@ export function isRetireCandidate(note: Note, options: RetireOptions, now: numbe
   return ageDays > options.agingMinAgeDays && useCount < options.agingMinUseCount
 }
 
-/**
- * Scan `published/` and score every note by value (use_count + recency). Deterministic
- * and unit-testable: no LLM, no embeddings, no filesystem writes. The conservative
- * thresholds mean a note used at least once OR touched recently is never a candidate.
- * @param memoryDir - resolved memory root.
- * @param options - resolved exitMode + aging thresholds.
- * @param now - reference instant for age math (injectable; default `Date.now()`).
- * @returns the full scored scan plus the subset that meets both thresholds.
- */
-export function scanAging(memoryDir: string, options: RetireOptions, now: number = Date.now()): AgingScan {
-  const candidates: AgingCandidate[] = []
-  const retireable: string[] = []
-  for (const abs of listPublished(memoryDir)) {
-    const note = parseNote(abs)
-    if (!note) continue
-    const relPath = toPublishedRel(memoryDir, abs)
-    const lastIso = note.frontmatter.last_accessed || note.frontmatter.updated_at
-    const ageDays = daysSince(lastIso, now)
-    const isCandidate = isRetireCandidate(note, options, now)
-    candidates.push({ relPath, note, ageDays, useCount: note.frontmatter.use_count, isCandidate })
-    if (isCandidate) retireable.push(relPath)
-  }
-  return { candidates, retireable }
-}
+// [Phase B removal] The `scanAging` aging scan was the legacy freshness
+// consumer; the unified store's freshness clocks (external checkpoints +
+// internal event distance, mechanically derived) supersede it. Scoring
+// returns in Phase C with mailbox semantics when the memory package is
+// re-based onto the store.
 
 /**
  * Retire one published note: move it `published/` → `archived/` (reversible). Behavior
@@ -180,7 +160,7 @@ export async function retireNote(
       return `${relPath} is not a retire candidate (too young or sufficiently used); pass force to override.`
     }
     const archived = archiveNote(memoryDir, relPath)
-    return `Retired ${relPath} → ${toPublishedRel(memoryDir, archived).replace(/^published/, 'archived')}. Bytes preserved; reversible via /memory unretire.`
+    return `Retired ${relPath} → ${toArchivedRel(toPublishedRel(memoryDir, archived))}. Bytes preserved; reversible via /memory unretire.`
   })
 }
 
@@ -209,12 +189,14 @@ export async function unretireNote(memoryDir: string, noteId: string): Promise<s
     ]
     const archivedPaths = listArchived(memoryDir)
     const found = archivedPaths.find((abs) => {
-      const rel = toPublishedRel(memoryDir, abs).replace(/^published/, 'archived')
+      // `listArchived` returns `archived/`-rooted files, so `toPublishedRel`
+      // already yields the `archived/...` relPath here — no prefix swap needed.
+      const rel = toPublishedRel(memoryDir, abs)
       const base = rel.split('/').pop() ?? ''
       return archivedRelCandidates.some(c => c === rel) || archivedBaseCandidates.some(c => c === base)
     })
     if (!found) return `No archived note found for ${publishedRel}.`
-    unarchiveNote(memoryDir, toPublishedRel(memoryDir, found).replace(/^published/, 'archived'))
+    unarchiveNote(memoryDir, toPublishedRel(memoryDir, found))
     return `Un-retired ${publishedRel} (restored from archive).`
   })
 }
@@ -226,5 +208,17 @@ export async function unretireNote(memoryDir: string, noteId: string): Promise<s
  * @returns relative archived paths (e.g. `archived/personal/turn-0.md`).
  */
 export function listArchivedNotes(memoryDir: string): string[] {
-  return listArchived(memoryDir).map(abs => toPublishedRel(memoryDir, abs).replace(/^published/, 'archived'))
+  return listArchived(memoryDir).map(abs => toPublishedRel(memoryDir, abs))
+}
+
+/**
+ * Convert a `published/...` relPath into its `archived/...` counterpart — the
+ * one real prefix swap in this module (T6.20: the old inline
+ * `/^published/`-prefixed replaces on ALREADY-archived relPaths were no-ops
+ * that only worked by accident).
+ * @param relPath - a relPath starting with `published/`.
+ * @returns the same path rooted at `archived/` instead.
+ */
+function toArchivedRel(relPath: string): string {
+  return relPath.startsWith('published/') ? `archived/${relPath.slice('published/'.length)}` : relPath
 }

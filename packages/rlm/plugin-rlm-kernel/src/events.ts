@@ -61,6 +61,8 @@ export interface SubcallQueryEventData {
   use?: string
   /** Caller-declared nesting depth of this subcall; routine calls omit it. */
   depth?: number
+  /** Session-level subcall ledger after this batch settled (Phase 10 总量 budget accounting). */
+  sessionSubcalls: { calls: number; chars: number }
 }
 
 declare module '@deepseek-ai/dsh-session/types' {

@@ -34,7 +34,9 @@
 
 import { readFileSync, statSync, existsSync, writeFileSync, utimesSync } from 'node:fs'
 import { join, sep } from 'node:path'
+import type { RlmScope, RlmStore } from '@deepseek-ai/dsh-plugin-rlm-store'
 import type { EmbeddingService } from './embedding.ts'
+import { publishToMailbox, slug, syncMailboxProjection } from './mailbox.ts'
 import {
   listDrafts,
   parseNote,
@@ -71,6 +73,23 @@ export interface ConsolidateOptions {
    * lexical BM25. Absent = no embedding cache (lexical fallback in search).
    */
   embeddingService?: EmbeddingService
+  /**
+   * Phase C authority flip (docs 仓 ARCHITECTURE.md §9): when the unified store is
+   * present, a promotion lands as a MAILBOX belief (provisional nomination) through
+   * `publishToMailbox` instead of a direct `published/` file write — `published/`
+   * becomes a projection the caller re-renders (`syncMailboxProjection`, run by
+   * `consolidate` itself and the session bootstrap). The evidence gate and growth
+   * budget semantics above are unchanged; the reverse-snapshot step is skipped
+   * (the mailbox stream's supersedes chain is the rollback face), and the
+   * embedding cache is skipped for mailbox landings (accepted limitation,
+   * BUILD.md Phase C). Absent = the legacy direct-file promotion (tests, hosts
+   * without the store plugin).
+   */
+  store?: RlmStore | undefined
+  /** The acting session's store scope (publish-side handover record). */
+  sessionScope?: RlmScope | undefined
+  /** The acting session's id (publish provenance note). */
+  sessionId?: string | undefined
 }
 
 /**
@@ -256,6 +275,40 @@ export async function promoteDraft(memoryDir: string, draftPath: string, options
       }
     }
 
+    // ── Phase C authority flip: with a store, published/ is a projection —
+    // the promotion lands as a mailbox belief (a PROVISIONAL nomination; the
+    // gate above already decided admission) and the projection re-renders it.
+    // No file write and no reverse snapshot here: the mailbox stream's
+    // supersedes chain is the rollback face. Embedding cache is skipped on
+    // this path (the projection file owns recall; BUILD.md Phase C limitation).
+    if (options.store) {
+      const overwriteNote = overwriteRel ? parseNote(join(memoryDir, overwriteRel)) : null
+      const overwriteSubject =
+        typeof overwriteNote?.frontmatter.subject === 'string' && overwriteNote.frontmatter.subject !== ''
+          ? overwriteNote.frontmatter.subject
+          : null
+      const subject = overwriteSubject
+        ?? `note:${slug(note.frontmatter.title ?? '') || slug(note.frontmatter.source)}`
+      const sessionId = options.sessionId ?? 'consolidate'
+      await publishToMailbox(options.store, {
+        gateMode: 'enforce',
+        sessionId,
+        sessionScope: options.sessionScope ?? { kind: 'session', id: sessionId },
+      }, [{
+        subject,
+        title: note.frontmatter.title ?? subject,
+        content: note.body,
+        kind: note.frontmatter.kind === 'procedure' ? 'procedural' : 'declarative',
+        evidence: `${note.frontmatter.source} in ${note.frontmatter.source_conversation}`,
+        // A dedup hit means this promotion replaces a note of the same
+        // subject — declare the revision so the previous mailbox belief is
+        // superseded instead of left active as a conflict set.
+        ...(overwriteRel !== null ? { revision: true } : {}),
+      }])
+      deleteDraft(memoryDir, draftPath)
+      return { kind: 'promote', note, draftPath, publishedRel: `mailbox:${subject}` }
+    }
+
     // Reverse-snapshot any existing published note this promotion would overwrite (D11).
     const targetAbs = join(memoryDir, targetRel)
     let snapshotPath: string | null = null
@@ -431,6 +484,9 @@ export async function consolidate(memoryDir: string, options: ConsolidateOptions
       result.warnings.push(`growth budget skipped promotion of ${draftPath}`)
     }
   }
+  // Phase C: when the promotions landed in the mailbox, re-render the
+  // published/ projection so recall sees them immediately.
+  if (options.store) await syncMailboxProjection(options.store, memoryDir)
   return result
 }
 

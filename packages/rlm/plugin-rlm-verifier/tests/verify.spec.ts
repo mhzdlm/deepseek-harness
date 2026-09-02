@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
 import * as PluginRlmVerifier from '@deepseek-ai/dsh-plugin-rlm-verifier'
-import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel'
+import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-redact'
 import { createVerifyTool } from '../src/verify-tool.ts'
 import type { VerifyCallModel, VerifyToolOptions } from '../src/verify-tool.ts'
 
@@ -548,5 +548,97 @@ describe('verify seam engine', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+
+  it('a pivots argument over the cap fails loud naming its key (Phase 10 T9.2)', async () => {
+    const session = { id: 'sess-pivots', append: () => undefined }
+    const tool = createVerifyTool(baseOptions({ maxPivots: 3 }))
+    await expect(tool.execute(
+      { problem: 'p', candidates: ['a', 'b'], pivots: 4 },
+      { signal: new AbortController().signal, agent: { session } } as never,
+    )).rejects.toThrow(/maxPivots=3/)
+  })
+
+  it('pair-scoring calls are capped by the concurrency pool (Phase 10 T9.2)', async () => {
+    const session = { id: 'sess-gate', append: () => undefined }
+    let inFlight = 0
+    let peak = 0
+    const callModel: VerifyCallModel = async (request) => {
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      inFlight -= 1
+      const prefersA = request.route.model === 'judge-a'
+      return {
+        text: prefersA ? `${TAGS[0]}\n${TAGS[1]}` : `${TAGS[1]}\n${TAGS[0]}`,
+        logprobs: [
+          { token: TAGS[0], logprob: -0.01 },
+          { token: 'A', logprob: -0.02 },
+          { token: TAGS[1], logprob: -0.03 },
+          { token: 'T', logprob: -2 },
+        ],
+      }
+    }
+    const tool = createVerifyTool(baseOptions({
+      callModel,
+      maxInFlightPairCalls: 1,
+      judgeProfiles: {
+        'judge-a': { model: 'model-a' },
+        'judge-b': { model: 'model-b' },
+      },
+    }))
+    await tool.execute(
+      { problem: 'p', candidates: ['c0', 'c1', 'c2'], judges: ['judge-a', 'judge-b'] },
+      { signal: new AbortController().signal, agent: { session } } as never,
+    )
+    // A pool of 1 serializes every scoring call across both judges.
+    expect(peak).toBe(1)
+  })
+
+  it('the per-call maxTokens option reaches every scoring call (Phase 10)', async () => {
+    const session = { id: 'sess-tokens', append: () => undefined }
+    const seen: Array<number | undefined> = []
+    const callModel: VerifyCallModel = async (request) => {
+      seen.push(request.maxTokens)
+      return { text: `${TAGS[0]}\n${TAGS[1]}`, logprobs: [] }
+    }
+    const tool = createVerifyTool(baseOptions({ callModel, maxTokens: 111 }))
+    await tool.execute(
+      { problem: 'p', candidates: ['a', 'b'] },
+      { signal: new AbortController().signal, agent: { session } } as never,
+    )
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.every(t => t === 111)).toBe(true)
+  })
+
+  it('the multi-judge winner is the mean-score argmax, always (Phase 10 B3)', async () => {
+    const session = { id: 'sess-b3', append: () => undefined }
+    const callModel: VerifyCallModel = async (request) => {
+      const prefersA = request.route.model === 'judge-a'
+      return {
+        text: prefersA ? `${TAGS[0]}\n${TAGS[1]}` : `${TAGS[1]}\n${TAGS[0]}`,
+        logprobs: [
+          { token: TAGS[0], logprob: -0.01 },
+          { token: 'A', logprob: -0.02 },
+          { token: TAGS[1], logprob: -0.03 },
+          { token: 'T', logprob: -2 },
+        ],
+      }
+    }
+    const tool = createVerifyTool(baseOptions({
+      callModel,
+      judgeProfiles: {
+        'judge-a': { model: 'model-a' },
+        'judge-b': { model: 'model-b' },
+      },
+    }))
+    const value = await tool.execute(
+      { problem: 'p', candidates: ['c0', 'c1', 'c2'], judges: ['judge-a', 'judge-b'] },
+      { signal: new AbortController().signal, agent: { session } } as never,
+    ) as { index: number; scores: number[]; ranking: number[] }
+    // B3 裁决: index/ranking/scores share one metric — the winner is always
+    // the scores' argmax, and the ranking sorts by the same scores.
+    expect(value.index).toBe(value.scores.indexOf(Math.max(...value.scores)))
+    expect(value.ranking[0]).toBe(value.index)
   })
 })

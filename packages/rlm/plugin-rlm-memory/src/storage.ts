@@ -6,7 +6,8 @@
  * `auto_memory.py _ensure_session_frontmatter`).
  *
  * All paths live under one `memoryDir` with subdirs `published/`, `drafts/`,
- * `archive/`, `dialog/`, `index/`, `logs/`. This module owns the directory
+ * `archived/`, `dialog/`, `index/`, `logs/`, `snapshots/` (see {@link SUBDIRS}).
+ * This module owns the directory
  * layout and the frontmatter round-trip; it does not own the evidence gate
  * (see ./evidence.ts) or the capture buffer (see ./capture.ts).
  *
@@ -33,6 +34,12 @@ export interface NoteFrontmatter {
   kind: NoteKind
   scope: NoteScope
   session_id: string
+  /**
+   * Model-generated title from the extraction proposal (Phase 10, T6.19).
+   * Present when the extractor supplied one; the draft slug still derives
+   * from the body, so this field is descriptive, not an identifier.
+   */
+  title?: string
   /** Evidence gate product — a reference that locates inside the source dialog jsonl (REME.md §5.1 D6). */
   source: string
   /** Pointer to the original conversation (dialog jsonl) for traceability. */
@@ -53,6 +60,8 @@ export interface NoteFrontmatter {
   rejection?: string
   /** Set only on an archived note (REME.md §5.4 D12): the ISO time the note was retired (moved to `archive/`). */
   retired_at?: string
+  /** Phase C: the mailbox belief subject this projected note renders (absent on legacy notes). */
+  subject?: string
 }
 
 /** One note file: its frontmatter plus its Markdown body. */
@@ -352,11 +361,23 @@ export function listPublished(memoryDir: string): string[] {
   const root = publishedDir(memoryDir)
   if (!existsSync(root)) return []
   const out: string[] = []
-  for (const kind of readdirSync(root)) {
-    const kindDir = join(root, kind)
-    if (!existsSync(kindDir)) continue
-    for (const file of readdirSync(kindDir)) {
-      if (file.endsWith('.md')) out.push(join(kindDir, file))
+  for (const entry of readdirSync(root)) {
+    const entryPath = join(root, entry)
+    // Phase C: published/ root may hold projection notes directly (mailbox
+    // projection, `<subject>.md`) beside the kind subdirectories — a .md
+    // entry is a note, a directory is a kind bucket. Anything else is ignored.
+    let isDir = false
+    try {
+      isDir = statSync(entryPath).isDirectory()
+    } catch {
+      continue
+    }
+    if (!isDir) {
+      if (entry.endsWith('.md')) out.push(entryPath)
+      continue
+    }
+    for (const file of readdirSync(entryPath)) {
+      if (file.endsWith('.md')) out.push(join(entryPath, file))
     }
   }
   return out

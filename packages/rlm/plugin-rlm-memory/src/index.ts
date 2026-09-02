@@ -42,6 +42,9 @@ import { listMemoryText, showMemoryText, deleteMemoryText, consolidateText, roll
 import { createMemorySearchTool } from './memory-search-tool.ts'
 import { createExternalEmbeddingProvider, type EmbeddingService } from './embedding.ts'
 import { memoryGuidance } from './guidance.ts'
+import { importLegacyNotes, pickupMailboxSeeds, syncMailboxProjection, watchMailboxProjection, proposeCriterion, approveCriterion, MAILBOX_SCOPE } from './mailbox.ts'
+import type { RlmCriterionTier, RlmScope, RlmStore } from '@deepseek-ai/dsh-plugin-rlm-store'
+import { RLM_CRITERION_TIERS, observeReport, renderObserveReport } from '@deepseek-ai/dsh-plugin-rlm-store'
 import type { GateMode } from './consolidate.ts'
 import type { ExitMode } from './retire.ts'
 // GateMode is re-declared here as the package-level type so consumers importing from the
@@ -253,6 +256,19 @@ export function apply(ctx: Context, config: Config): void {
 
   ensureMemoryDirs(memoryDir)
 
+  // Phase C mailbox wiring (docs 仓 ARCHITECTURE.md §9): the store is a soft
+  // dependency — absent (no plugin-rlm-store mounted), every mailbox surface
+  // degrades to the legacy direct-file behavior and a warning names it once.
+  // Present, the projection watcher reconciles human edits into the stream
+  // for the process lifetime (unref'd: it must never hold a CLI exit open).
+  const store: RlmStore | undefined = ctx.get('rlm.store')
+  if (!store) {
+    ctx.logger?.warn?.('[plugin-rlm-memory] rlm.store service absent — mailbox publishing, pickup, and the human-revision channel are dormant (mount @deepseek-ai/dsh-plugin-rlm-store before this plugin)')
+  } else {
+    const watcher = watchMailboxProjection(store, memoryDir)
+    watcher?.unref()
+  }
+
   // In-memory per-session turn buffer. REME.md §12 / known limitation: this is an
   // in-process accumulation keyed by session id; a host restart mid-session loses
   // the buffered turns. The durable artifact is the dialog jsonl, written on
@@ -278,6 +294,26 @@ export function apply(ctx: Context, config: Config): void {
       content: [{ type: 'text', text: memoryGuidance(config.language === 'zh' ? 'zh' : 'en') }],
       source: { kind: 'plugin', plugin: name, form: 'instructions' },
     }))
+    // Phase C continuation pickup (r9 §9): legacy notes are absorbed, mailbox
+    // nominations join this session as PROVISIONAL beliefs, and the projection
+    // re-renders. The result is injected as a short hints-only notice — never
+    // belief contents (the memory_search tool is the recall channel).
+    const sessionStore: RlmStore | undefined = ctx.get('rlm.store')
+    if (sessionStore && agent.session?.id !== undefined) {
+      const scope: RlmScope = { kind: 'session', id: String(agent.session.id) }
+      void bootstrapMailboxForSession(sessionStore, memoryDir, scope, config.language === 'zh' ? 'zh' : 'en')
+        .then((hint) => {
+          if (hint !== '') {
+            agent.inject(createUserMessage({
+              content: [{ type: 'text', text: hint }],
+              source: { kind: 'plugin', plugin: name, form: 'instructions' },
+            }))
+          }
+        })
+        .catch((error) => {
+          ctx.logger.warn(`[rlm-memory] mailbox pickup failed for session ${String(agent.session.id)}: ${error instanceof Error ? error.message : String(error)}`)
+        })
+    }
   })
 
   // Phase B: register the `memory_search` tool as an effect so disposal removes it.
@@ -320,6 +356,15 @@ export function apply(ctx: Context, config: Config): void {
   // first was still extracting (a slow extraction spanning the next %N trigger),
   // double-extracting and double-appending the window.
   const intervalCapturesInFlight = new Set<string>()
+  // Phase 10: sessions disposed while their interval capture is in flight.
+  // `persistCapture` appends the sanitized window to the cumulative stored
+  // dialog, so a second concurrent runCapture on the same entry would append
+  // the same window twice (duplicate rows, shifted `turn:N` references). A
+  // disposed session receives no further turns, so the in-flight capture —
+  // which reads `entry.turns` at persist time — already covers the whole
+  // window; the disposed handler just marks the session and lets that
+  // capture's `finally` drop the buffer.
+  const disposeFlushPending = new Set<string>()
   ctx.on('session/event', (session: Session, event: SessionEvent) => {
     if (captureMode === 'off') return
     if (!eligible(session)) return
@@ -343,8 +388,11 @@ export function apply(ctx: Context, config: Config): void {
               intervalCapturesInFlight.delete(id)
               // The window is persisted; drop it only now so turns arriving
               // during the extraction were covered by the (cumulative) capture
-              // and the next %N trigger starts from a clean buffer.
+              // and the next %N trigger starts from a clean buffer. A
+              // pending-dispose session has no such turns (disposed sessions
+              // emit nothing), so dropping the buffer here IS its final flush.
               buffers.delete(id)
+              disposeFlushPending.delete(id)
             })
         }
       }
@@ -362,10 +410,19 @@ export function apply(ctx: Context, config: Config): void {
     agentsBySession.delete(id)
     if (captureMode === 'off') return
     if (!eligible(session)) return
+    counts.delete(id)
+    // Phase 10: dispose during an in-flight interval capture must NOT start a
+    // second runCapture on the same entry — both would append the same window
+    // to the cumulative dialog. The in-flight capture reads `entry.turns` at
+    // persist time and no further turns can arrive, so it already covers the
+    // whole window; its `finally` drops the buffer for us.
+    if (intervalCapturesInFlight.has(id)) {
+      disposeFlushPending.add(id)
+      return
+    }
     const entry = buffers.get(id)
     if (!entry) return
     buffers.delete(id)
-    counts.delete(id)
     void runCapture(ctx, memoryDir, entry, agent ?? (session as unknown as Agent), captureTimeoutMs).catch((error) => {
       ctx.logger.warn(`[rlm-memory] capture on dispose failed for ${id}: ${error instanceof Error ? error.message : String(error)}`)
     })
@@ -376,10 +433,9 @@ export function apply(ctx: Context, config: Config): void {
     () =>
       ctx.commands.register({
         name: 'memory',
-        description: 'Cross-session memory: /memory list | /memory show <name> | /memory delete <name> | /memory consolidate | /memory rollback <noteId> [force] | /memory retire <noteId> [force] | /memory archived | /memory unretire <noteId>',
-        input: { hint: 'list | show <name> | delete <name> | consolidate | rollback <noteId> [force] | retire <noteId> [force] | archived | unretire <noteId>' },
+        description: 'Cross-session memory: /memory list | /memory show <name> | /memory delete <name> | /memory consolidate | /memory rollback <noteId> [force] | /memory retire <noteId> [force] | /memory archived | /memory unretire <noteId> | /memory stats | /memory criteria list|propose|approve',
+        input: { hint: 'list | show <name> | delete <name> | consolidate | rollback <noteId> [force] | retire <noteId> [force] | archived | unretire <noteId> | stats | criteria list | criteria propose <id> <tier> <title> | criteria approve <id> <tier> <title>' },
         handler: (invocation: CommandInvocation) => {
-          void invocation.signal
           const [subcommand, ...rest] = invocation.rawInput.trim().split(/\s+/)
           const arg = rest.join(' ')
           switch (subcommand ?? 'list') {
@@ -392,12 +448,18 @@ export function apply(ctx: Context, config: Config): void {
               if (!arg) return { kind: 'error' as const, text: 'Usage: /memory delete <name>' }
               return { kind: 'success' as const, text: deleteMemoryText(memoryDir, arg) }
             case 'consolidate': {
-              // Phase C promotion (REME.md §5.3): publish gate + growth budget + reverse-snapshot.
+              // Phase C promotion (REME.md §5.3): publish gate + growth budget; with the
+              // store mounted, promotions land in the mailbox and published/ re-renders.
+              const cmdStore: RlmStore | undefined = ctx.get('rlm.store')
+              const sessionId = String(invocation.agent.session.id)
               const opts = {
                 gateMode,
                 maxPublishedNotes,
                 maxPublishedBytes,
                 ...(embeddingService ? { embeddingService } : {}),
+                ...(cmdStore
+                  ? { store: cmdStore, sessionScope: { kind: 'session' as const, id: sessionId }, sessionId }
+                  : {}),
               }
               return consolidateText(memoryDir, opts).then(({ text }) => ({ kind: 'success' as const, text }))
             }
@@ -423,8 +485,64 @@ export function apply(ctx: Context, config: Config): void {
               if (!arg) return { kind: 'error' as const, text: 'Usage: /memory unretire <noteId>' }
               return unretireText(memoryDir, arg).then(text => ({ kind: 'success' as const, text }))
             }
+            case 'stats': {
+              // The observe audit surface (BUILD.md 实测窗口): density rhythm
+              // vs threshold, ⑥ nomination dispositions (full history),
+              // freshness enforce-would-demote snapshot, mailbox numbers.
+              const cmdStore: RlmStore | undefined = ctx.get('rlm.store')
+              if (!cmdStore) {
+                return { kind: 'error' as const, text: '/memory stats needs the rlm.store service (mount @deepseek-ai/dsh-plugin-rlm-store)' }
+              }
+              return observeReport(cmdStore.rootDir).then(report => ({ kind: 'success' as const, text: renderObserveReport(report) }))
+            }
+            case 'criteria': {
+              // Phase C criterion-revision track (r9 §7): list / propose / approve.
+              // The approval power is human-only — propose parks the revision in the
+              // mailbox; approve is a deliberate human act through this command.
+              const cmdStore: RlmStore | undefined = ctx.get('rlm.store')
+              if (!cmdStore) {
+                return { kind: 'error' as const, text: '/memory criteria needs the rlm.store service (mount @deepseek-ai/dsh-plugin-rlm-store)' }
+              }
+              const action = rest[0] ?? 'list'
+              if (action === 'list') {
+                const registered = new Set(cmdStore.listCriteria().map(c => c.id))
+                const lines = cmdStore.listCriteria().map(c => `${c.id} [${c.tier}] ${c.title}`)
+                const pending = cmdStore.beliefs(MAILBOX_SCOPE)
+                  .filter((b): b is typeof b & { subject: string } =>
+                    typeof b.subject === 'string'
+                    && b.subject.startsWith('criterion:')
+                    && !registered.has(b.subject.slice('criterion:'.length)))
+                for (const p of pending) {
+                  lines.push(`PENDING ${p.subject} (proposed in the mailbox, awaiting human approval)`)
+                }
+                return { kind: 'success' as const, text: lines.length > 0 ? lines.join('\n') : 'No criteria registered.' }
+              }
+              if (action === 'propose' || action === 'approve') {
+                const id = rest[1]
+                const tier = rest[2]
+                const title = rest.slice(3).join(' ').trim()
+                if (!id || !tier || title === '') {
+                  return { kind: 'error' as const, text: `Usage: /memory criteria ${action} <id> <tier> <title...> (tier: ${RLM_CRITERION_TIERS.join('|')})` }
+                }
+                if (!RLM_CRITERION_TIERS.includes(tier as (typeof RLM_CRITERION_TIERS)[number])) {
+                  return { kind: 'error' as const, text: `Unknown tier "${tier}" (expected one of ${RLM_CRITERION_TIERS.join('|')})` }
+                }
+                const scope: RlmScope = { kind: 'session', id: String(invocation.agent.session.id) }
+                const tierLit = tier as RlmCriterionTier
+                const run = async (): Promise<string> => {
+                  if (action === 'propose') {
+                    await proposeCriterion(cmdStore, scope, { id, tier: tierLit, title, reason: title })
+                    return criteriaActionText('propose', id, tier, title)
+                  }
+                  await approveCriterion(cmdStore, { id, tier: tierLit, title, reason: 'approved via /memory criteria approve' })
+                  return criteriaActionText('approve', id, tier, title)
+                }
+                return run().then(text => ({ kind: 'success' as const, text }))
+              }
+              return { kind: 'error' as const, text: `Unknown /memory criteria action "${action}" (list|propose|approve)` }
+            }
             default:
-              return { kind: 'error' as const, text: `Unknown /memory subcommand "${subcommand}" (list|show|delete|consolidate|rollback|retire|archived|unretire)` }
+              return { kind: 'error' as const, text: `Unknown /memory subcommand "${subcommand}" (list|show|delete|consolidate|rollback|retire|archived|unretire|stats|criteria)` }
           }
         },
       }),
@@ -463,6 +581,11 @@ async function runCapture(
     const windowTurns = sanitizeTurns(entry.turns)
     const dialogText = renderDialogText([...priorTurns, ...windowTurns])
     try {
+      // Accepted limitation: the controller is created solely to satisfy the
+      // `signal` parameter — there is no external handle to cancel an
+      // extraction. The wall-clock budget inside `extractDrafts` is the real
+      // bound; wiring a plugin-lifetime controller awaits a host teardown
+      // seam (NEXT: 登记为已接受限制).
       proposals = await extractDrafts(subagents, agent, entry.sessionId, dialogText, new AbortController().signal, captureTimeoutMs)
       extractionRan = true
     } catch (error) {
@@ -477,6 +600,64 @@ async function runCapture(
     extractionRan,
     draftChars: summary.draftChars,
   })
+}
+
+/**
+ * Render the `/memory criteria propose|approve` outcome text (module-level so
+ * the command handler stays free of deep-chained continuations).
+ */
+function criteriaActionText(action: 'propose' | 'approve', id: string, tier: string, title: string): string {
+  if (action === 'propose') {
+    return [
+      `Criterion revision proposed: ${id} [${tier}] (${title}).`,
+      'Parked in the mailbox for human approval.',
+      `Approve with: /memory criteria approve ${id} ${tier} ${title}`,
+    ].join(' ')
+  }
+  return [
+    `Criterion approved and registered: ${id} [${tier}] (${title}).`,
+    'The approval is recorded in the mailbox stream.',
+  ].join(' ')
+}
+
+/**
+ * Phase C session bootstrap (r9 §9 continuation): absorb legacy published
+ * notes, pick up mailbox nominations as PROVISIONAL beliefs in the arriving
+ * session, and re-render the projection. Returns a short hints-only notice
+ * describing WHAT was picked up (subjects and conflict flags — never belief
+ * contents) for injection at session start; empty when there is nothing to
+ * pick up.
+ * @param store - the unified store (mailbox authority).
+ * @param memoryDir - resolved memory root (projection + legacy source).
+ * @param scope - the arriving session's store scope.
+ * @param lang - `'zh'` or `'en'` for the notice wording.
+ * @returns the hints-only notice, or '' when nothing changed.
+ */
+async function bootstrapMailboxForSession(
+  store: RlmStore,
+  memoryDir: string,
+  scope: RlmScope,
+  lang: 'zh' | 'en',
+): Promise<string> {
+  const imported = await importLegacyNotes(store, memoryDir)
+  const pickup = await pickupMailboxSeeds(store, scope)
+  await syncMailboxProjection(store, memoryDir)
+  if (pickup.picked === 0 && imported === 0) return ''
+  const lines: string[] = []
+  if (lang === 'zh') {
+    lines.push(`[信箱] 跨会话接续：取件 ${String(pickup.picked)} 条提名（均为 provisional 信念，复验后才可信任）。`)
+    if (pickup.conflicts.length > 0) {
+      lines.push(`冲突集：${pickup.conflicts.join('、')} —— 同一主题存在多个竞争版本，须显式裁决后再使用。`)
+    }
+    if (imported > 0) lines.push(`旧记忆笔记已收编入信箱事件流：${String(imported)} 篇。`)
+  } else {
+    lines.push(`[mailbox] Cross-session continuation: picked up ${String(pickup.picked)} nomination(s) — all PROVISIONAL beliefs, re-verify before trusting.`)
+    if (pickup.conflicts.length > 0) {
+      lines.push(`Conflict sets: ${pickup.conflicts.join(', ')} — multiple competing versions of one subject; resolve explicitly before use.`)
+    }
+    if (imported > 0) lines.push(`${String(imported)} legacy note(s) absorbed into the mailbox stream.`)
+  }
+  return lines.join('\n')
 }
 
 /**

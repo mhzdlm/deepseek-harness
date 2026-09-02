@@ -1,12 +1,10 @@
 /**
- * `/harness` management command (item-5): list / show / delete harness entries
- * without writing a proposal subagent. Deletes go through the same
- * reverse-snapshot + event pipeline as `/refine`, so they stay rollback-able
- * via `/refine-rollback <eventId>`.
+ * `/harness` management command (item-5): list / show harness entries without
+ * writing a proposal subagent. Mutations are frozen in Phase A — the file is
+ * a store projection now (see ./projection.ts).
  * @module @deepseek-ai/dsh-plugin-continual-harness
  */
 
-import path from 'node:path'
 import {
   globalHarnessStatePath,
   harnessStatePath,
@@ -16,7 +14,7 @@ import {
   type HarnessKind,
   type HarnessStateFile,
 } from './harness-file.ts'
-import { applyProposalsAndPersist, collectKnownEntryIdSet, DEFAULT_MAX_REFINEMENT_EVENTS, validateProposals, type RefineProposal } from './refine.ts'
+
 
 const KINDS: readonly HarnessKind[] = ['prompt', 'memory', 'skill', 'subagent']
 const KIND_SET: ReadonlySet<string> = new Set(KINDS)
@@ -100,58 +98,5 @@ export function showHarnessEntry(baseDir: string, sessionId: string, selector: s
     ...(meta && meta !== '{}' ? [`metadata: ${meta}`] : []),
     'content:',
     entry.content,
-  ].join('\n')
-}
-
-/**
- * `/harness delete <id>`: remove one entry. Reuses the refine apply-and-persist
- * pipeline (reverse snapshot + event), so `/refine-rollback <eventId>` undoes it.
- * @param baseDir - the workspace root used to locate harness state files.
- * @param sessionId - the session whose scoped entries are merged in.
- * @param selector - exact id or unique id prefix of the entry to delete.
- * @param maxRefinementEvents - cap on stored refinement events before oldest are pruned.
- * @returns a confirmation listing the deleted entry and its rollback command, or an error string.
- */
-export async function deleteHarnessEntry(
-  baseDir: string,
-  sessionId: string,
-  selector: string,
-  maxRefinementEvents = DEFAULT_MAX_REFINEMENT_EVENTS,
-): Promise<string> {
-  const mergedView = readMergedSync(baseDir, sessionId)
-  const resolved = resolveEntry(mergedView, selector)
-  if (typeof resolved === 'string') return resolved
-
-  const proposal: RefineProposal = {
-    kind: resolved.kind,
-    action: 'delete',
-    id: resolved.entry.id,
-    title: resolved.entry.title,
-    content: '',
-    evidence: 'manual delete via /harness',
-  }
-  // Existence-first: the entry was just resolved against this very view, so
-  // its slug-shaped id (loop runs, python skills) validates cleanly.
-  const { valid, rejected } = validateProposals([proposal], {
-    knownIds: collectKnownEntryIdSet([mergedView]),
-  })
-  if (valid.length === 0) return `Cannot delete: ${rejected.join('; ')}`
-
-  const statePath = harnessStatePath(baseDir, sessionId)
-  const snapshotDir = path.join(path.dirname(statePath), 'refinements')
-  const { applied, changes, eventId } = await applyProposalsAndPersist(
-    baseDir,
-    sessionId,
-    valid,
-    snapshotDir,
-    maxRefinementEvents,
-    '/harness delete',
-  )
-  if (!applied) return 'No change: entry already absent.'
-
-  return [
-    `Deleted ${resolved.kind}:${resolved.entry.title} (${resolved.entry.id})`,
-    ...changes.map(c => `- ${c}`),
-    `Roll back with: /refine-rollback ${eventId}`,
   ].join('\n')
 }

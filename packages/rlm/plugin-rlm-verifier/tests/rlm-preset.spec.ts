@@ -19,6 +19,7 @@ import AgentPresets from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-agent-presets/types'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import SessionPersistence from '@deepseek-ai/dsh-session-persistence'
+import SessionProjection from '@deepseek-ai/dsh-session-projection'
 import Goal from '@deepseek-ai/dsh-goal'
 
 // The rlm preset composition lives under docs/recipes (dev-mode assembly
@@ -79,6 +80,7 @@ async function setup() {
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(CommandRuntime)
   await ctx.plugin(TokenMeter)
+  await ctx.plugin(SessionProjection)
   await ctx.plugin(SessionPersistence, [])
   await ctx.plugin(Goal)
   await ctx.plugin(AgentPresets, {

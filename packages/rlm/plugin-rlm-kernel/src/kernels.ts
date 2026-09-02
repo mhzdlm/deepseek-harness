@@ -218,17 +218,25 @@ export class SessionKernelRegistry {
     const provisioning = this.provision(sessionId)
       .then((manager) => {
         // The registry entry is only claimed if no `disposeSession`
-        // removed the in-flight promise while we were provisioning; a
-        // concurrent dispose chains `manager.dispose()` instead, so no
-        // orphaned kernel process and no stale registry entry.
+        // removed the in-flight promise while we were provisioning.
+        // Ownership note: `disposeSession` is the ONLY remover of in-flight
+        // entries, and it always disposes the promise it removed
+        // (`pending.then(m => m.dispose())`), so a lost claim means that
+        // dispose already owns this manager's teardown — this path must NOT
+        // dispose it too (double dispose; KernelManager.dispose is not
+        // idempotent).
         if (this.inflight.get(sessionId) === provisioning) {
           this.kernels.set(sessionId, manager)
-        } else {
-          // A concurrent disposeSession owns this manager now; our speculative
-          // dispose must not surface as an unhandledRejection.
-          void manager.dispose().catch((error) => {
-            console.warn('[rlm-kernel] speculative kernel dispose failed:', error)
-          })
+          // Phase 10 (T9.1): the live-cap is admission control, so it fires
+          // on the provision path — decoupled from the idle sweep, which only
+          // exists when `idleTimeoutMs > 0`. With `idleTimeoutMs: 0` (the
+          // documented "disable reclamation" setting) this is now the sole
+          // cap trigger; LRU order protects the just-claimed kernel because
+          // `touch` above made it the most recently used.
+          void this.enforceLiveCap([], this.options.now?.() ?? Date.now())
+            .catch((error) => {
+              console.warn('[rlm-kernel] post-provision live-cap enforcement failed:', error)
+            })
         }
         return manager
       })

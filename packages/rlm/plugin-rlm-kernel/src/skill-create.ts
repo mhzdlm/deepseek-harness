@@ -167,11 +167,15 @@ export function createSkillCreateTool(options: SkillCreateToolOptions): ReturnTy
         importName: args.import_name,
         ...(args.callable !== undefined ? { callable: args.callable } : {}),
       }, sessionId)
+      const frozen = entry.metadata['frozen'] === true
       const text =
         `Registered python skill "${entry.id}" v${entry.version} (global scope). `
         + `It becomes callable as await ${args.import_name}(...) at the next kernel provision `
         + '(after idle reclaim, session restart, or a fresh session). '
         + 'Verify then by calling it once inside ipython.'
+        + (frozen
+          ? ' NOTE: the global harness scope is frozen in Phase A — this skill will NOT persist across sessions until the Phase C mailbox migration.'
+          : '')
       return { text }
     },
   })

@@ -14,6 +14,8 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { RlmStore } from '@deepseek-ai/dsh-plugin-rlm-store'
+import { landToolOutcome } from '@deepseek-ai/dsh-plugin-rlm-store'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { MoaResolvedPreset, MoaResolvedSlot } from './presets.ts'
 import { appendMoaTrace } from './trace.ts'
@@ -55,6 +57,11 @@ export type MoaCallSubagent = (
 
 /** Wiring and observability knobs for {@link createMoaTool}; resolved presets, injected transport, and trace hooks. */
 export interface MoaToolOptions {
+  /**
+   * Unified store (Phase A item 4): when assembled, the synthesis lands as an
+   * observation + merge judgment. Optional for standalone assemblies.
+   */
+  store?: RlmStore | undefined
   /** Layered preset resolver (Config + managed store); throws on unknown names. */
   resolvePreset: (name?: string) => MoaResolvedPreset
   /** Available preset names, for error messages and command listings. */
@@ -320,6 +327,21 @@ export function createMoaTool(options: MoaToolOptions): ReturnType<typeof define
         failedLabels,
       })
 
+      await landToolOutcome(options.store, { kind: 'session', id: String(sessionId ?? 'moa') }, {
+        observation: {
+          kind: 'moa-synthesis-request',
+          preset: preset.name,
+          referenceCount: settled.length,
+          failedLabels,
+          taskChars: problem.length,
+        },
+        criterionRef: 'crit/moa-aggregator',
+        verdict: 'merge',
+        content: synthesisText,
+        subject: `moa:${problem.length}:${problem.split(/\s+/).slice(0, 8).join('-').slice(0, 60)}`,
+        channel: 'moa-aggregator',
+        dataSupportSummary: `aggregator synthesis over ${settled.length} reference slot(s) (${preset.name})`,
+      })
       return {
         synthesis: synthesisText,
         preset: preset.name,

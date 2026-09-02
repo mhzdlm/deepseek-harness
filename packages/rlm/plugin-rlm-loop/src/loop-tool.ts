@@ -6,8 +6,13 @@
  *
  * - deterministic parsing of the auditor's three-line report header,
  * - the trust gate (only clean+complete+aligned rounds become progress),
- * - durable `session/loop-*` process events,
- * - CAS landing of the task contract and verified progress into harness state.
+ * - durable `rlm/action-boundary` events in the session's store stream,
+ * - the round audit as a **check judgment** through the store's judgment
+ *   channel (`crit/loop-three-line-header`), landing verified progress as a
+ *   belief node — the harness overview picks it up via the store projection.
+ *
+ * Phase A (BUILD.md): the old direct write into harness_state.json is gone;
+ * the store is the single write path and the file is a projection of it.
  *
  * @module @deepseek-ai/dsh-plugin-rlm-loop/loop-tool
  */
@@ -15,17 +20,17 @@
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { emitLoopEvent } from './events.ts'
+import type { RlmScope, RlmStore } from '@deepseek-ai/dsh-plugin-rlm-store'
 import { isCleanComplete, parseAuditHeader } from './parse.ts'
-import { upsertMemoryEntry } from './state.ts'
 
 /**
- * Construction options for the `loop` tool: where harness state lives, the soft
- * round ceiling, and an optional shared live-run map the plugin can evict.
+ * Construction options for the `loop` tool: the session's store (the single
+ * write path), the soft round ceiling, and an optional shared live-run map the
+ * plugin can evict.
  */
 export interface LoopToolOptions {
-  /** Harness base dir; must match plugin-continual-harness's `dataDir`. */
-  dataDir: string
+  /** The unified store; judgments and action boundaries land here. */
+  store: RlmStore
   /** Soft per-run round ceiling; exceeding it warns but never blocks. */
   maxRounds: number
   /**
@@ -50,6 +55,8 @@ export interface LoopRun {
   runId: string
   task: string
   contract: string
+  /** Stream position of this run's begin action boundary (provenance anchor). */
+  beginSeq: number
   rounds: RecordedRound[]
 }
 
@@ -76,25 +83,15 @@ function sessionIdOf(exec: { agent?: { session?: Session } }): { sid: string; se
 }
 
 /**
- * Build the `loop` tool around harness state at {@link LoopToolOptions.dataDir}.
+ * Build the `loop` tool around the unified store.
  *
- * @param options - Construction options: the harness data dir, a soft round
- *   ceiling, and an optional shared live-run map.
+ * @param options - Construction options: the store, a soft round ceiling, and
+ *   an optional shared live-run map.
  * @returns A `defineTool` tool object implementing the `loop` action surface.
  */
 export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defineTool> {
   const runs = options.runs ?? new Map<string, LoopRun>()
-
-  async function landEntry(sid: string, id: string, title: string, content: string): Promise<boolean> {
-    try {
-      await upsertMemoryEntry(options.dataDir, sid, { id, title, content })
-      return true
-    } catch (error) {
-      // A failed landing must be observable (the verdict is otherwise lost silently).
-      console.warn(`[rlm-loop] failed to land memory entry ${id} for session ${sid}:`, error)
-      return false
-    }
-  }
+  const scopeOf = (sid: string): RlmScope => ({ kind: 'session', id: sid })
 
   return defineTool({
     name: 'loop',
@@ -102,7 +99,8 @@ export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defi
       'Loop Engineering bookkeeping for a Manage→Execute→Audit run. `begin` opens a run ' +
       '(call once with task + contract). After each auditor verification, `record` the round: ' +
       'the three-line audit header is parsed deterministically and only a clean/complete/aligned ' +
-      'verdict lands as verified progress. `status` shows the current run.',
+      'verdict lands as verified progress (a store judgment — the harness projection picks it up). ' +
+      '`status` shows the current run.',
     parameters: {
       action: {
         type: 'string',
@@ -157,6 +155,7 @@ export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defi
       const { sid, session } = sessionIdOf(exec)
       if (!sid) throw new Error('loop: requires an owning agent session')
       const action = typeof args.action === 'string' ? args.action : ''
+      void session // session identity is carried by the store scope + payloads
 
       if (action === 'begin') {
         const task = typeof args.task === 'string' ? args.task.trim() : ''
@@ -164,32 +163,23 @@ export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defi
         const contract = typeof args.contract === 'string' ? args.contract.trim() : ''
         const previous = runs.get(sid)
         const runId = `loop_${randomUUID().slice(0, 8)}`
-        // One live run per session; the plugin assembly evicts entries on
-        // session disposal, so replaced runs drop out here via the set below.
-        runs.set(sid, { runId, task, contract, rounds: [] })
-        emitLoopEvent(session, 'session/loop-start', {
+        // The action boundary is the run's durable anchor; the projection
+        // renders its contract into the harness overview from this event.
+        const begin = await options.store.append(scopeOf(sid), 'rlm/action-boundary', {
+          action: 'loop-begin',
           runId,
-          taskChars: task.length,
-          contractChars: contract.length,
+          task,
+          contract,
         })
-        let landed = true
-        if (contract) {
-          landed = await landEntry(
-            sid,
-            `${runId}/contract`,
-            `[loop] Task contract (${runId})`,
-            `[Task contract]\n${contract}\n\n[Original task]\n${task}`,
-          )
-        }
+        runs.set(sid, { runId, task, contract, beginSeq: begin.seq, rounds: [] })
         const superseded = previous
-          ? ` Previous run ${previous.runId} (${previous.rounds.length} recorded rounds) is replaced; its durable facts stay in the session log and harness state.`
+          ? ` Previous run ${previous.runId} (${previous.rounds.length} recorded rounds) is replaced; its durable facts stay in the store stream.`
           : ''
         return {
           text: `Loop run ${runId} opened${contract ? '' : ' (no contract given — auditors will score Contract audit against an unknown target)'}.`
             + `${superseded} `
             + 'Per round: call the executor delegation tool with ONE bounded subtask, then the auditor tool, '
-            + 'then `loop` action=record with round/route/audit_report. Only clean audits become progress.'
-            + (landed ? '' : ' Warning: contract landing into harness state failed; it stays in this conversation only.'),
+            + 'then `loop` action=record with round/route/audit_report. Only clean audits become progress.',
           runId,
         }
       }
@@ -201,8 +191,8 @@ export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defi
           ? args.round
           : 0
         if (round === 0) throw new Error('loop record: round must be a positive integer')
-        // Phase 8 (review round 6 / T6.17 leftover): a duplicate round must not
-        // double-count progress or overwrite the earlier round's harness entry.
+        // A duplicate round must not double-count progress or double-land the
+        // earlier round's belief.
         if (run.rounds.some(entry => entry.round === round)) {
           return {
             text: `Round NOT recorded: round ${round} was already recorded in run ${run.runId}. `
@@ -236,15 +226,54 @@ export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defi
         }
         const accepted = isCleanComplete(header)
         const note = typeof args.progress_note === 'string' ? args.progress_note.trim() : ''
+
+        // The action boundary for the round lands first, so the judgment's
+        // provenance range [begin, record] is locatable in the stream.
+        const record = await options.store.append(scopeOf(sid), 'rlm/action-boundary', {
+          action: 'loop-record',
+          runId: run.runId,
+          round,
+          route,
+          status: header.status,
+          integrity: header.integrity,
+          contractAudit: header.contract,
+          accepted,
+        })
+
+        // The audit IS a check judgment: object = the state (this round's
+        // progress claim), criterion = the three-line header protocol. Both
+        // outcomes land as events — check-doubt touches no belief (density
+        // accounting never mistakes a pass for absence).
         let landed = false
-        if (accepted && note) {
-          landed = await landEntry(
-            sid,
-            `${run.runId}/round_${String(round).padStart(3, '0')}`,
-            `[loop] Verified progress (${run.runId} round ${round})`,
-            `[Verified via audit round ${round}: ${header.status}/${header.integrity}/${header.contract}]\n${note}`,
-          )
+        try {
+          await options.store.judge(scopeOf(sid), {
+            criterionRef: 'crit/loop-three-line-header',
+            verdict: accepted ? 'check-pass' : 'check-doubt',
+            ...(accepted && note
+              ? {
+                belief: {
+                  kind: 'procedural' as const,
+                  content: note,
+                  title: `[loop] Verified progress (${run.runId} round ${round})`,
+                  subject: run.runId,
+                  basedOn: [] as string[],
+                  lastVerified: { channel: 'loop-three-line-header', eventPos: record.seq },
+                },
+              }
+              : {}),
+            dataSupport: {
+              summary: `audit round ${round}: ${header.status}/${header.integrity}/${header.contract}`,
+              ...(report ? { refs: [`audit_report:${report.slice(0, 200)}`] } : {}),
+            },
+            provenance: { eventRange: [run.beginSeq, record.seq] },
+          })
+          landed = accepted && note !== ''
+        } catch (error) {
+          // The action boundary is durable; a judgment refusal is surfaced so
+          // the verdict is not lost silently.
+          console.warn(`[rlm-loop] judgment refused for run ${run.runId} round ${round}:`, error)
         }
+
         run.rounds.push({
           round,
           route,
@@ -253,36 +282,25 @@ export function createLoopTool(options: LoopToolOptions): ReturnType<typeof defi
           integrity: header.integrity,
           contractAudit: header.contract,
         })
-        emitLoopEvent(session, 'session/loop-round-done', {
-          runId: run.runId,
-          round,
-          route,
-          status: header.status,
-          integrity: header.integrity,
-          contractAudit: header.contract,
-          accepted,
-          landed,
-          noteChars: note.length,
-        })
         const lines: string[] = []
         lines.push(accepted
           ? `Round ${round} recorded as VERIFIED progress (${header.status}/${header.integrity}/${header.contract}).`
           : `Round ${round} recorded but NOT trusted (${header.status}/${header.integrity}/${header.contract}); treat its output as failure evidence for planning.`)
         if (accepted && !note) {
-          lines.push('Warning: verdict is clean but no progress_note given — nothing was landed into harness state.')
+          lines.push('Warning: verdict is clean but no progress_note given — nothing was landed as a belief.')
         }
         if (route === 'done' && !accepted) {
           lines.push('Route done REJECTED: completion requires Status complete AND Integrity clean AND Contract audit aligned.')
         }
         if (route === 'done' && accepted && !landed && note) {
-          lines.push('Warning: done declared but the progress entry failed to land in harness state — re-record before finishing.')
+          lines.push('Warning: done declared but the progress belief failed to land — re-record before finishing.')
         }
         if (round > options.maxRounds) {
           lines.push(`Warning: round ${round} exceeds the configured soft ceiling of ${options.maxRounds} rounds.`)
         }
         lines.push(landed
-          ? 'Verified progress is durable in harness state and will be injected into future context.'
-          : 'No harness-state change this round.')
+          ? 'Verified progress is durable as a store belief and renders into future context via the harness projection.'
+          : 'No belief landed this round.')
         return {
           text: lines.join(' '),
           runId: run.runId,
