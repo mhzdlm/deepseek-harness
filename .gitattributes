@@ -8,6 +8,7 @@
 
 *.pdf binary
 
-# Pairing records are generated from the three confirmed owner-blob pairs.
-# The worktree-local installer registers the fail-closed driver command.
-*.i18n.yaml merge=dsh-translation-pairing
+# Pairing records merge as plain text. On conflicts, resolve with the repo
+# tooling instead of a custom merge driver:
+#   pnpm run resolve-translation-pairing-conflicts
+#   pnpm run verify-translation-pairing --write <pair>
