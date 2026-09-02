@@ -22,3 +22,7 @@ RLM 专属压缩 Provider。`BasicCompactionEngine` 子类：官方 replay-aware
 
 - split-turn 判定是启发式：区域首条消息为 `assistant` 角色即触发。精确的"切割在轮内"信号需要扩展 `compaction-basic` 的 `SummarizationInput`，本包刻意不做。
 - 本 provider 是 `compaction-basic` 的替代项，仅 RLM 挂载；不替换其他 preset 的选择。
+
+## 状态
+
+Phase D（2026-09-01）：RLM preset 的压缩 provider。本包导出 `RlmSplitTurnCompactionEngine`（默认导出），一个 `BasicCompactionEngine` 子类，在 RLM 装配中注册为 `ctx.compaction` 服务——标准 `command-compact` 与 `tool-result-pruner` 消费方原样拾取；伴生插件 `plugin-rlm-compaction-invariant` 仅登记包所有权，自身无运行期不变量。家族总览见 [packages/rlm/README.md](../README.md)；家族级状态见文档仓 BUILD.md。

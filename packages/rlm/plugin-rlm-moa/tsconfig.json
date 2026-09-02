@@ -18,6 +18,9 @@
       "path": "../../../vendor/schemastery"
     },
     {
+      "path": "../plugin-rlm-redact"
+    },
+    {
       "path": "../../core/tools"
     },
     {

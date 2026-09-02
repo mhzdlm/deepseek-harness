@@ -93,6 +93,27 @@ def _state_file(state_dir: str | Path | None = None, *, global_: bool = False) -
     return _agent_dir() / _DEFAULT_HARNESS_DIR_NAME / _DEFAULT_FILE_NAME
 
 
+# [local patch #20 - Phase A store relay (BUILD.md item 3)] Kernel-side harness
+# writes relay into the unified store over the Comm bridge; the host re-renders
+# the local harness_state.json as a projection. Returns the host reply dict, or
+# None when the bridge is unavailable (fallback: the legacy local write).
+def _relay_write(op: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        import asyncio
+        from . import host_request as _host_request
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _host_request.host_request("rlm.harness.write", {"op": op, "scope": "local", **payload})
+        )
+    except Exception:
+        return None
+    if isinstance(result, dict) and result.get("ok") is False:
+        # A deliberate host refusal (e.g. frozen scope) must not fall back to a
+        # local write - raise so the model sees the refusal.
+        raise RuntimeError(str(result.get("error", "relayed harness write refused by host")))
+    return result if isinstance(result, dict) else {}
+
+
 @dataclass
 class HarnessEntry:
     """A reusable prompt, memory, skill, or subagent record."""
@@ -411,7 +432,17 @@ class HarnessState:
                 source=source,
             )
             self.entries[kind][entry_id] = entry
-        self.save()
+        # [local patch #20] relay first; on success the host store is authoritative
+        # and the file is re-rendered by the host projection (skip local save).
+        relayed = _relay_write("upsert", {
+            "scope": self.scope,
+            "kind": kind,
+            "id": entry_id,
+            "title": entry.title,
+            "content": entry.content,
+        })
+        if relayed is None:
+            self.save()
         return entry
 
     def get(self, kind: HarnessKind, id: str, *, global_: bool = False, **kwargs: Any) -> HarnessEntry | None:
@@ -434,7 +465,10 @@ class HarnessState:
         if id not in self.entries[kind]:
             return False
         del self.entries[kind][id]
-        self.save()
+        # [local patch #20] relay delete; on success skip the local save.
+        relayed = _relay_write("delete", {"scope": self.scope, "kind": kind, "id": id})
+        if relayed is None:
+            self.save()
         return True
 
     def list(self, kind: HarnessKind | None = None, *, global_: bool = False, **kwargs: Any) -> list[HarnessEntry]:

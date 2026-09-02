@@ -21,11 +21,12 @@
 #
 # This composition is self-contained: it mounts the rlm-stack group, goal,
 # compaction, and schedule exactly like the plain `rlm` preset, plus
-# `plugin-rlm-loop`. The five `@deepseek-ai/dsh-plugin-rlm-*` packages
+# `plugin-rlm-loop`. The six `@deepseek-ai/dsh-plugin-rlm-*` packages
 # (kernel, verifier, moa, compaction, loop — `plugin-rlm-memory` is
 # intentionally not mounted here) must be present in the loader's resolution
 # closure (they are added to apps/cli/package.json so the shipped CLI can
-# assemble this preset).
+# assemble this preset). The unified store (plugin-rlm-store) mounts first in
+# the rlm-stack group — it is the family's single write path since Phase A.
 
 # ── identity: the manager protocol ──────────────────────────────────────────
 
@@ -60,7 +61,14 @@
   group: true
   isolate:
     rlm.kernels: true
+    rlm.store: true
   config:
+    # Phase A authority flip: the unified store is the family's single write
+    # path; it mounts BEFORE its consumers (continual-harness projection,
+    # loop, verifier, moa).
+    - id: rlm-store
+      name: '@deepseek-ai/dsh-plugin-rlm-store'
+
     - id: rlm-kernel
       name: '@deepseek-ai/dsh-plugin-rlm-kernel'
 
@@ -83,6 +91,8 @@
     - id: rlm-loop
       name: '@deepseek-ai/dsh-plugin-rlm-loop'
       config:
+        # dataDir is deprecated since Phase A (the tool writes the unified
+        # store); kept for schema compatibility.
         dataDir: '~/.dsh/rlm'
         maxRounds: 32
 

@@ -17,6 +17,7 @@ import CommandRuntime from '@deepseek-ai/dsh-commands'
 import AgentPresets from '@deepseek-ai/dsh-agent-presets'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import SessionPersistence from '@deepseek-ai/dsh-session-persistence'
+import SessionProjection from '@deepseek-ai/dsh-session-projection'
 import Goal from '@deepseek-ai/dsh-goal'
 
 // Mirrors rlm-preset.spec.ts but targets the `loop` preset (MODE B), asserting
@@ -55,6 +56,7 @@ async function setup() {
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(CommandRuntime)
   await ctx.plugin(TokenMeter)
+  await ctx.plugin(SessionProjection)
   await ctx.plugin(SessionPersistence, [])
   await ctx.plugin(Goal)
   await ctx.plugin(AgentPresets, {

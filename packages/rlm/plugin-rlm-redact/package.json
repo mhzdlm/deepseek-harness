@@ -1,0 +1,23 @@
+{
+  "name": "@deepseek-ai/dsh-plugin-rlm-redact",
+  "version": "0.1.0-rc.1",
+  "description": "Shared credential/PII reference-text redaction for the RLM plugin family. Zero-dependency by design: moa and verifier consume the redactor without importing the kernel package (and its native zeromq dependency chain).",
+  "main": "lib/types/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/redact.d.ts",
+      "default": "./src/redact.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/**/*",
+    "lib/types/**/*"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "vitest run --root ../../../ packages/rlm/plugin-rlm-redact/tests/redact.spec.ts"
+  }
+}

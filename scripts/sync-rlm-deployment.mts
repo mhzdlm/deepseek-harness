@@ -2,11 +2,11 @@
 /**
  * Sync freshly built rlm plugin packages into a DeepSeek Harness deployment
  * tree (for example the desktop app's `dependencies\dsh`), reproducing the
- * manual install: copy the five packages (never their node_modules), make the
+ * manual install: copy the rlm packages (never their node_modules), make the
  * runtime dependencies resolvable, and verify the compiled output loads under
  * plain Node — no extensionless relative imports, entries present.
  *
- * The five packages are consumed as plain dependencies referenced by a locally
+ * The packages are consumed as plain dependencies referenced by a locally
  * authored agent preset; they intentionally declare no dsh.bundle (the bundle
  * layer is host-plane, while these rows belong to an agent preset).
  *
@@ -34,6 +34,7 @@ const PACKAGES = [
   'dsh-plugin-rlm-verifier',
   'dsh-plugin-rlm-moa',
   'dsh-plugin-rlm-loop',
+  'dsh-plugin-rlm-store',
 ] as const
 
 const SCOPED = `@deepseek-ai/`
@@ -125,7 +126,7 @@ if (!options.skipBuild) {
   console.log('[1/4] skipping build (--skip-build)')
 }
 
-console.log('[2/4] copying five packages into the deployment tree')
+console.log('[2/4] copying the rlm packages into the deployment tree')
 for (const name of PACKAGES) {
   const pkgDir = path.join(REPO_ROOT, 'packages', 'rlm', name.replace('dsh-plugin-', 'plugin-'))
   copyPackage(pkgDir, name, deployNodeModules)

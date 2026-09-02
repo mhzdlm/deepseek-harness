@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { createMoaTool, type MoaCallModel, type MoaModelRequest } from '../src/moa-tool.ts'
 import { DEFAULT_PRESET_NAME, normalizePresets } from '../src/presets.ts'
 import type { MoaResolvedPreset } from '../src/presets.ts'
-import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel/src/redact.ts'
+import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-redact/src/redact.ts'
 
 const roots: string[] = []
 afterEach(() => {

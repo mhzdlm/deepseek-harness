@@ -275,6 +275,26 @@ export interface HostHandlerLimits {
    * (e.g. a whole-repo string) from becoming a runaway billing call.
    */
   maxSubcallPromptChars: number
+  /**
+   * Phase 10 (LAYERS.md §2.2): cumulative `llm.query` subcalls allowed per
+   * owning session — the session-level 总量 budget the per-call caps cannot
+   * provide (paper Observation 4: cost is long-tailed; every batch can be
+   * individually compliant while the session total burns through). Defaults to 200.
+   */
+  maxSessionSubcalls: number
+  /**
+   * Phase 10 (LAYERS.md §2.2): cumulative subcall answer characters allowed per
+   * owning session. Pre-checked per batch with the per-answer cap as the worst
+   * case, settled with actuals as answers land. Defaults to 1000000.
+   */
+  maxSessionSubcallChars: number
+  /**
+   * Phase 10: code-enforced recursion guard — `llm.query` calls declaring
+   * `depth >= maxRecursionDepth` fail loud. The persona hint alone is the
+   * paper's documented failure mode on weak models (Appendix B/E: thousands of
+   * subcalls for basic tasks). `0` disables subcalls entirely. Defaults to 2.
+   */
+  maxRecursionDepth: number
 }
 
 const DEFAULT_HANDLER_LIMITS: HostHandlerLimits = {
@@ -285,6 +305,9 @@ const DEFAULT_HANDLER_LIMITS: HostHandlerLimits = {
   maxSubcallAnswerChars: 8_000,
   subcallTimeoutMs: 120_000,
   maxSubcallPromptChars: 100_000,
+  maxSessionSubcalls: 200,
+  maxSessionSubcallChars: 1_000_000,
+  maxRecursionDepth: 2,
 }
 
 interface ChildRecord {
@@ -352,6 +375,12 @@ export function createHostHandlers(
   const sessionControllers = new Map<string, Set<AbortController>>()
   // Per-session active rlm children keyed by run id, for rlm.delete_subagent.
   const sessionRuns = new Map<string, Map<string, ChildRecord>>()
+  // Phase 10 (LAYERS.md §2.2): session-level subcall ledger — cumulative
+  // calls and settled answer chars per owning session. Pre-checked per batch
+  // (calls exactly; chars with the per-answer cap as worst case), settled with
+  // actuals as answers land, cleared on abortSession. This is the 总量 guard
+  // the per-call quotas cannot provide.
+  const sessionSubcallLedger = new Map<string, { calls: number; chars: number }>()
   // Per-session count of spawns currently in flight (started but not yet
   // registered in sessionRuns). Keeps the fan-out cap exact in the parallel-spawn
   // window: a model firing several rlm.run calls at once must each see the
@@ -386,6 +415,9 @@ export function createHostHandlers(
   const abortSession = (sessionId: string): void => {
     inflightSpawns.delete(sessionId)
     inflightSubcalls.delete(sessionId)
+    // A disposed session's subcall budget is gone with it; a fresh session
+    // starts from zero.
+    sessionSubcallLedger.delete(sessionId)
     const sessionSubcalls = sessionSubcallControllers.get(sessionId)
     if (sessionSubcalls) {
       for (const controller of [...sessionSubcalls]) controller.abort()
@@ -412,6 +444,66 @@ export function createHostHandlers(
   }
 
   const handlers: HostRequestHandlers = {
+    // Phase A (BUILD.md item 3): kernel-side harness writes relay into the
+    // unified store as judgments; the local harness_state.json is re-rendered
+    // by the continual-harness projection listener. Global writes are frozen
+    // until the Phase C mailbox migration.
+    'rlm.harness.write': async (payload) => {
+      const store = ctx.get('rlm.store')
+      if (!store) return { ok: false, error: 'rlm.store service is not assembled in this host' }
+      const p = (payload ?? {}) as {
+        op?: string
+        scope?: string
+        kind?: string
+        id?: string
+        title?: string
+        content?: string
+      }
+      if (p.scope === 'global') {
+        return { ok: false, error: 'global harness scope is frozen in Phase A; it migrates into the mailbox in Phase C' }
+      }
+      const parent = ctx.agents.currentInitiator()
+      if (!parent) {
+        return { ok: false, error: 'rlm.harness.write requires an owning agent session' }
+      }
+      const scope = { kind: 'session' as const, id: String(parent.session.id) }
+      const subject = `harness:${p.kind ?? 'memory'}:${p.id ?? ''}`
+      // Cold-start honesty: beliefs() is a synchronous in-memory read; on a
+      // fresh store instance the session view is empty until loaded.
+      await store.loadOnce(scope)
+      try {
+        if (p.op === 'delete') {
+          const target = store.beliefs(scope).find((b: { subject?: string }) => b.subject === subject)
+          if (!target) return { ok: true, deleted: false }
+          await store.judge(scope, {
+            criterionRef: 'crit/kernel-harness-write',
+            verdict: 'voiding',
+            target: target.id,
+            dataSupport: { summary: `kernel-side delete of ${subject}` },
+            provenance: { eventRange: [1, store.view(scope).seq] },
+          })
+          return { ok: true, deleted: true }
+        }
+        const previous = store.beliefs(scope).find((b: { subject?: string }) => b.subject === subject)
+        await store.judge(scope, {
+          criterionRef: 'crit/kernel-harness-write',
+          verdict: 'conclusion',
+          belief: {
+            kind: 'procedural',
+            content: typeof p.content === 'string' ? p.content : '',
+            title: typeof p.title === 'string' ? p.title : undefined,
+            subject,
+            ...(previous ? { supersedes: { id: previous.id, reason: 'kernel-side upsert' } } : {}),
+          },
+          dataSupport: { summary: `kernel-side upsert of ${subject}` },
+          provenance: { eventRange: [1, store.view(scope).seq] },
+        })
+        return { ok: true }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    },
+
     // `await rlm("...")` → spawn a real dsh subagent; returns the handle
     // immediately, the child's result arrives later as a settlement notice.
     'rlm.run': async (payload) => {
@@ -425,6 +517,28 @@ export function createHostHandlers(
         throw new Error('rlm.run requires an owning agent session')
       }
       const sid = String(parent.session.id)
+
+      // Phase B trigger ① (delegation boundary, down): the boundary is a
+      // first-class action-boundary event, and the parent's freshness is
+      // re-checked before the child runs on its premises. Stale beliefs do
+      // not block the delegation (the lock is on the gate, not the engine) —
+      // they surface as a warning the manager must carry.
+      const storeAtBoundary = ctx.get('rlm.store')
+      let freshnessWarning = ''
+      if (storeAtBoundary) {
+        const scope = { kind: 'session' as const, id: sid }
+        await storeAtBoundary.append(scope, 'rlm/action-boundary', {
+          action: 'delegation-down',
+          child: name,
+          promptChars: prompt.length,
+        })
+        const stale = storeAtBoundary.evaluateFreshness(scope).filter((v: { stale: boolean }) => v.stale)
+        if (stale.length > 0) {
+          freshnessWarning = `[freshness] ${stale.length} belief(s) went stale on the delegation boundary `
+            + '(external checkpoints moved or the internal clock ran out) — re-verify before building on them. '
+            + `Beliefs: ${stale.map((v: { beliefId: string }) => v.beliefId).join(', ')}.`
+        }
+      }
 
       // Resource governors: an unbounded prompt inflates a child's context
       // silently, and an unchecked fan-out lets a looping model create
@@ -505,6 +619,7 @@ export function createHostHandlers(
             session_dir: path.join(dataDir, 'session-artifacts', childId),
             model: parent.options.model ?? 'unknown',
             retained: true,
+            ...(freshnessWarning !== '' ? { freshness_warning: freshnessWarning } : {}),
           }
         }
 
@@ -541,6 +656,7 @@ export function createHostHandlers(
           // FIX-9: surface the model the child will actually use when known,
           // instead of the opaque placeholder 'unknown'.
           model: run.localAgent?.options.model ?? parent.options.model ?? 'unknown',
+          ...(freshnessWarning !== '' ? { freshness_warning: freshnessWarning } : {}),
         }
       } catch (error) {
         dropInflight(sid)
@@ -863,6 +979,37 @@ export function createHostHandlers(
           + 'Chunk the context into smaller subcall prompts.',
         )
       }
+      // Phase 10: recursion guard enforced in code, not persona (LAYERS.md §1
+      // discipline ①). A caller already at the depth cap must answer directly;
+      // without a hard stop, weak models subcall on everything (paper
+      // Appendix B/E failure mode). An undeclared depth is the root caller
+      // (depth 0), so `maxRecursionDepth: 0` disables subcalls entirely —
+      // the evaluation battery's no-recursion baseline.
+      const callerDepth = typeof payload.depth === 'number' ? payload.depth : 0
+      if (callerDepth >= limits.maxRecursionDepth) {
+        throw new Error(
+          `llm.query: caller recursion depth ${callerDepth} is at or over the `
+          + `cap (maxRecursionDepth=${limits.maxRecursionDepth}). Answer directly instead of spawning another subcall layer.`,
+        )
+      }
+      // Phase 10: session-level totals budget. Calls are known exactly before
+      // dispatch; answer chars are bounded by the per-answer cap, so the
+      // pre-check is a true worst case and nothing burns on a rejected batch.
+      const ledger = sessionSubcallLedger.get(sid) ?? { calls: 0, chars: 0 }
+      if (ledger.calls + prompts.length > limits.maxSessionSubcalls) {
+        throw new Error(
+          `llm.query: this batch would reach ${ledger.calls + prompts.length} session subcalls, over the `
+          + `${limits.maxSessionSubcalls}-call budget (maxSessionSubcalls=${limits.maxSessionSubcalls}; `
+          + `used ${ledger.calls}). Wrap up the task or continue in a fresh session.`,
+        )
+      }
+      if (ledger.chars + prompts.length * limits.maxSubcallAnswerChars > limits.maxSessionSubcallChars) {
+        throw new Error(
+          'llm.query: this batch could push session subcall volume past the '
+          + `${limits.maxSessionSubcallChars}-character budget (maxSessionSubcallChars=${limits.maxSessionSubcallChars}; `
+          + `used ${ledger.chars}). Wrap up the task or continue in a fresh session.`,
+        )
+      }
       // Phase 8: register a disposal handle for the whole batch so
       // session/disposed stops in-flight generation instead of orphaning it.
       const batchController = new AbortController()
@@ -900,6 +1047,11 @@ export function createHostHandlers(
           const over = text.length > limits.maxSubcallAnswerChars
           answered.push(over ? text.slice(0, limits.maxSubcallAnswerChars) : text)
           truncated.push(over)
+          // Settle the ledger with actuals (truncated length) as each answer
+          // lands, so a mid-batch failure still accounts for what was burned.
+          ledger.calls += 1
+          ledger.chars += Math.min(text.length, limits.maxSubcallAnswerChars)
+          sessionSubcallLedger.set(sid, ledger)
         }
       } finally {
         dropInFlightSubcall(sid)
@@ -917,6 +1069,7 @@ export function createHostHandlers(
         durationMs,
         ...(typeof payload.use === 'string' ? { use: payload.use } : {}),
         ...(typeof payload.depth === 'number' ? { depth: payload.depth } : {}),
+        sessionSubcalls: { calls: ledger.calls, chars: ledger.chars },
       })
       return { answers: answered, model, degenerate, truncated, retries, durationMs }
     },

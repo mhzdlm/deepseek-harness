@@ -162,6 +162,16 @@ def _prime_agent_snapshot_state():
         return
 
     bytes_written = os.path.getsize(${pyStr(outPath)})
+    # [local patch #19] Snapshot integrity: record the payload's SHA-256 in the
+    # manifest. dill.load executes arbitrary code for pickled instructions, so a
+    # tampered snapshot file is a code-execution vector; the restore side
+    # (buildRestoreCode) verifies this digest before unpickling and refuses on
+    # any mismatch or missing metadata.
+    import hashlib as _hashlib
+    digest = _hashlib.sha256()
+    with _b.open(${pyStr(outPath)}, "rb") as _fh:
+        for _chunk in _b.iter(lambda: _fh.read(1 << 20), b""):
+            digest.update(_chunk)
     saved = _b.sorted(payload.keys())
     pruned = _b.sorted(name for name in oversized if name in ns) if ${pruneOversized ? "True" : "False"} else []
     manifest = {
@@ -170,6 +180,7 @@ def _prime_agent_snapshot_state():
         "skipped": skipped,
         "pruned": pruned,
         "bytes": bytes_written,
+        "sha256": digest.hexdigest(),
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
@@ -211,8 +222,14 @@ finally:
  * Python that loads the payload at `inPath` (if present) into the user namespace,
  * reviving each name independently, then prints a single marker line with the result.
  * Tolerant of a missing or corrupt file: reports an empty restore, never raises.
+ * [local patch #19] The payload is UNTRUSTED until integrity-checked: `dill.load`
+ * executes pickled instructions, so a tampered snapshot is a code-execution
+ * vector. The SHA-256 recorded in the manifest at snapshot time must match the
+ * payload file, and a missing/incompatible manifest refuses the restore (old
+ * snapshots without integrity metadata are rejected — AGENTS.md: no on-disk
+ * format compatibility promises).
  */
-export function buildRestoreCode(inPath: string): string {
+export function buildRestoreCode(inPath: string, manifestPath: string): string {
 	// Builtins via the local _b alias so a shadowed name in the user namespace
 	// (list/open/print/…) can't break the restore path.
 	return `
@@ -225,6 +242,26 @@ def _prime_agent_restore_state():
         import dill
     except _b.Exception as _err:
         _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "dill unavailable: " + _b.str(_err)}))
+        return
+
+    # [local patch #19] Verify the payload digest against the manifest BEFORE any
+    # dill call touches the bytes. Refusal reports an empty restore (the kernel
+    # continues fresh) and names the reason.
+    import hashlib as _hashlib
+    try:
+        with _b.open(${pyStr(manifestPath)}, "r") as _mfh:
+            manifest = json.load(_mfh)
+        expected = manifest.get("sha256")
+        if not _b.isinstance(expected, str) or _b.len(expected) != 64:
+            raise ValueError("manifest has no sha256 digest (pre-#19 snapshot)")
+        digest = _hashlib.sha256()
+        with _b.open(${pyStr(inPath)}, "rb") as _fh:
+            for _chunk in _b.iter(lambda: _fh.read(1 << 20), b""):
+                digest.update(_chunk)
+        if digest.hexdigest() != expected:
+            raise ValueError("payload sha256 mismatch")
+    except _b.Exception as _err:
+        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "snapshot integrity check failed (" + _b.str(_err) + "); refusing to restore unverified dill payload"}))
         return
 
     try:

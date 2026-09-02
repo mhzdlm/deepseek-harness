@@ -192,7 +192,16 @@ const AUDITS: FileAudit[] = [
 	},
 	{
 		file: "state-snapshot.ts",
-		checks: [],
+		checks: [
+			{
+				// Phase 10 (安全债): dill.load executes pickled instructions, so a
+				// tampered snapshot file is a code-execution vector. The payload
+				// digest is written into the manifest at snapshot time and verified
+				// by the restore script before any dill call.
+				label: "#19 snapshot integrity: manifest sha256 + verified restore",
+				mustContain: [/\[local patch #19\]/, /sha256/, /integrity check failed/],
+			},
+		],
 	},
 	{
 		file: "fork-server-script.ts",

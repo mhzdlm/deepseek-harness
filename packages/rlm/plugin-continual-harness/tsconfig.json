@@ -37,6 +37,9 @@
     },
     {
       "path": "../plugin-rlm-memory"
+    },
+    {
+      "path": "../plugin-rlm-store"
     }
   ]
 }

@@ -17,18 +17,11 @@
  */
 
 import { existsSync } from 'node:fs'
-import { mkdir, rename, writeFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import {
   globalHarnessStatePath,
-  harnessStatePath,
   readHarnessStateDetailed,
-  readHarnessStatesDetailed,
-  writeHarnessStates,
   type HarnessEntry,
-  type HarnessStateFile,
-  type RefinementEvent,
 } from '@deepseek-ai/dsh-plugin-continual-harness'
 import type { PythonSkillRuntimeInfo } from './vendor/kernel/bootstrap.ts'
 import { SLUG_PATTERN } from './skill-create.ts'
@@ -130,13 +123,17 @@ export async function upsertPythonSkillEntry(
   spec: PythonSkillEntrySpec,
   sessionId = 'skill-create',
 ): Promise<HarnessEntry> {
-  const states = await readHarnessStatesDetailed(dataDir, sessionId)
-  const global = states.global.state
-  const local = states.local.state
-
-  const existing = global.entries.skill?.[spec.id]
-  const timestamp = new Date().toISOString()
-  const entry: HarnessEntry = {
+  void dataDir
+  void sessionId
+  // Phase A freeze (BUILD.md R5): the global harness scope no longer accepts
+  // writes; it migrates into the mailbox in Phase C. The disk-side skill
+  // install still runs (the caller does that); only the cross-session
+  // registration entry is refused. A synthetic entry is returned so the
+  // tool's reporting shape stays stable.
+  console.warn(
+    `[rlm-kernel] global harness scope is frozen in Phase A; skill '${spec.id}' is installed on disk but will not persist across sessions until the Phase C mailbox migration`,
+  )
+  return {
     id: spec.id,
     kind: 'skill',
     title: spec.title,
@@ -145,46 +142,10 @@ export async function upsertPythonSkillEntry(
     scope: 'global',
     reference: { type: 'python', import: spec.importName, callable: spec.callable ?? 'run' },
     arguments: {},
-    metadata: {},
+    metadata: { frozen: true },
     source: 'skill-create',
-    created_at: existing?.created_at ?? timestamp,
-    updated_at: timestamp,
-    version: (existing?.version ?? 0) + 1,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    version: 1,
   }
-
-  // Reverse snapshot for /refine-rollback: the pre-write value of the touched
-  // global key, keyed in the standard `scope:kind:id` format the rollback
-  // parser understands (null = the registration creates the entry).
-  const reverseSnapshot = { [`global:skill:${spec.id}`]: existing ?? null }
-  const snapshotDir = path.join(path.dirname(harnessStatePath(dataDir, sessionId)), 'refinements')
-  await mkdir(snapshotDir, { recursive: true })
-  const snapshotPath = path.join(snapshotDir, `skill-create-${timestamp.replace(/[:.]/g, '-')}.snapshot.json`)
-  const tmp = `${snapshotPath}.tmp`
-  await writeFile(tmp, JSON.stringify(reverseSnapshot, null, 2), 'utf8')
-  await rename(tmp, snapshotPath)
-
-  const event: RefinementEvent = {
-    id: randomUUID(),
-    trigger: 'skill-create',
-    changes: [`upsert global:skill:${spec.id}`],
-    evidence: `python package <dataDir>/skills/${spec.id}`,
-    outcome: existing === undefined ? 'created' : 'updated',
-    snapshot: { path: snapshotPath },
-    after: reverseSnapshot,
-  }
-
-  const nextGlobal = {
-    ...global,
-    entries: {
-      ...global.entries,
-      skill: { ...(global.entries.skill ?? {}), [spec.id]: entry },
-    },
-  }
-  const nextLocal: HarnessStateFile = { ...local, refinements: [...local.refinements, event] }
-
-  await writeHarnessStates(dataDir, sessionId, nextGlobal, nextLocal, {
-    global: states.global.mtimeMs,
-    local: states.local.mtimeMs,
-  })
-  return entry
 }

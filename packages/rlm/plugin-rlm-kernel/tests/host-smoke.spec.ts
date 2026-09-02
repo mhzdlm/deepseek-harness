@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import SessionProjection from '@deepseek-ai/dsh-session-projection'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
@@ -25,6 +26,8 @@ async function setup() {
   const root = mkdtempSync(join(tmpdir(), 'dsh-rlm-host-'))
   roots.push(root)
   await ctx.plugin(JsonlSessionPersistence, { root })
+  // alpha.3: agent-loop/agent-presets inject sessionProjections now.
+  await ctx.plugin(SessionProjection)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(SubagentRuntime)
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
@@ -45,7 +48,8 @@ describe('rlm plugin host mount', () => {
     const agent = ctx.agentLoop.create(SessionId('cmd-probe'), { provider: 'probe', model: 'probe' })
     expect(ctx.commands.find(agent, 'harness')?.name).toBe('harness')
     expect(ctx.commands.find(agent, 'refine')?.name).toBe('refine')
-    expect(ctx.commands.find(agent, 'refine-rollback')?.name).toBe('refine-rollback')
+    // Phase A: /refine-rollback died with the reverse-snapshot pipeline (the
+    // local harness file is a store projection now); /refine stays, frozen.
   })
 
   it('injects the harness overview into the assembled system prompt', async () => {

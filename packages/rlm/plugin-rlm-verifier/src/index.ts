@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-kernel'
+import { redactReferenceText } from '@deepseek-ai/dsh-plugin-rlm-redact'
 import type {} from '@deepseek-ai/dsh-subagent'
 import z from '@deepseek-ai/schemastery'
 import { createVerifyTool, type VerifyCallModel } from './verify-tool.ts'
@@ -72,6 +72,23 @@ export interface Config {
    * must not pin the turn forever. Defaults to 600000.
    */
   verifyTimeoutMs?: number
+  /**
+   * Phase 10 (T9.2): absolute cap on the `pivots` argument. Larger values fail
+   * loud naming the knob — unbounded pivots multiply tournament comparisons
+   * (and therefore LLM calls) per judge. Defaults to 8.
+   */
+  maxPivots?: number
+  /**
+   * Phase 10 (T9.2): bounded pool for concurrent pair-scoring calls — the
+   * fan-out governor the tournament's internal `Promise.all` lacks. Defaults
+   * to 4 (the kernel `llm.query` in-flight quota's shape).
+   */
+  maxInFlightPairCalls?: number
+  /**
+   * Phase 10: per-scoring-call output token ceiling (previously hardcoded
+   * 4096 at the wiring site; the tool keeps the same default internally).
+   */
+  maxTokens?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -85,6 +102,9 @@ export const Config: z<Config> = z.object({
   maxEvaluations: z.natural().min(1),
   maxAutoSpawn: z.natural().min(1),
   verifyTimeoutMs: z.natural().min(1),
+  maxPivots: z.natural().min(1),
+  maxInFlightPairCalls: z.natural().min(1),
+  maxTokens: z.natural().min(1),
   judgeProfiles: z.dict(z.object({
     model: z.string().required(),
     provider: z.string(),
@@ -163,6 +183,8 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   const tool = createVerifyTool({
+    // Phase A item 4: absent store degrades to no landing (standalone assemblies).
+    store: ctx.get('rlm.store'),
     callModel: request => callSeamModel(ctx, request),
     provider,
     // T2.6: session artifacts root for per-run detail files.
@@ -177,13 +199,17 @@ export function apply(ctx: Context, config: Config): void {
     ...(config.maxEvaluations !== undefined ? { maxEvaluations: config.maxEvaluations } : {}),
     ...(config.maxAutoSpawn !== undefined ? { maxAutoSpawn: config.maxAutoSpawn } : {}),
     ...(config.verifyTimeoutMs !== undefined ? { verifyTimeoutMs: config.verifyTimeoutMs } : {}),
+    // Phase 10 (T9.2): pivots ceiling + pair-scoring concurrency pool.
+    ...(config.maxPivots !== undefined ? { maxPivots: config.maxPivots } : {}),
+    ...(config.maxInFlightPairCalls !== undefined ? { maxInFlightPairCalls: config.maxInFlightPairCalls } : {}),
     privacyFilter,
     // T2.6 fix: full-spectrum credential/PII masking for the durable detail
     // archive under `full` privacy (shared kernel-package redactor).
     ...(privacyFilter === 'full' ? { redactReference: redactReferenceText } : {}),
     trackController,
     ...(Object.keys(judgeProfiles).length > 0 ? { judgeProfiles } : {}),
-    maxTokens: 4_096,
+    // Phase 10: Config-exposed (was hardcoded here); the tool defaults to 4096.
+    ...(config.maxTokens !== undefined ? { maxTokens: config.maxTokens } : {}),
   })
 
   ctx.effect(

@@ -22,3 +22,7 @@ The summarizer reuses the conversation's own system prompt, tool schemas, and me
 
 - The split-turn detection is heuristic: it triggers when the region's first message is an `assistant` role. A precise "cut inside a turn" signal would require extending `SummarizationInput` in `compaction-basic`, which this package deliberately avoids.
 - This provider is an alternative to `compaction-basic`, not a replacement for other presets. Only RLM mounts it.
+
+## Status
+
+Phase D (2026-09-01): the RLM preset's compaction provider. The package exports `RlmSplitTurnCompactionEngine` (default export), a `BasicCompactionEngine` subclass registered as the `ctx.compaction` service in RLM assemblies — standard `command-compact` and `tool-result-pruner` consumers pick it up unchanged; the companion `plugin-rlm-compaction-invariant` reserves package ownership with no runtime invariant of its own. Family overview: [packages/rlm/README.md](../README.md); family-level status: see BUILD.md in the docs repo.

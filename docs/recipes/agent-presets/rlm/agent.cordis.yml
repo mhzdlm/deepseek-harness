@@ -22,11 +22,13 @@
 # persistence, and model route.
 #
 # `plugin-rlm-kernel` PROVIDES a service (`rlm.kernels`, the per-session kernel
-# registry) and `plugin-rlm-verifier` CONSUMES it, so the two MUST share one
-# entry-local realm: they sit together in the `rlm-stack` group, and the group
-# declares `isolate: { rlm.kernels: true }` so that service is stored in a
-# realm-private symbol instead of the process-global root realm (which the
-# preset mount audit rejects). `plugin-continual-harness` reads only the
+# registry), so the group declares `isolate: { rlm.kernels: true }`: the service
+# must be stored in a realm-private symbol instead of the process-global root
+# realm (which the preset mount audit rejects). Note (2026-08-31, T9.8): the
+# verifier no longer CONSUMES `rlm.kernels` — the kernel/subprocess scoring
+# path retired on 2026-08-24 and verifier sources have zero `kernels`
+# references — the isolation stays because the kernel remains the service's
+# provider. `plugin-continual-harness` reads only the
 # on-disk harness file, so it can join the same group.
 
 # ── identity ────────────────────────────────────────────────────────────────
@@ -107,7 +109,14 @@
   group: true
   isolate:
     rlm.kernels: true
+    rlm.store: true
   config:
+    # Phase A authority flip: the unified store is the family's single write
+    # path (judgment channel + event streams). It must mount BEFORE its
+    # consumers (continual-harness projection, loop, verifier, moa).
+    - id: rlm-store
+      name: '@deepseek-ai/dsh-plugin-rlm-store'
+
     - id: rlm-kernel
       name: '@deepseek-ai/dsh-plugin-rlm-kernel'
 

@@ -2,63 +2,68 @@
 
 English | [中文](README.zh.md)
 
-RLM family shared substrate. It adapts the harness `SubagentRuntime` so the verifier and MOA plugins can borrow the subagent fleet for scoring and reference calls, and exposes the `redactReference` contract and the shared `dataDir` resolver the other rlm plugins depend on.
+Persistent IPython kernel as the model's primary tool, for the rlm family. It registers the `ipython` tool (backed by a per-session `KernelManager` vendored from prime-agent, see `src/vendor/UPSTREAM`), the `create_python_skill` tool, wires the kernel's `host.request` bridge to dsh services (`rlm.run` → `ctx.subagents.start`; `llm.query` → the host LLM seam), provides the `rlm.kernels` Cordis service (the `SessionKernelRegistry`) so sibling plugins can run cells through the same persistent kernel, and disposes kernels on `session/disposed`.
 
 ## Config
 
 | Config | Type | Default | Description |
 |---|---|---|---|
-| `dataDir` | string | `~/.dsh/rlm` | Harness base dir the rlm plugins share for landing state and artifacts; must match the verifier/MOA/loop/continual-harness `dataDir`. |
+| `dataDir` | string | `~/.dsh/rlm` | Root for kernel artifacts; must match the other rlm plugins' `dataDir`. |
 | `python` | string | — | Python interpreter with ipykernel + prime-agent-runtime; omitted → auto-bootstrapped venv. |
-| `subagentProvider` | string | `spawn` | Subagent provider name used by `rlm.run`. |
+| `subagentProvider` | string | `spawn` | Subagent provider used by `rlm.run`. |
 | `idleTimeoutMs` | number | `600000` | Idle timeout before a session's kernel is reclaimed (dill snapshot preserves state); `0` disables. |
 | `maxOutputChars` | number | `65536` | Cap on cell output text returned to the model. |
 | `snapshotDebounceMs` | number | `1500` | Auto-snapshot debounce after a successful cell. |
 | `snapshotHistory` | number | `3` | Retained dill snapshots (`kernel-state.<n>.dill`); `0` disables rotation. |
-| `warmupOnSessionCreate` | boolean | `false` | Provision the kernel at session/created instead of the first ipython call. |
-| `maxLiveKernels` | number | `4` | Cap on concurrently live kernels (0 = unlimited); over-cap evicts oldest non-busy LRU-first. |
+| `warmupOnSessionCreate` | boolean | `false` | Provision the kernel at `session/created` instead of the first ipython call. |
+| `maxLiveKernels` | number | `4` | Cap on concurrently live kernels (0 = unlimited); over-cap evicts oldest non-busy LRU-first (leased ones only after a forced snapshot succeeds). |
 | `reclaimSnapshotGraceMs` | number | `5000` | Grace before a leased over-cap kernel retries its forced eviction snapshot. |
-| `maxChildrenPerSession` | number | `8` | Live `rlm.run` children allowed per parent session (one-shot + retained, in-flight counted). |
+| `maxChildrenPerSession` | number | `8` | Outstanding `rlm.run` children per parent session before further spawns fail loud. |
 | `maxRunPromptChars` | number | `24000` | Character cap on a single `rlm.run` prompt. |
-| `subcallModel` | string | — | T7.10 `llm.query` route selector (LAYERS.md §2.3 R2): the model used when the kernel caller does not name one. Omit it to run subcalls on the owning agent's own model (no downgrade). |
-| `maxInFlightSubcalls` | number | `8` | T7.10 (R1): in-flight `llm.query` subcall streams allowed per owning session; exceeding it fails loud naming the key. |
-| `maxSubcallBatch` | number | `32` | T7.10 (R1): max prompts in one `llm.query` batch request. |
-| `maxSubcallAnswerChars` | number | `8000` | T7.10: char cap per subcall answer; longer answers are truncated and flagged. |
-| `subcallTimeoutMs` | number | `120000` | T7.10 (T7.3 semantics): wall-clock budget per subcall generation; expiry aborts the attempt. |
+| `subcallModel` | string | — | T7.10 `llm.query` route selector: the model used when the kernel caller does not name one. Omit to run subcalls on the owning agent's own model (no downgrade). |
+| `maxInFlightSubcalls` | number | `8` | In-flight `llm.query` subcall streams per owning session. |
+| `maxSubcallBatch` | number | `32` | Max prompts in one `llm.query` batch. |
+| `maxSubcallAnswerChars` | number | `8000` | Char cap per subcall answer; longer answers are truncated and flagged. |
+| `subcallTimeoutMs` | number | `120000` | Wall-clock budget per subcall generation. |
+| `maxSubcallPromptChars` | number | `100000` | Char cap per `llm.query` prompt. |
+| `maxSessionSubcalls` | number | `200` | Cumulative `llm.query` calls per session before further batches fail loud. |
+| `maxSessionSubcallChars` | number | `1000000` | Cumulative answer characters per session. |
+| `maxRecursionDepth` | number | `2` | Code-enforced recursion ceiling — `llm.query` calls at or above this `depth` fail loud; `0` disables subcalls entirely. |
+
+## Tools
+
+- `ipython` (`code`) — execute Python in the session's persistent REPL; variables and imports survive across calls; the kernel can await host services via `rlm` (`await rlm("sub-task")`). Output is capped at `maxOutputChars`; overflow is archived under the session's artifacts.
+- `create_python_skill` (`name`, `import_name`, `title`, `description`, `callable` default `run`) — register a python-backed skill already written to `<dataDir>/skills/<name>/` (setuptools `pyproject.toml` + module exposing an async `run(...)`), making it callable in the kernel as `await <import>(...)` after the next provision. Fails loud when the files on disk do not match.
+
+## Service: `rlm.kernels`
+
+`apply` provides the `SessionKernelRegistry`. Sibling plugins (e.g. `plugin-rlm-verifier`) may run their own cells through the same persistent kernel; the plugin stays fully functional when nothing injects it.
+
+## Venv
+
+With `python` omitted, the registry auto-bootstraps a venv (uv-installed interpreter, ipykernel + prime-agent-runtime); the bootstrap child rides a scrubbed environment (`src/env.ts`) so model-reachable kernel processes never inherit host secrets. At each provision, harness skill entries drive the venv's python-skill installs (`collectPythonSkills` re-reads `<dataDir>/skills/` per provision, so edits flow without a restart; non-slug ids or missing `pyproject.toml` are skipped with a warning).
 
 ## Behavior: `llm.query` subcall bridge
 
-The kernel bootstrap injects `llm_query(prompt | prompts, **kwargs)`; the host's 8th bridge handler executes each subcall through the LLM seam with `purpose: 'rlm-subcall'` attribution. Arrays are batches (the paper's `llm_batch` analog). Degenerate answers (empty, trivially short, or self-repeating — prime Appendix F.1's "sub-LM gives up" pattern) are retried once and, if still degenerate, returned with a `degenerate` flag so the kernel caller decides its own chunking. Every answer over `maxSubcallAnswerChars` is truncated and flagged; a bounced/failed generation throws. Each batch appends a log-only `session/subcall-query` event (batch size, resolved model, per-answer char counts, truncation flags, retries, duration, optional caller `use`/`depth` tags) — the LAYERS.md §5 evaluation data source.
+The kernel bootstrap injects `llm_query(prompt | prompts, **kwargs)`; the host bridge executes each subcall through the LLM seam with `purpose: 'rlm-subcall'` attribution. Arrays are batches. Degenerate answers (empty, trivially short, or self-repeating) are retried once and, if still degenerate, returned with a `degenerate` flag. Every answer over `maxSubcallAnswerChars` is truncated and flagged. Each batch appends a log-only `session/subcall-query` event.
 
-## Behavior: `rlm_dag` orchestration skill (LAYERS.md §4.1)
+## Behavior: `rlm.run` bridge
 
-`skills/rlm_dag/` ships the DAG orchestration protocol as a python-skill package: plan subcalls into layers, dispatch each layer as one `llm_query` batch, verify every answer with the cheapest deterministic check before it propagates, retry rejected rounds with fresh seeds, and assemble the plain result dict ("Root compute = dict lookup, string formatting, correctness checks"). Deploy by copying the package to `<dataDir>/skills/rlm_dag/` and registering a global harness skill entry (`reference: { type: 'python', import: 'rlm_dag', callable: 'run' }`), the same path as the loop-audit skill. The preset persona carries the "when not to recurse" discipline; automatic depth/use routing waits for the LAYERS.md §5 evaluation data.
+`rlm.run` maps to `ctx.subagents.start` under `subagentProvider`, bounded by `maxChildrenPerSession` and `maxRunPromptChars`; controllers are tracked per session and aborted on `session/disposed` so children cannot outlive their parent session.
 
-## Behavior: kernel-state restore notice
+## Skills directory
 
-When a session is provisioned from a dill snapshot, `appendRestoreNotice` injects a `user/message` (`source.form: 'notice'`, `surfaceOp: 'append'`) into the resolved session immediately after `restoreState()`. The body lists revived variables in an `<ipython_state_restored>` block and any lost entries separately, so the model sees the restored namespace before it issues the next cell. An empty restore result is a silent no-op. This complements the existing `consumeRestoreNotice` (surfaced as a prefix on the next `!python` result).
+`skills/rlm_dag/` ships the DAG orchestration protocol as a python-skill package (LAYERS.md §4.1): plan subcalls into layers, dispatch each layer as one `llm_query` batch, verify every answer with the cheapest deterministic check before it propagates, retry rejected rounds with fresh seeds, and assemble a plain result dict. Deploy by copying the package to `<dataDir>/skills/rlm_dag/` and registering a global harness skill entry (`reference: { type: 'python', import: 'rlm_dag', callable: 'run' }`).
 
-## Behavior: post-compaction kernel-state notice
+## Behavior: kernel-state notices
 
-After a compaction completes, the plugin's `session/event` subscription forwards `compaction/end` to `notifyCompactionEnd`. If a live kernel exists for that session, `appendPostCompactionNotice` lists the kernel's surviving top-level variable names (via the vendored `KernelManager.listNamespaceNames`) and injects them in an `<ipython_state>` block (`source.form: 'notice'`), mirroring prime-agent's `_syncKernelStateAfterCompaction`. The message tells the model the persistent kernel kept running through the compaction, so every variable, import, and helper defined before the checkpoint is still live. An absent kernel or empty namespace is a silent no-op. (Unlike prime, this build does not prune oversized variables before reporting, so the notice lists only surviving names, never discarded ones.)
-
-## Model Experience
-
-### Scoring delegation
-
-#### What the model sees
-
-The kernel emits no model-facing text itself; it hands the verifier and MOA plugins a `SubagentRuntime` so their scoring prompts reach the model through the ordinary subagent channel with `purpose` attribution.
-
-#### Token effect
-
-No tokens are produced by the kernel; it adds one borrowed subagent call per scoring request the consuming plugin chooses to make.
-
-#### KV Cache effect
-
-Stateless in the request path: it resolves the shared `dataDir` and redactor closure once at mount, so it never edits earlier request tokens.
+When a session is provisioned from a dill snapshot, `appendRestoreNotice` injects an `<ipython_state_restored>` notice listing revived variables (and lost entries separately); snapshot flushes append the log-only `session/kernel-snapshot` event. After a compaction, `compaction/end` is forwarded to `notifyCompactionEnd`, which injects an `<ipython_state>` notice listing surviving top-level names so the model knows the kernel kept running through the compaction.
 
 ## Known Limitations and Deferred Work
 
 - The kernel's `dataDir` must match the verifier/MOA/loop/continual-harness `dataDir`; a mismatch strands landed state under a different root.
-- Real-runtime mounting awaits the same dependency-closure fix as the other rlm plugins (`apps/cli` does not depend on rlm packages); until then the kernel reaches sessions via explicit `ctx.plugin()` mounting or vitest-toolchain compositions.
+- The shared reference-text redactor no longer lives here — since Phase 10 it is the zero-dependency `@deepseek-ai/dsh-plugin-rlm-redact` package, so moa/verifier no longer import this package (and its native zeromq dependency chain) just to mask reference text.
+
+## Status
+
+Phase D (2026-09-01): the family's compute substrate — the persistent kernel, the `rlm.run` / `llm.query` host bridges, and the python-skill install path. Family overview: [packages/rlm/README.md](../README.md); family-level status: see BUILD.md in the docs repo.

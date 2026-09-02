@@ -278,4 +278,67 @@ describe('pinned kernel vs real idle sweep', () => {
 
     await kernels.disposeAll()
   }, 180_000)
+
+  describe('live cap on the provision path (Phase 10 T9.1)', () => {
+    it('enforces maxLiveKernels on forSession even when idleTimeoutMs=0 (the sweep never runs)', async () => {
+      const now = { value: 1_000 }
+      const registry = makeRegistry({ maxLiveKernels: 2, idleTimeoutMs: 0, now: () => now.value })
+      const disposeCalls: string[] = []
+      const k = internals(registry)
+      // Seed two fake kernels with distinct LRU stamps (the injected clock).
+      now.value = 500
+      k.idle.touch('old-session')
+      now.value = 900
+      k.idle.touch('mid-session')
+      k.kernels.set('old-session', { dispose: async () => { disposeCalls.push('old-session') }, snapshotState: async () => null })
+      k.kernels.set('mid-session', { dispose: async () => { disposeCalls.push('mid-session') }, snapshotState: async () => null })
+
+      // Stub provisioning so forSession lands a fake manager on the claim path.
+      const registryAny = registry as unknown as { provision(sessionId: string): Promise<unknown> }
+      const originalProvision = registryAny.provision.bind(registry)
+      registryAny.provision = async (sessionId: string) => ({
+        dispose: async () => { disposeCalls.push(sessionId) },
+        snapshotState: async () => null,
+      })
+      try {
+        await registry.forSession('new-session')
+        // Three live kernels with cap 2: the LRU-oldest ('old-session') is
+        // evicted by the post-provision cap — with idleTimeoutMs=0 no sweep
+        // timer exists, so this is the only trigger (the T9.1 regression).
+        expect(k.kernels.size).toBe(2)
+        expect(k.kernels.has('new-session')).toBe(true)
+        expect(k.kernels.has('mid-session')).toBe(true)
+        expect(k.kernels.has('old-session')).toBe(false)
+        expect(disposeCalls).toContain('old-session')
+        expect(disposeCalls).not.toContain('new-session')
+      } finally {
+        registryAny.provision = originalProvision
+      }
+    })
+
+    it('a session disposed mid-provision is disposed exactly once by disposeSession (Phase 10)', async () => {
+      const registry = makeRegistry({})
+      const disposeCalls: string[] = []
+      let releaseProvision: () => void = () => undefined
+      const gate = new Promise<void>((resolve) => { releaseProvision = resolve })
+
+      const registryAny = registry as unknown as { provision(sessionId: string): Promise<unknown> }
+      const originalProvision = registryAny.provision.bind(registry)
+      registryAny.provision = async () => {
+        await gate
+        return { dispose: async () => { disposeCalls.push('raced') }, snapshotState: async () => null }
+      }
+      try {
+        const pending = registry.forSession('raced')
+        // Dispose while provisioning is still parked on the gate: disposeSession
+        // takes ownership of the in-flight promise and must be its ONLY disposer.
+        const disposal = registry.disposeSession('raced')
+        releaseProvision()
+        await Promise.all([pending, disposal])
+        expect(disposeCalls).toEqual(['raced'])
+      } finally {
+        registryAny.provision = originalProvision
+      }
+    })
+  })
 })

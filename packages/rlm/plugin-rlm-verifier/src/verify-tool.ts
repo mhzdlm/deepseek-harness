@@ -25,6 +25,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { RlmStore } from '@deepseek-ai/dsh-plugin-rlm-store'
+import { landToolOutcome } from '@deepseek-ai/dsh-plugin-rlm-store'
 import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import type { TokenLogprob } from '@deepseek-ai/dsh-llm'
 import { buildJudgePrompt, extractScore, type JudgeCriterion } from './scoring.ts'
@@ -55,6 +57,12 @@ export type VerifyCallModel = (request: {
 
 /** Wiring for {@link createVerifyTool}: the scoring transport and verifier behavior knobs. */
 export interface VerifyToolOptions {
+  /**
+   * Unified store (Phase A item 4): when assembled, the selection outcome is
+   * recorded as an observation + selection judgment in the session scope.
+   * Optional so standalone test assemblies keep working; the presets wire it.
+   */
+  store?: RlmStore | undefined
   /** Resolves the LLM transport; injected so orchestration is unit-testable. */
   callModel: VerifyCallModel
   /** Default provider route for the scoring model. */
@@ -116,6 +124,18 @@ export interface VerifyToolOptions {
    * Defaults to 600000 (10 minutes).
    */
   verifyTimeoutMs?: number
+  /**
+   * Phase 10 (T9.2): absolute cap on the `pivots` argument; larger values fail
+   * loud naming the key. Total tournament calls scale with pivots, so an
+   * unbounded value was an unbounded bill. Defaults to 8.
+   */
+  maxPivots?: number
+  /**
+   * Phase 10 (T9.2): max concurrent pair-scoring calls — a bounded pool in
+   * front of the tournament's internal `Promise.all` (kernel `llm.query`
+   * in-flight quota shape). Defaults to 4.
+   */
+  maxInFlightPairCalls?: number
 }
 
 const DEFAULT_CRITERIA: Array<JudgeCriterion> = [
@@ -362,6 +382,19 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
         maxEvaluations,
       )
       const pivotsArg = typeof args.pivots === 'number' && args.pivots > 0 ? Math.floor(args.pivots) : 2
+      // Phase 10 (T9.2): absolute pivots ceiling. Comparisons per tournament
+      // scale with pivots, so an unbounded value multiplied the bill per judge.
+      // Fail loud naming the key (maxCandidates precedent).
+      const maxPivots = options.maxPivots ?? 8
+      if (pivotsArg > maxPivots) {
+        throw new Error(
+          `verify: pivots=${pivotsArg} exceeds the cap (maxPivots=${maxPivots}). `
+          + 'Lower pivots, or raise the cap in the verifier Config.',
+        )
+      }
+      // Phase 10 (T9.2): bounded pool in front of the tournament's internal
+      // `Promise.all` — the judges' pair calls used to fan out unbounded.
+      const scoreGate = createPairCallGate(options.maxInFlightPairCalls ?? 4)
       const seed = typeof args.seed === 'number' && Number.isFinite(args.seed) ? Math.floor(args.seed) : 0
       // T3.3 autonomous quality gate: an optional 0-1 threshold on the best
       // candidate's score. The gate is a lower-bound filter, never a verdict —
@@ -452,11 +485,11 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
         const outcomes = await Promise.all(selected.map(async ({ name, profile }) => {
           const failures = { count: 0 }
           try {
-            const scored = await runTournament(candidates.length, seed, pivotsArg, async (a, b) =>
-              scorePairOnSeam(callModelTee, {
+            const scored = await runTournament(candidates.length, seed, Math.min(pivotsArg, candidates.length), async (a, b) =>
+              scoreGate(() => scorePairOnSeam(callModelTee, {
                 provider: profile.provider ?? options.provider ?? 'deepseek-official',
                 model: profile.model,
-              }, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, runSignal, maxCallTokens, failures))
+              }, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, runSignal, maxCallTokens, failures)))
             return { name, model: profile.model, status: failures.count > 0 ? 'degraded' as const : 'ok' as const, ...scored }
           } catch (error) {
             // An aborted caller (or the Phase 8 wall-clock deadline) re-throws
@@ -467,17 +500,18 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
           }
         }))
         // A degraded judge still produced a preference vector (its failures
-        // scored as ties), so it participates in fusion; only a judge whose
+        // scored as ties), so it participates in the fusion; only a judge whose
         // tournament threw has no vector.
         const fusable = outcomes.filter(o => o.status !== 'failed')
         if (fusable.length === 0) {
           throw new Error(`verify: all ${outcomes.length} judges failed (${outcomes.map(o => o.model).join(', ')})`)
         }
-        const fused = fuseMeanPreferences(fusable.map(o => ({ model: o.model, status: o.status, meanPreference: o.meanPreference })))
-        // Scores are per-CANDIDATE in candidate order, averaged across the
-        // judges that produced a vector — same order/semantics as the
-        // single-judge path's meanPreference. Ranking stays the Borda-fused
-        // ordering.
+        // Phase 10 (B3, 裁决=统一到均分): scores, bestIndex, and ranking all
+        // use the surviving-judge mean — the single-judge path's semantics.
+        // The old Borda fusion ranked by 名次分 while the reported scores and
+        // the gate used the mean, so `index` (the Borda winner) could disagree
+        // with `scores.argmax` and two judges could legitimately produce two
+        // different winners depending on the metric.
         const okVectors = fusable.map(o => o.meanPreference)
         const scoresByCandidate = candidates.map((_, candidateIndex) => {
           if (okVectors.length === 0) return 0
@@ -485,6 +519,11 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
           for (const vector of okVectors) sum += vector[candidateIndex] ?? 0
           return sum / okVectors.length
         })
+        const fused: { bestIndex: number; fusedRanking: number[] } = {
+          bestIndex: -1,
+          fusedRanking: rankByMean(scoresByCandidate),
+        }
+        fused.bestIndex = fused.fusedRanking[0] ?? -1
         // Any judge that is not fully healthy (degraded or failed) is named:
         // the run still settles, but the degradation must not be silent.
         const failedJudgeNames = outcomes.filter(o => o.status !== 'ok').map(o => o.name)
@@ -518,6 +557,23 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
         // Degraded or failed judges are named in the result text so the model —
         // and the user, through the rendered result — sees the degradation
         // instead of an unexplained preference shift.
+        // Phase A item 4: the selection lands as a store judgment, not just a
+        // transcript line - otherwise the same question re-runs the tournament
+        // next time it is asked.
+        await landToolOutcome(options.store, { kind: 'session', id: String(session?.id ?? 'verify') }, {
+          observation: {
+            kind: 'verify-request',
+            judgeCount: fusable.length,
+            candidateCount: candidates.length,
+            taskChars: problem.length,
+          },
+          criterionRef: 'crit/verify-eq31-tournament',
+          verdict: 'selection',
+          content: candidates[fused.bestIndex] ?? '',
+          subject: `verify:${problem.length}:${tournamentDigestOf(problem)}`,
+          channel: 'verify-eq31-tournament',
+          dataSupportSummary: `fused tournament over ${fusable.length} judge(s), best score ${scoresByCandidate[fused.bestIndex]?.toFixed(3)}`,
+        })
         const baseText = renderFused(fused, candidates, fusable.length)
         const text = (failedJudgeNames.length > 0
           ? `${baseText}\n\nverify: ${failedJudgeNames.length} judge(s) degraded or failed (${failedJudgeNames.join(', ')})`
@@ -547,7 +603,7 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
       const startedSingle = Date.now()
       const failures = { count: 0 }
       const tournament = await runTournament(candidates.length, seed, Math.min(pivotsArg, candidates.length), async (a, b) =>
-        scorePairOnSeam(callModelTee, route, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, runSignal, maxCallTokens, failures))
+        scoreGate(() => scorePairOnSeam(callModelTee, route, problem, candidates[a] ?? '', candidates[b] ?? '', criteria, nEvaluations, runSignal, maxCallTokens, failures)))
       const judgeStatus = failures.count > 0 ? 'degraded' as const : 'ok' as const
       const detailPathSingle = writeDetail({
         childSessionIds,
@@ -570,6 +626,20 @@ export function createVerifyTool(options: VerifyToolOptions): ReturnType<typeof 
       const best = candidates[tournament.bestIndex] ?? ''
       const scores = tournament.meanPreference
       const ranking = rankByMean(scores)
+      await landToolOutcome(options.store, { kind: 'session', id: String(session?.id ?? 'verify') }, {
+        observation: {
+          kind: 'verify-request',
+          judgeCount: 1,
+          candidateCount: candidates.length,
+          taskChars: problem.length,
+        },
+        criterionRef: 'crit/verify-eq31-tournament',
+        verdict: 'selection',
+        content: best,
+        subject: `verify:${problem.length}:${tournamentDigestOf(problem)}`,
+        channel: 'verify-eq31-tournament',
+        dataSupportSummary: `PPT tournament, ${tournament.nComparisons} comparisons, best score ${scores[tournament.bestIndex]?.toFixed(3)}`,
+      })
       const lines = [
         `best = candidate[${tournament.bestIndex}] (${scores[tournament.bestIndex]?.toFixed(3)})`,
         `ranking: ${ranking.join(' > ')}`,
@@ -605,24 +675,27 @@ function renderFused(
   ].join('\n')
 }
 
-function fuseMeanPreferences(
-  outcomes: Array<{ model: string; status: string; meanPreference: number[] }>,
-): { bestIndex: number; fusedRanking: number[] } {
-  const n = outcomes[0]?.meanPreference.length ?? 0
-  const borda = new Array<number>(n).fill(0)
-  for (const outcome of outcomes) {
-    const order = outcome.meanPreference
-      .map((score, index) => ({ index, score }))
-      .sort((x, y) => y.score - x.score || x.index - y.index)
-    order.forEach((entry, position) => {
-      borda[entry.index] = (borda[entry.index] ?? 0) + n - position
-    })
+/**
+ * Phase 10 (T9.2): bounded pool in front of the tournaments' internal
+ * `Promise.all`. Tasks queue FIFO; a queued task that is aborted while waiting
+ * still surfaces the abort once it runs (the scoring call itself checks the
+ * signal), so the gate never swallows cancellation.
+ */
+function createPairCallGate(maxInFlight: number): <T>(task: () => Promise<T>) => Promise<T> {
+  let inFlight = 0
+  const waiters: Array<() => void> = []
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    while (inFlight >= maxInFlight) {
+      await new Promise<void>(resolve => waiters.push(resolve))
+    }
+    inFlight += 1
+    try {
+      return await task()
+    } finally {
+      inFlight -= 1
+      waiters.shift()?.()
+    }
   }
-  const fusedRanking = borda
-    .map((points, index) => ({ index, points: points ?? 0 }))
-    .sort((a, b) => b.points - a.points || a.index - b.index)
-    .map(entry => entry.index)
-  return { bestIndex: fusedRanking[0] ?? -1, fusedRanking }
 }
 
 function rankByMean(meanPreference: readonly number[]): number[] {
@@ -755,4 +828,11 @@ async function scorePairOnSeam(
   }
   if (count === 0) return [0.5, 0.5]
   return [raSum / count, rbSum / count]
+}
+
+/** Stable short digest of the verify problem, tying re-runs to one subject. */
+function tournamentDigestOf(problem: string): string {
+  let h = 5381
+  for (let i = 0; i < problem.length; i++) h = ((h << 5) + h + problem.charCodeAt(i)) | 0
+  return (h >>> 0).toString(36)
 }

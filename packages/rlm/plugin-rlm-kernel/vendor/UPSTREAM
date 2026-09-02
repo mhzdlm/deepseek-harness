@@ -138,3 +138,15 @@
 #     a hung installer child (uv install / interpreter probe) is killed and surfaces as a
 #     failed run instead of stranding bootstrap forever.
 #   Affected: boot-gate.ts (deleted), orphan-process-journal.ts, index.ts, bootstrap.ts
+#
+# #19 Phase 10 2026-08-31 snapshot integrity (安全债批)
+#   - state-snapshot.ts: buildSnapshotCode writes the payload's SHA-256 into the
+#     JSON manifest ("sha256"); buildRestoreCode(inPath, manifestPath) now takes
+#     the manifest path and verifies the digest BEFORE any dill call — mismatch,
+#     missing manifest, or pre-#19 manifest without a digest refuses the restore
+#     with "snapshot integrity check failed" (empty restore, kernel continues
+#     fresh). Rationale: dill.load executes pickled instructions; an unverified
+#     snapshot file is a code-execution vector (review round 8 安全项 6).
+#   - index.ts: restoreState passes cfg.manifestPath into buildRestoreCode.
+#   - audit-vendor.mts: state-snapshot.ts #19 entry (mustContain markers).
+#   Affected: state-snapshot.ts, index.ts (call site only)
