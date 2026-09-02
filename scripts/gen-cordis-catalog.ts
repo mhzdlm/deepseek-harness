@@ -173,8 +173,6 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   slots: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
   theme: 'client-side interface-typed browser service — packages/client/ui-theme/README.md owns the API',
   workspaces: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
-  "'rlm.kernels'": 'optional cross-plugin registry provided via ctx.provide by packages/rlm/plugin-rlm-kernel/src/index.ts (consumed lazily by plugin-rlm-verifier); the providing plugin owns the contract, no subsystems page',
-  "'rlm.store'": 'optional cross-plugin unified store provided via ctx.provide by packages/rlm/plugin-rlm-store/src/index.ts (consumed lazily by the rlm family); the providing plugin owns the contract, no subsystems page',
 }
 
 /**

@@ -204,13 +204,6 @@ export default defineConfig({
         // Dynamic Host/Client composition is covered by its focused lifecycle
         // tests and assembled application checks rather than per-file coverage.
         'packages/self-modification/*/src/**/*.{ts,tsx}',
-        // The rlm plugin family is not reachable from any shipped dependency
-        // closure yet (mounted only via explicit ctx.plugin(); see its docs).
-        // Its contract coverage lives in the package suites (including the
-        // real-key e2e lane), vendored kernel code is gated by audit-vendor,
-        // and the Linux lane cannot provision the kernel venv those paths
-        // need. Revisit when the family joins an app dependency closure.
-        'packages/rlm/*/src/**/*.{ts,tsx}',
         // A killed executable lint-contract test can leave a non-product source probe behind.
         'packages/*/*/src/oxlint-contract-*.ts',
         // Client/web UI files whose remaining branches need a browser-grade
