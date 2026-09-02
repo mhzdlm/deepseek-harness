@@ -2,6 +2,7 @@
 
 Status: implemented
 
+[English](2026-08-31-rlm-phase8-review-hardening.md) | 中文
 ## Problem
 
 第六轮交叉审查（五份独立 AI 审查报告，先逐条判真伪再动手）发现一个关键接线缺陷、两个承重契约缺口，以及一批此前各轮全部漏掉的健壮性缺陷：

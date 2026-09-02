@@ -2,6 +2,7 @@
 
 Status: implemented
 
+[English](2026-08-30-rlm-phase6-hardening-batch.md) | 中文
 ## Problem
 
 2026-08-30 复核的 Phase 6 审计在 RLM 各包发现一批小而真实的缺陷：`/memory` 参数接受穿越形态；召回的 `use_count` 触碰令文件 mtime 移动、使 `/memory rollback` 误报"用户改动"；capture 失败被吞；hybrid search 有无守卫的零词元路径与未处理的 embed 失败；config 在要求 `min(1)` 处接受 0；若干失败路径不记日志。

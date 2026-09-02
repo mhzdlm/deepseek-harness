@@ -18,7 +18,6 @@ export const GROUPS_WITHOUT_SUBSYSTEM_PAGE: Readonly<Record<string, string>> = {
   acp: 'Protocol transport entry point; the server package README owns its interoperability contract.',
   boot: 'Shared application-bin boot library rather than a runtime subsystem.',
   bundle: 'Composition patch carriers whose mounted packages own all runtime contracts.',
-  examples: 'Non-product demonstration compositions whose mounted packages own all runtime contracts.',
   hooks: 'External hook-protocol bridges over existing interception points, not a new Harness service.',
   rlm: 'RLM plugin family: per-package READMEs own the contracts, and the group-level design lives in docs/REME.md + docs/LAYERS.md rather than a core-catalog subsystem page.',
   sdk: 'Out-of-process protocol and client packages whose package READMEs own the SDK contracts.',

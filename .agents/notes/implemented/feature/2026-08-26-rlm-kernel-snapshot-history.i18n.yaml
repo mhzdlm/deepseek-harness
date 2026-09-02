@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-26-rlm-kernel-snapshot-history.md
-2026-08-26-rlm-kernel-snapshot-history.md: 8ba6ee5ddfb4ce26ef79dddd8cb4946363eb1f75
+2026-08-26-rlm-kernel-snapshot-history.md: 9e7bb5ea794027e0e3fbc3475d9a4b2525230f4f
 2026-08-26-rlm-kernel-snapshot-history.zh.md: 0ca0cd6ae53e9afd62f135f380f0afc41c5c52ad
